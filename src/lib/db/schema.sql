@@ -29,6 +29,8 @@ CREATE TABLE IF NOT EXISTS track_files (
   UNIQUE(track_id, quality)
 );
 
+CREATE INDEX IF NOT EXISTS idx_track_files_status ON track_files(status);
+
 CREATE TABLE IF NOT EXISTS jobs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   type TEXT NOT NULL,
@@ -39,6 +41,8 @@ CREATE TABLE IF NOT EXISTS jobs (
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE INDEX IF NOT EXISTS idx_jobs_status_type ON jobs(status, type);
 
 CREATE TABLE IF NOT EXISTS play_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
