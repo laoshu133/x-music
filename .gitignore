@@ -1,0 +1,11 @@
+.DS_Store
+.env
+.env.local
+.next
+node_modules
+npm-debug.log*
+data
+coverage
+dist
+
+tsconfig.tsbuildinfo
