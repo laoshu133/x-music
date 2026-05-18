@@ -97,8 +97,13 @@ export function claimNextJob<TPayload = unknown>(
   ensureJobsTable()
 
   const maxAttempts = options.maxAttempts ?? 3
-  const claim = db.transaction(() => {
-    const candidate = db.prepare(`
+  const record = db.prepare(`
+    UPDATE jobs
+    SET status = 'running',
+        attempts = attempts + 1,
+        error = NULL,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE id = (
       SELECT id
       FROM jobs
       WHERE type = @type
@@ -106,27 +111,13 @@ export function claimNextJob<TPayload = unknown>(
         AND attempts < @maxAttempts
       ORDER BY created_at ASC, id ASC
       LIMIT 1
-    `).get({
-      type: options.type,
-      maxAttempts,
-    }) as { id: number } | undefined
+    )
+    RETURNING *
+  `).get({
+    type: options.type,
+    maxAttempts,
+  }) as JobRecord | undefined
 
-    if (!candidate) return null
-
-    db.prepare(`
-      UPDATE jobs
-      SET status = 'running',
-          attempts = attempts + 1,
-          error = NULL,
-          updated_at = CURRENT_TIMESTAMP
-      WHERE id = @id
-    `).run({ id: candidate.id })
-
-    return db.prepare('SELECT * FROM jobs WHERE id = ?')
-      .get(candidate.id) as JobRecord | undefined
-  })
-
-  const record = claim()
   return record ? parseJobRecord<TPayload>(record) : null
 }
 
