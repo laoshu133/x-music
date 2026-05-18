@@ -7,7 +7,7 @@
 - [x] QQ playlist search/detail API returns playlist songs.
 - [x] Playback API resolves music URL, streams to browser, and caches to local storage.
 - [x] SQLite job worker can claim tag jobs and mark cached files ready.
-- [ ] Web client exposes song search, toplists, playlist search/detail, and playback controls.
+- [x] Web client exposes song search, toplists, playlist search/detail, and playback controls.
 - [ ] End-to-end playback with the real `LX_MUSIC_URL_SCRIPT` source is verified.
 - [ ] End-to-end cache reuse is verified: second play reads local file instead of resolving URL again.
 - [ ] End-to-end `music-tag-web` shared-directory scraping is verified in Docker Compose.
