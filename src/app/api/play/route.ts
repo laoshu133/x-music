@@ -1,0 +1,99 @@
+import { ensureTrack, getReadyTrackFile, insertPlayEvent, upsertTrackFileStatus } from '@/lib/cache/store'
+import { createUpstreamTeeResponse, streamLocalFile } from '@/lib/cache/stream'
+import { parseRequestedQuality, qualityFallbacks, resolveMusicUrlWithFallback } from '@/lib/music-url/resolve'
+import type { MusicInfo, OnlineSource } from '@/lib/types'
+
+export const runtime = 'nodejs'
+export const dynamic = 'force-dynamic'
+
+type PlayRequest = Partial<MusicInfo> & {
+  quality?: string
+  source?: string
+}
+
+export async function GET(request: Request): Promise<Response> {
+  const url = new URL(request.url)
+  return handlePlayRequest(request, Object.fromEntries(url.searchParams.entries()))
+}
+
+export async function POST(request: Request): Promise<Response> {
+  const contentType = request.headers.get('content-type') ?? ''
+  if (!contentType.includes('application/json')) {
+    return jsonError('POST /api/play expects application/json', 415)
+  }
+
+  const body = (await request.json().catch(() => undefined)) as PlayRequest | undefined
+  if (!body) return jsonError('Invalid JSON body', 400)
+
+  return handlePlayRequest(request, body)
+}
+
+const handlePlayRequest = async (request: Request, input: PlayRequest): Promise<Response> => {
+  const musicInfo = parseMusicInfo(input)
+  if (!musicInfo) return jsonError('Missing required parameters: source, songmid, name, singer', 400)
+
+  const requestedQuality = parseRequestedQuality(input.quality)
+  const preferredQuality = requestedQuality ?? 'flac'
+
+  const readyFile = qualityFallbacks(preferredQuality)
+    .map((quality) => getReadyTrackFile(musicInfo.source, musicInfo.songmid, quality))
+    .find((file) => file !== undefined)
+  if (readyFile?.finalPath) {
+    const track = ensureTrack(musicInfo)
+    insertPlayEvent(track.id, readyFile.quality)
+    return streamLocalFile(readyFile.finalPath, request)
+  }
+
+  const track = ensureTrack(musicInfo)
+  upsertTrackFileStatus(track.id, preferredQuality, 'resolving_url')
+
+  try {
+    const resolved = await resolveMusicUrlWithFallback(musicInfo, preferredQuality)
+    insertPlayEvent(track.id, resolved.quality)
+    const { response, completion } = await createUpstreamTeeResponse(resolved.url, track, resolved.quality, request)
+
+    completion.catch((error: unknown) => {
+      upsertTrackFileStatus(track.id, resolved.quality, 'failed', {
+        error: error instanceof Error ? error.message : String(error),
+      })
+    })
+
+    return response
+  } catch (error) {
+    upsertTrackFileStatus(track.id, preferredQuality, 'failed', {
+      error: error instanceof Error ? error.message : String(error),
+    })
+    return jsonError(error instanceof Error ? error.message : 'Unable to play track', 502)
+  }
+}
+
+const parseMusicInfo = (input: PlayRequest): MusicInfo | undefined => {
+  if (input.source !== 'tx') return undefined
+  if (!isNonEmptyString(input.songmid) || !isNonEmptyString(input.name) || !isNonEmptyString(input.singer)) {
+    return undefined
+  }
+
+  return {
+    source: input.source as OnlineSource,
+    songmid: input.songmid,
+    name: input.name,
+    singer: input.singer,
+    albumName: normalizeOptional(input.albumName),
+    albumId: normalizeOptional(input.albumId),
+    interval: normalizeOptional(input.interval),
+    img: normalizeOptional(input.img),
+    raw: input,
+  }
+}
+
+const isNonEmptyString = (value: unknown): value is string => {
+  return typeof value === 'string' && value.trim().length > 0
+}
+
+const normalizeOptional = (value: unknown): string | undefined => {
+  return typeof value === 'string' && value.length > 0 ? value : undefined
+}
+
+const jsonError = (message: string, status: number): Response => {
+  return Response.json({ error: message }, { status })
+}

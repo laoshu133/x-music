@@ -59,3 +59,37 @@ export interface ResolvedMusicUrl {
   songmid: string
   expiresAt?: Date
 }
+
+export type TrackFileStatus =
+  | 'missing'
+  | 'resolving_url'
+  | 'streaming_and_caching'
+  | 'cached_raw'
+  | 'tagging'
+  | 'ready'
+  | 'failed'
+
+export interface TrackRecord {
+  id: number
+  source: OnlineSource
+  songmid: string
+  name: string
+  singer: string
+  albumName?: string
+  albumId?: string
+  interval?: string
+  imageUrl?: string
+  rawJson?: string
+}
+
+export interface TrackFileRecord {
+  id: number
+  trackId: number
+  quality: MusicQuality
+  status: TrackFileStatus
+  rawPath?: string
+  finalPath?: string
+  sizeBytes?: number
+  sha256?: string
+  error?: string
+}
