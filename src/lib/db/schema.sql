@@ -61,3 +61,15 @@ CREATE TABLE IF NOT EXISTS favorite_sync (
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(track_id)
 );
+
+CREATE TABLE IF NOT EXISTS qq_session (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  cookie TEXT NOT NULL,
+  uin TEXT NOT NULL,
+  encrypted_uin TEXT,
+  qqmusic_key TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_favorite_sync_state ON favorite_sync(sync_state, updated_at);

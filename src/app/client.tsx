@@ -1,6 +1,20 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import {
+  Activity,
+  DownloadCloud,
+  Heart,
+  ListMusic,
+  LogIn,
+  LogOut,
+  Music2,
+  Play,
+  RefreshCw,
+  Search,
+  Sparkles,
+  Star,
+} from 'lucide-react'
 import type { MusicInfo, PagedResult, QQPlaylistDetail, QQPlaylistInfo, QQToplistInfo } from '@/lib/types'
 
 type View = 'search' | 'toplists' | 'playlists' | 'favorites' | 'recommendations' | 'status'
@@ -12,6 +26,15 @@ interface ApiState<T> {
 }
 
 const emptyState = <T,>(): ApiState<T> => ({ loading: false, error: '', data: null })
+
+interface AccountState {
+  loggedIn: boolean
+  source?: 'env' | 'request' | 'stored'
+  uin?: string
+  hasEncryptedUin?: boolean
+  hasQQMusicKey?: boolean
+  actionable?: string
+}
 
 interface FavoriteRecord extends MusicInfo {
   desiredState: 'favorite' | 'unfavorite'
@@ -31,29 +54,16 @@ interface FavoriteStatus {
 interface HealthStatus {
   ok: boolean
   checkedAt: string
-  database: {
-    ok: boolean
-    tracks?: number
-    trackFiles?: number
-    playEvents?: number
-    error?: string
-  }
+  database: { ok: boolean; tracks?: number; trackFiles?: number; playEvents?: number; error?: string }
   cache: Record<string, { path: string; exists: boolean; writable: boolean; isDirectory: boolean; entries: number; error?: string }>
-  jobs: {
-    byStatus: Record<string, number>
-    queued: number
-    running: number
-    failed: number
-  }
-  favorites: {
-    favoriteCount: number
-    pendingCount: number
-    failedCount: number
-  }
-  config: {
-    missing: string[]
-    lxMusicUrlScript: boolean
-  }
+  jobs: { byStatus: Record<string, number>; queued: number; running: number; failed: number }
+  favorites: { favoriteCount: number; pendingCount: number; failedCount: number }
+  config: { missing: string[]; lxMusicUrlScript: boolean }
+}
+
+type RecommendationsResult = PagedResult<MusicInfo> & {
+  strategy?: string
+  personalized?: boolean
 }
 
 const fetchJson = async <T,>(url: string, init?: RequestInit): Promise<T> => {
@@ -66,6 +76,15 @@ const fetchJson = async <T,>(url: string, init?: RequestInit): Promise<T> => {
     throw new Error(message)
   }
   return body as T
+}
+
+const viewMeta: Record<View, { label: string; icon: React.ComponentType<{ size?: number }> }> = {
+  search: { label: '搜索', icon: Search },
+  toplists: { label: '排行', icon: Star },
+  playlists: { label: '歌单', icon: ListMusic },
+  favorites: { label: '收藏', icon: Heart },
+  recommendations: { label: '猜你喜欢', icon: Sparkles },
+  status: { label: '状态', icon: Activity },
 }
 
 const playUrlFor = (song: MusicInfo): string => {
@@ -102,16 +121,19 @@ export default function MusicClient() {
   const [view, setView] = useState<View>('search')
   const [query, setQuery] = useState('周杰伦')
   const [playlistQuery, setPlaylistQuery] = useState('周杰伦')
+  const [cookieText, setCookieText] = useState('')
+  const [account, setAccount] = useState<ApiState<AccountState>>(emptyState)
   const [songs, setSongs] = useState<ApiState<PagedResult<MusicInfo>>>(emptyState)
   const [toplists, setToplists] = useState<ApiState<{ source: 'tx'; list: QQToplistInfo[] }>>(emptyState)
   const [toplistSongs, setToplistSongs] = useState<ApiState<PagedResult<MusicInfo>>>(emptyState)
   const [playlists, setPlaylists] = useState<ApiState<PagedResult<QQPlaylistInfo>>>(emptyState)
   const [playlistDetail, setPlaylistDetail] = useState<ApiState<QQPlaylistDetail>>(emptyState)
   const [favorites, setFavorites] = useState<ApiState<{ source: 'local'; list: FavoriteRecord[] }>>(emptyState)
-  const [recommendations, setRecommendations] = useState<ApiState<PagedResult<MusicInfo>>>(emptyState)
+  const [recommendations, setRecommendations] = useState<ApiState<RecommendationsResult>>(emptyState)
   const [health, setHealth] = useState<ApiState<HealthStatus>>(emptyState)
   const [favoriteStatuses, setFavoriteStatuses] = useState<Record<string, FavoriteStatus>>({})
   const [favoriteBusy, setFavoriteBusy] = useState<Record<string, boolean>>({})
+  const [syncMessage, setSyncMessage] = useState('')
   const [currentSong, setCurrentSong] = useState<MusicInfo | null>(null)
   const [playerError, setPlayerError] = useState('')
   const audioRef = useRef<HTMLAudioElement>(null)
@@ -127,50 +149,62 @@ export default function MusicClient() {
     }
   }
 
-  const searchSongs = () => {
-    void run(s => setSongs(s), () => fetchJson<PagedResult<MusicInfo>>(`/api/search/songs?q=${encodeURIComponent(query)}&limit=20`))
+  const loadAccount = () => run(s => setAccount(s), () => fetchJson<AccountState>('/api/account'))
+  const searchSongs = () => run(s => setSongs(s), () => fetchJson<PagedResult<MusicInfo>>(`/api/search/songs?q=${encodeURIComponent(query)}&limit=20`))
+  const loadToplists = () => run(s => setToplists(s), () => fetchJson<{ source: 'tx'; list: QQToplistInfo[] }>('/api/toplists'))
+  const loadToplistSongs = (id: string) => run(s => setToplistSongs(s), () => fetchJson<PagedResult<MusicInfo>>(`/api/toplists/${encodeURIComponent(id)}?limit=50`))
+  const searchPlaylists = () => run(s => setPlaylists(s), () => fetchJson<PagedResult<QQPlaylistInfo>>(`/api/playlists?q=${encodeURIComponent(playlistQuery)}&limit=20`))
+  const openPlaylist = (id: string) => run(s => setPlaylistDetail(s), () => fetchJson<QQPlaylistDetail>(`/api/playlists/${encodeURIComponent(id)}`))
+  const loadFavorites = () => run(s => setFavorites(s), () => fetchJson<{ source: 'local'; list: FavoriteRecord[] }>('/api/favorites'))
+  const loadRecommendations = () => run(s => setRecommendations(s), () => fetchJson<RecommendationsResult>('/api/recommendations?limit=30'))
+  const loadHealth = () => run(s => setHealth(s), async () => {
+    const response = await fetch('/api/health')
+    const body = await response.json().catch(() => undefined) as HealthStatus | undefined
+    if (!body) throw new Error(`Request failed: ${response.status}`)
+    return body
+  })
+
+  const login = async () => {
+    setSyncMessage('')
+    await run(s => setAccount(s), () => fetchJson<AccountState>('/api/account/import', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ cookie: cookieText, persist: true }),
+    }))
+    setCookieText('')
   }
 
-  const loadToplists = () => {
-    void run(s => setToplists(s), () => fetchJson<{ source: 'tx'; list: QQToplistInfo[] }>('/api/toplists'))
-  }
-
-  const loadToplistSongs = (id: string) => {
-    void run(s => setToplistSongs(s), () => fetchJson<PagedResult<MusicInfo>>(`/api/toplists/${encodeURIComponent(id)}?limit=50`))
-  }
-
-  const searchPlaylists = () => {
-    void run(s => setPlaylists(s), () => fetchJson<PagedResult<QQPlaylistInfo>>(`/api/playlists?q=${encodeURIComponent(playlistQuery)}&limit=20`))
-  }
-
-  const openPlaylist = (id: string) => {
-    void run(s => setPlaylistDetail(s), () => fetchJson<QQPlaylistDetail>(`/api/playlists/${encodeURIComponent(id)}`))
-  }
-
-  const loadFavorites = () => {
-    void run(s => setFavorites(s), () => fetchJson<{ source: 'local'; list: FavoriteRecord[] }>('/api/favorites'))
-  }
-
-  const loadRecommendations = () => {
-    void run(s => setRecommendations(s), () => fetchJson<PagedResult<MusicInfo>>('/api/recommendations?limit=30'))
-  }
-
-  const loadHealth = () => {
-    void run(s => setHealth(s), async () => {
-      const response = await fetch('/api/health')
-      const body = await response.json().catch(() => undefined) as HealthStatus | undefined
-      if (!body) throw new Error(`Request failed: ${response.status}`)
-      return body
+  const logout = async () => {
+    setSyncMessage('')
+    await run(s => setAccount(s), async () => {
+      await fetchJson<{ loggedIn: false }>('/api/account', { method: 'DELETE' })
+      return { loggedIn: false }
     })
+  }
+
+  const pushFavorites = async () => {
+    setSyncMessage('')
+    const result = await fetchJson<{ synced: number; failed: number; total: number }>('/api/favorites?sync=push', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+    setSyncMessage(`已推送 ${result.synced}/${result.total} 条，失败 ${result.failed} 条`)
+    loadFavorites()
+  }
+
+  const pullFavorites = async () => {
+    setSyncMessage('')
+    const result = await fetchJson<{ pulled: number; list: FavoriteRecord[] }>('/api/favorites?sync=pull&limit=100')
+    setFavorites({ loading: false, error: '', data: { source: 'local', list: result.list } })
+    setSyncMessage(`已从 QQ 拉取 ${result.pulled} 首喜欢歌曲`)
   }
 
   const playSong = (song: MusicInfo) => {
     setPlayerError('')
     setCurrentSong(song)
     queueMicrotask(() => {
-      void audioRef.current?.play().catch((error: unknown) => {
-        setPlayerError(playbackErrorMessage(error))
-      })
+      void audioRef.current?.play().catch((error: unknown) => setPlayerError(playbackErrorMessage(error)))
     })
   }
 
@@ -179,7 +213,7 @@ export default function MusicClient() {
     const nextFavorite = !(favoriteStatuses[key]?.favorite ?? false)
     setFavoriteBusy(previous => ({ ...previous, [key]: true }))
     try {
-      const response = await fetchJson<{ favorite: boolean; pending: boolean; record: FavoriteRecord }>('/api/favorites', {
+      const response = await fetchJson<{ favorite: boolean; pending: boolean; record: FavoriteRecord; remoteError?: string }>('/api/favorites', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(favoritePayload(song, nextFavorite)),
@@ -191,7 +225,7 @@ export default function MusicClient() {
           pending: response.pending,
           desiredState: response.record.desiredState,
           syncState: response.record.syncState,
-          error: response.record.error,
+          error: response.remoteError ?? response.record.error,
         },
       }))
       if (view === 'favorites' || favorites.data) loadFavorites()
@@ -211,6 +245,19 @@ export default function MusicClient() {
     }
   }
 
+  const openView = (next: View) => {
+    setView(next)
+    if (next === 'toplists' && !toplists.data) loadToplists()
+    if (next === 'favorites') loadFavorites()
+    if (next === 'recommendations') loadRecommendations()
+    if (next === 'status') loadHealth()
+  }
+
+  useEffect(() => {
+    void loadAccount()
+    void searchSongs()
+  }, [])
+
   useEffect(() => {
     const visibleSongs = [
       ...(songs.data?.list ?? []),
@@ -229,10 +276,7 @@ export default function MusicClient() {
       return [favoriteKey(song), status] as const
     })).then(entries => {
       if (cancelled) return
-      setFavoriteStatuses(previous => ({
-        ...previous,
-        ...Object.fromEntries(entries),
-      }))
+      setFavoriteStatuses(previous => ({ ...previous, ...Object.fromEntries(entries) }))
     }).catch(() => undefined)
 
     return () => {
@@ -242,133 +286,220 @@ export default function MusicClient() {
 
   return (
     <main className="app-shell">
-      <header className="app-header">
-        <div>
-          <h1>miXmusic</h1>
-          <p>QQ 音乐私有播放器，本地转存缓存优先。</p>
+      <aside className="sidebar">
+        <div className="brand-lockup">
+          <div className="brand-mark"><Music2 size={20} /></div>
+          <div>
+            <h1>miXmusic</h1>
+            <span>QQ Music private console</span>
+          </div>
         </div>
         <nav className="tabs" aria-label="主视图">
-          <button className={view === 'search' ? 'active' : ''} onClick={() => setView('search')}>搜索</button>
-          <button className={view === 'toplists' ? 'active' : ''} onClick={() => { setView('toplists'); if (!toplists.data) loadToplists() }}>排行榜</button>
-          <button className={view === 'playlists' ? 'active' : ''} onClick={() => setView('playlists')}>歌单</button>
-          <button className={view === 'favorites' ? 'active' : ''} onClick={() => { setView('favorites'); loadFavorites() }}>收藏</button>
-          <button className={view === 'recommendations' ? 'active' : ''} onClick={() => { setView('recommendations'); loadRecommendations() }}>猜你喜欢</button>
-          <button className={view === 'status' ? 'active' : ''} onClick={() => { setView('status'); loadHealth() }}>状态</button>
+          {(Object.keys(viewMeta) as View[]).map(key => {
+            const Icon = viewMeta[key].icon
+            return (
+              <button key={key} className={view === key ? 'active' : ''} onClick={() => openView(key)}>
+                <Icon size={17} />
+                <span>{viewMeta[key].label}</span>
+              </button>
+            )
+          })}
         </nav>
-      </header>
+        <AccountPanel
+          account={account}
+          cookieText={cookieText}
+          onCookieTextChange={setCookieText}
+          onLogin={login}
+          onLogout={logout}
+        />
+      </aside>
 
-      {view === 'search' && (
-        <section className="workspace">
-          <div className="panel control-panel">
-            <h2>歌曲搜索</h2>
-            <div className="search-row">
-              <input value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') searchSongs() }} />
-              <button onClick={searchSongs} disabled={songs.loading}>搜索</button>
-            </div>
+      <section className="content">
+        <header className="content-header">
+          <div>
+            <p className="eyebrow">{viewMeta[view].label}</p>
+            <h2>{headingFor(view)}</h2>
+          </div>
+          <div className="header-actions">
+            {account.data?.loggedIn ? <span className="account-pill">QQ {account.data.uin}</span> : <span className="account-pill muted">未登录 QQ</span>}
+          </div>
+        </header>
+
+        {view === 'search' && (
+          <section className="workspace">
+            <ToolbarSearch value={query} onChange={setQuery} onSubmit={searchSongs} loading={songs.loading} placeholder="搜索歌曲、歌手或专辑" />
             <Status state={songs} />
-          </div>
-          <SongTable songs={songs.data?.list ?? []} onPlay={playSong} onFavorite={toggleFavorite} favoriteStatuses={favoriteStatuses} favoriteBusy={favoriteBusy} />
-        </section>
-      )}
+            <SongTable songs={songs.data?.list ?? []} onPlay={playSong} onFavorite={toggleFavorite} favoriteStatuses={favoriteStatuses} favoriteBusy={favoriteBusy} />
+          </section>
+        )}
 
-      {view === 'toplists' && (
-        <section className="workspace two-col">
-          <div className="panel list-panel">
-            <div className="panel-head">
-              <h2>排行榜</h2>
-              <button onClick={loadToplists} disabled={toplists.loading}>刷新</button>
+        {view === 'toplists' && (
+          <section className="workspace split">
+            <div className="side-list">
+              <div className="section-head">
+                <h3>排行榜</h3>
+                <IconButton label="刷新" onClick={loadToplists} disabled={toplists.loading}><RefreshCw size={16} /></IconButton>
+              </div>
+              <Status state={toplists} />
+              <div className="board-list">
+                {(toplists.data?.list ?? []).map(board => (
+                  <button key={board.id} onClick={() => loadToplistSongs(board.id)}>{board.name}</button>
+                ))}
+              </div>
             </div>
-            <Status state={toplists} />
-            <div className="board-list">
-              {(toplists.data?.list ?? []).map(board => (
-                <button key={board.id} onClick={() => loadToplistSongs(board.id)}>{board.name}</button>
-              ))}
+            <div>
+              <Status state={toplistSongs} />
+              <SongTable songs={toplistSongs.data?.list ?? []} onPlay={playSong} onFavorite={toggleFavorite} favoriteStatuses={favoriteStatuses} favoriteBusy={favoriteBusy} compact />
             </div>
-          </div>
-          <div className="panel">
-            <h2>榜单歌曲</h2>
-            <Status state={toplistSongs} />
-            <SongTable songs={toplistSongs.data?.list ?? []} onPlay={playSong} onFavorite={toggleFavorite} favoriteStatuses={favoriteStatuses} favoriteBusy={favoriteBusy} compact />
-          </div>
-        </section>
-      )}
+          </section>
+        )}
 
-      {view === 'playlists' && (
-        <section className="workspace two-col">
-          <div className="panel list-panel">
-            <h2>歌单搜索</h2>
-            <div className="search-row">
-              <input value={playlistQuery} onChange={event => setPlaylistQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') searchPlaylists() }} />
-              <button onClick={searchPlaylists} disabled={playlists.loading}>搜索</button>
+        {view === 'playlists' && (
+          <section className="workspace split">
+            <div className="side-list">
+              <ToolbarSearch value={playlistQuery} onChange={setPlaylistQuery} onSubmit={searchPlaylists} loading={playlists.loading} placeholder="搜索歌单" />
+              <Status state={playlists} />
+              <div className="playlist-list">
+                {(playlists.data?.list ?? []).map(item => (
+                  <button key={item.id} onClick={() => openPlaylist(item.id)}>
+                    <span>{item.name}</span>
+                    <small>{item.author ?? 'QQ 音乐'} · {item.total ?? 0} 首</small>
+                  </button>
+                ))}
+              </div>
             </div>
-            <Status state={playlists} />
-            <div className="playlist-list">
-              {(playlists.data?.list ?? []).map(item => (
-                <button key={item.id} onClick={() => openPlaylist(item.id)}>
-                  <span>{item.name}</span>
-                  <small>{item.author ?? 'QQ 音乐'} · {item.total ?? 0} 首</small>
-                </button>
-              ))}
+            <div>
+              <div className="section-head">
+                <h3>{playlistDetail.data?.info.name ?? '歌单歌曲'}</h3>
+              </div>
+              <Status state={playlistDetail} />
+              <SongTable songs={playlistDetail.data?.list ?? []} onPlay={playSong} onFavorite={toggleFavorite} favoriteStatuses={favoriteStatuses} favoriteBusy={favoriteBusy} compact />
             </div>
-          </div>
-          <div className="panel">
-            <h2>{playlistDetail.data?.info.name ?? '歌单歌曲'}</h2>
-            <Status state={playlistDetail} />
-            <SongTable songs={playlistDetail.data?.list ?? []} onPlay={playSong} onFavorite={toggleFavorite} favoriteStatuses={favoriteStatuses} favoriteBusy={favoriteBusy} compact />
-          </div>
-        </section>
-      )}
+          </section>
+        )}
 
-      {view === 'favorites' && (
-        <section className="workspace">
-          <div className="panel control-panel">
-            <div className="panel-head">
-              <h2>本地收藏</h2>
-              <button onClick={loadFavorites} disabled={favorites.loading}>刷新</button>
+        {view === 'favorites' && (
+          <section className="workspace">
+            <div className="action-strip">
+              <div>
+                <h3>本地与 QQ 喜欢</h3>
+                <p>收藏操作会先写本地，并尽力同步到 QQ；失败项可手动推送。</p>
+              </div>
+              <div className="action-row">
+                <button onClick={pullFavorites}><DownloadCloud size={16} />从 QQ 拉取</button>
+                <button onClick={pushFavorites}><RefreshCw size={16} />推送待同步</button>
+              </div>
             </div>
-            <p>收藏变更先写入本地 pending 队列，等待后续 QQ 同步接口接管。</p>
+            {syncMessage ? <p className="status">{syncMessage}</p> : null}
             <Status state={favorites} />
-          </div>
-          <SongTable songs={favorites.data?.list ?? []} onPlay={playSong} onFavorite={toggleFavorite} favoriteStatuses={favoriteStatuses} favoriteBusy={favoriteBusy} />
-        </section>
-      )}
+            <SongTable songs={favorites.data?.list ?? []} onPlay={playSong} onFavorite={toggleFavorite} favoriteStatuses={favoriteStatuses} favoriteBusy={favoriteBusy} />
+          </section>
+        )}
 
-      {view === 'recommendations' && (
-        <section className="workspace">
-          <div className="panel control-panel">
-            <div className="panel-head">
-              <h2>猜你喜欢</h2>
-              <button onClick={loadRecommendations} disabled={recommendations.loading}>刷新</button>
+        {view === 'recommendations' && (
+          <section className="workspace">
+            <div className="action-strip">
+              <div>
+                <h3>{recommendations.data?.personalized ? '个性推荐' : '热门推荐'}</h3>
+                <p>{recommendations.data?.strategy ? `策略：${recommendations.data.strategy}` : '优先使用 QQ 个性电台，失败时从收藏歌手与热榜补齐。'}</p>
+              </div>
+              <button onClick={loadRecommendations} disabled={recommendations.loading}><RefreshCw size={16} />刷新</button>
             </div>
-            <p>入口已预留；当远端 `/api/recommendations` 合流后会直接显示推荐歌曲。</p>
             <Status state={recommendations} />
-          </div>
-          <SongTable songs={recommendations.data?.list ?? []} onPlay={playSong} onFavorite={toggleFavorite} favoriteStatuses={favoriteStatuses} favoriteBusy={favoriteBusy} />
-        </section>
-      )}
+            <SongTable songs={recommendations.data?.list ?? []} onPlay={playSong} onFavorite={toggleFavorite} favoriteStatuses={favoriteStatuses} favoriteBusy={favoriteBusy} />
+          </section>
+        )}
 
-      {view === 'status' && (
-        <section className="workspace">
-          <div className="panel control-panel">
-            <div className="panel-head">
-              <h2>运行状态</h2>
-              <button onClick={loadHealth} disabled={health.loading}>刷新</button>
+        {view === 'status' && (
+          <section className="workspace">
+            <div className="section-head">
+              <h3>运行状态</h3>
+              <IconButton label="刷新" onClick={loadHealth} disabled={health.loading}><RefreshCw size={16} /></IconButton>
             </div>
             <Status state={health} />
             {health.data ? <HealthPanel health={health.data} /> : null}
-          </div>
-        </section>
-      )}
+          </section>
+        )}
+      </section>
 
       <footer className="player-bar">
-        <div>
-          <strong>{currentSong?.name ?? '未播放'}</strong>
-          <span>{currentSong ? `${currentSong.singer}${currentSong.albumName ? ` · ${currentSong.albumName}` : ''}` : '选择一首歌曲开始播放'}</span>
-          {playerError ? <em>{playerError}</em> : null}
+        <div className="now-playing">
+          <button className="play-button static" aria-label="当前播放"><Play size={18} fill="currentColor" /></button>
+          <div>
+            <strong>{currentSong?.name ?? '未播放'}</strong>
+            <span>{currentSong ? `${currentSong.singer}${currentSong.albumName ? ` · ${currentSong.albumName}` : ''}` : '选择一首歌曲开始播放'}</span>
+            {playerError ? <em>{playerError}</em> : null}
+          </div>
         </div>
-        <audio ref={audioRef} src={currentSong ? currentPlayUrl : undefined} controls onError={() => setPlayerError('播放失败，请检查 LX_MUSIC_URL_SCRIPT 和音源可用性')} />
+        <audio ref={audioRef} src={currentSong ? currentPlayUrl : undefined} controls onError={() => setPlayerError('播放失败：音源 API 未返回可播放地址。')} />
       </footer>
     </main>
+  )
+}
+
+function AccountPanel({
+  account,
+  cookieText,
+  onCookieTextChange,
+  onLogin,
+  onLogout,
+}: {
+  account: ApiState<AccountState>
+  cookieText: string
+  onCookieTextChange: (value: string) => void
+  onLogin: () => void
+  onLogout: () => void
+}) {
+  return (
+    <section className="account-panel">
+      <div className="section-head">
+        <h3>QQ 登录</h3>
+        {account.data?.loggedIn ? <button className="ghost-button" onClick={onLogout}><LogOut size={16} />登出</button> : null}
+      </div>
+      {account.data?.loggedIn ? (
+        <dl className="account-facts">
+          <div><dt>UIN</dt><dd>{account.data.uin}</dd></div>
+          <div><dt>来源</dt><dd>{account.data.source}</dd></div>
+          <div><dt>Key</dt><dd>{account.data.hasQQMusicKey ? 'ready' : 'missing'}</dd></div>
+        </dl>
+      ) : (
+        <div className="login-box">
+          <textarea value={cookieText} onChange={event => onCookieTextChange(event.target.value)} placeholder="粘贴 y.qq.com 已登录请求里的 Cookie" />
+          <button onClick={onLogin} disabled={account.loading || !cookieText.trim()}><LogIn size={16} />保存登录</button>
+        </div>
+      )}
+      <Status state={account} />
+    </section>
+  )
+}
+
+function ToolbarSearch({
+  value,
+  onChange,
+  onSubmit,
+  loading,
+  placeholder,
+}: {
+  value: string
+  onChange: (value: string) => void
+  onSubmit: () => void
+  loading: boolean
+  placeholder: string
+}) {
+  return (
+    <div className="search-row">
+      <Search size={18} />
+      <input value={value} placeholder={placeholder} onChange={event => onChange(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') onSubmit() }} />
+      <button onClick={onSubmit} disabled={loading}>搜索</button>
+    </div>
+  )
+}
+
+function IconButton({ label, children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { label: string }) {
+  return (
+    <button className="icon-button" aria-label={label} title={label} {...props}>
+      {children}
+    </button>
   )
 }
 
@@ -401,7 +532,9 @@ function SongTable({
         const status = favoriteStatuses[key]
         return (
           <article key={`${song.source}-${song.songmid}`} className="song-row">
-            <button className="play-button" onClick={() => onPlay(song)} aria-label={`播放 ${song.name}`}>▶</button>
+            <button className="play-button" onClick={() => onPlay(song)} aria-label={`播放 ${song.name}`} title="播放">
+              <Play size={16} fill="currentColor" />
+            </button>
             <button
               className={status?.favorite ? 'favorite-button active' : 'favorite-button'}
               onClick={() => onFavorite(song)}
@@ -409,7 +542,7 @@ function SongTable({
               aria-label={`${status?.favorite ? '取消收藏' : '收藏'} ${song.name}`}
               title={favoriteTitle(status)}
             >
-              {status?.favorite ? '★' : '☆'}
+              <Heart size={16} fill={status?.favorite ? 'currentColor' : 'none'} />
             </button>
             <div className="song-main">
               <strong>{song.name}</strong>
@@ -429,16 +562,25 @@ function SongTable({
 function playbackErrorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error)
   if (message.includes('no supported source') || message.includes('NotSupportedError')) {
-    return '播放失败：未配置或不可用的音源，请检查 LX_MUSIC_URL_SCRIPT。'
+    return '播放失败：音源 API 未返回可播放地址。'
   }
-  return message || '播放失败，请检查 LX_MUSIC_URL_SCRIPT 和音源可用性。'
+  return message || '播放失败：音源 API 未返回可播放地址。'
 }
 
 function favoriteTitle(status: FavoriteStatus | undefined): string {
-  if (!status) return ''
+  if (!status) return '收藏'
   if (status.error) return status.error
-  if (!status.pending) return ''
+  if (!status.pending) return status.favorite ? '取消收藏' : '收藏'
   return status.favorite ? '等待同步收藏到 QQ' : '等待同步取消收藏到 QQ'
+}
+
+function headingFor(view: View): string {
+  if (view === 'search') return '搜索并播放 QQ 音乐'
+  if (view === 'toplists') return '按榜单快速发现'
+  if (view === 'playlists') return '检索公开歌单'
+  if (view === 'favorites') return '收藏与喜欢同步'
+  if (view === 'recommendations') return '猜你喜欢'
+  return '系统健康与缓存'
 }
 
 function HealthPanel({ health }: { health: HealthStatus }) {

@@ -1,11 +1,13 @@
 import { NextResponse } from 'next/server'
 import { buildQQLoginState, qqMusicErrorResponse, summarizeQQLoginState } from '@/lib/qq'
+import { saveQQLoginCookie } from '@/lib/db/qq-session'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 type ImportRequest = {
   cookie?: string
+  persist?: boolean
 }
 
 export async function POST(request: Request) {
@@ -20,11 +22,18 @@ export async function POST(request: Request) {
   }
 
   try {
+    if (body.persist !== false) {
+      return NextResponse.json({
+        ...saveQQLoginCookie(body.cookie),
+        persisted: true,
+      })
+    }
+
     const state = buildQQLoginState(body.cookie, 'request')
     return NextResponse.json({
       ...summarizeQQLoginState(state),
       persisted: false,
-      actionable: 'This validates the cookie shape for the current request. Set QQ_MUSIC_COOKIE on the server for persistent use.',
+      actionable: 'This validates the cookie shape without saving it.',
     })
   } catch (error) {
     return qqMusicErrorResponse(error)

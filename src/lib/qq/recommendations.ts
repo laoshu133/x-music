@@ -1,7 +1,9 @@
-import type { MusicInfo } from '@/lib/types'
+import type { MusicInfo, PagedResult } from '@/lib/types'
 import { compactSongs, type QQSong } from './mapper'
-import { requireQQLoginState } from './account'
+import { getQQLoginState } from './account'
 import { QQMusicError, qqSignedPost } from './http'
+import { getQQFavoriteSongs } from './favorites'
+import { getQQToplistDetail } from './toplists'
 
 type QQRecommendationsResponse = {
   code: number
@@ -14,6 +16,11 @@ type QQRecommendationsResponse = {
       list?: Array<QQSong | { songInfo?: QQSong; songinfo?: QQSong }>
     }
   }
+}
+
+export type RecommendationResult = PagedResult<MusicInfo> & {
+  strategy: string
+  personalized: boolean
 }
 
 function buildRecommendationsPayload(uin: string, limit: number) {
@@ -60,30 +67,70 @@ function extractSongs(data: QQRecommendationsResponse): QQSong[] {
 export async function getQQRecommendations(input: {
   cookie?: string
   limit?: number
-} = {}): Promise<{ source: 'tx'; list: MusicInfo[]; experimental: true }> {
-  const login = requireQQLoginState(input)
+} = {}): Promise<RecommendationResult> {
+  const login = getQQLoginState(input)
   const limit = input.limit ?? 30
+  if (!login) return fallbackRecommendations(limit, 'toplist-hot')
 
-  const data = await qqSignedPost<QQRecommendationsResponse>(
-    buildRecommendationsPayload(login.uin, limit),
-    {
-      headers: {
-        cookie: login.cookie,
-        referer: 'https://y.qq.com/n/ryqq/',
+  try {
+    const data = await qqSignedPost<QQRecommendationsResponse>(
+      buildRecommendationsPayload(login.uin, limit),
+      {
+        headers: {
+          cookie: login.cookie,
+          referer: 'https://y.qq.com/n/ryqq/',
+        },
       },
-    },
-  )
+    )
 
-  if (data.code !== 0 || data.req?.code !== 0) {
-    throw new QQMusicError('QQ recommendations request failed', 502, {
-      actionable: 'The QQ Music recommendation endpoint is private and experimental. Recheck RecommendFeedServer with a real authenticated request.',
-      response: data,
-    })
+    if (data.code !== 0 || data.req?.code !== 0) {
+      throw new QQMusicError('QQ recommendations request failed', 502, {
+        actionable: 'The QQ Music recommendation endpoint is private and experimental. Recheck MbTrackRadioSvr with a real authenticated request.',
+        response: data,
+      })
+    }
+
+    const list = compactSongs(extractSongs(data)).slice(0, limit)
+    if (list.length) return paged(list, limit, 'qq-radio', true)
+  } catch {
+    // Private endpoints change frequently. Keep the feature usable through stable QQ data below.
   }
 
+  return favoriteSeededFallback({ cookie: login.cookie, limit })
+}
+
+async function favoriteSeededFallback(input: { cookie?: string; limit: number }): Promise<RecommendationResult> {
+  try {
+    const favorites = await getQQFavoriteSongs({ cookie: input.cookie, limit: 12 })
+    const seed = favorites.list.find(song => song.singer)
+    if (seed) {
+      const { searchQQMusic } = await import('./search')
+      const related = await searchQQMusic(seed.singer, 1, input.limit + favorites.list.length)
+      const favoriteKeys = new Set(favorites.list.map(song => song.songmid))
+      const list = related.list.filter(song => !favoriteKeys.has(song.songmid)).slice(0, input.limit)
+      if (list.length) return paged(list, input.limit, 'favorite-artist-search', true)
+    }
+  } catch {
+    // Fall through to public toplist.
+  }
+
+  return fallbackRecommendations(input.limit, 'toplist-hot')
+}
+
+async function fallbackRecommendations(limit: number, strategy: string): Promise<RecommendationResult> {
+  const result = await getQQToplistDetail('62', 1, limit).catch(() => getQQToplistDetail('26', 1, limit))
+  return paged(result.list.slice(0, limit), limit, strategy, false)
+}
+
+function paged(list: MusicInfo[], limit: number, strategy: string, personalized: boolean): RecommendationResult {
   return {
     source: 'tx',
-    list: compactSongs(extractSongs(data)).slice(0, limit),
-    experimental: true,
+    list,
+    page: 1,
+    limit,
+    total: list.length,
+    allPage: 1,
+    strategy,
+    personalized,
   }
 }

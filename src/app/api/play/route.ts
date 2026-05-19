@@ -1,6 +1,6 @@
 import { ensureTrack, getReadyTrackFile, insertPlayEvent, upsertTrackFileStatus } from '@/lib/cache/store'
 import { createUpstreamTeeResponse, streamLocalFile } from '@/lib/cache/stream'
-import { parseRequestedQuality, qualityFallbacks, resolveMusicUrlWithFallback } from '@/lib/music-url/resolve'
+import { MusicUrlResolveError, parseRequestedQuality, qualityFallbacks, resolveMusicUrlWithFallback } from '@/lib/music-url/resolve'
 import type { MusicInfo, OnlineSource } from '@/lib/types'
 
 export const runtime = 'nodejs'
@@ -60,11 +60,21 @@ const handlePlayRequest = async (request: Request, input: PlayRequest): Promise<
 
     return response
   } catch (error) {
+    const message = playbackErrorMessage(error)
     upsertTrackFileStatus(track.id, preferredQuality, 'failed', {
-      error: error instanceof Error ? error.message : String(error),
+      error: message,
     })
-    return jsonError(error instanceof Error ? error.message : 'Unable to play track', 502)
+    return jsonError(message, 502)
   }
+}
+
+const playbackErrorMessage = (error: unknown): string => {
+  if (error instanceof MusicUrlResolveError) {
+    const detail = error.attempts.map((attempt) => `${attempt.quality}: ${attempt.error}`).join('; ')
+    return `Unable to resolve a playable music URL. ${detail}`
+  }
+
+  return error instanceof Error ? error.message : 'Unable to play track'
 }
 
 const parseMusicInfo = (input: PlayRequest): MusicInfo | undefined => {

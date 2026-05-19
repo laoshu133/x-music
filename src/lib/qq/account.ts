@@ -5,7 +5,7 @@ export type QQLoginState = {
   uin: string
   encryptedUin?: string
   qqmusicKey?: string
-  source: 'env' | 'request'
+  source: 'env' | 'request' | 'stored'
 }
 
 type CookieInput = {
@@ -80,11 +80,27 @@ export function getQQLoginState(input?: CookieInput): QQLoginState | undefined {
   const explicitCookie = input?.cookie?.trim()
   if (explicitCookie) return buildQQLoginState(explicitCookie, 'request')
 
+  const stored = loadStoredQQLoginState()
+  if (stored) return stored
+
   if (process.env.QQ_MUSIC_COOKIE?.trim()) {
     return buildQQLoginState(process.env.QQ_MUSIC_COOKIE, 'env')
   }
 
   return undefined
+}
+
+function loadStoredQQLoginState(): QQLoginState | undefined {
+  try {
+    return globalThis.__mixmusicGetStoredQQLoginState?.()
+  } catch {
+    return undefined
+  }
+}
+
+declare global {
+  // eslint-disable-next-line no-var
+  var __mixmusicGetStoredQQLoginState: (() => QQLoginState | undefined) | undefined
 }
 
 export function requireQQLoginState(input?: CookieInput): QQLoginState {

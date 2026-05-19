@@ -13,7 +13,15 @@ interface MusicUrlResponse {
   error?: unknown
 }
 
+interface LxApiConfig {
+  apiUrl: string
+  apiKey: string
+}
+
 const responseUrlKeys = ['url', 'musicUrl', 'location', 'playUrl'] as const
+const lxScriptConfigTtlMs = 10 * 60 * 1000
+
+let lxScriptConfigCache: { source: string; config: LxApiConfig; expiresAt: number } | undefined
 
 export class MusicUrlResolveError extends Error {
   constructor(
@@ -60,7 +68,126 @@ export const resolveMusicUrl = async (
     throw new Error('LX_MUSIC_URL_SCRIPT is not configured')
   }
 
-  const requestUrl = buildMusicUrlRequest(appConfig.lxMusicUrlScript, musicInfo, quality)
+  const url = await resolveThroughLxApi(appConfig.lxMusicUrlScript, musicInfo, quality)
+
+  return {
+    url,
+    quality,
+    source: musicInfo.source,
+    songmid: musicInfo.songmid,
+  }
+}
+
+const resolveLxApiConfig = async (scriptUrl: string): Promise<LxApiConfig> => {
+  if (
+    lxScriptConfigCache?.source === scriptUrl &&
+    lxScriptConfigCache.expiresAt > Date.now()
+  ) {
+    return lxScriptConfigCache.config
+  }
+
+  const response = await fetch(scriptUrl, {
+    method: 'GET',
+    headers: {
+      accept: 'application/javascript, text/plain, */*',
+      'user-agent': 'miXmusic/1.0',
+    },
+    cache: 'no-store',
+  })
+
+  const body = await response.text()
+  if (!response.ok) {
+    throw new Error(`LX music URL script returned ${response.status}: ${body.slice(0, 160)}`)
+  }
+
+  const config = parseLxScriptConfig(body)
+  if (!config) {
+    throw new Error('LX music URL script does not expose API_URL and API_KEY')
+  }
+
+  lxScriptConfigCache = {
+    source: scriptUrl,
+    config,
+    expiresAt: Date.now() + lxScriptConfigTtlMs,
+  }
+  return config
+}
+
+const resolveThroughLxApi = async (
+  scriptUrl: string,
+  musicInfo: MusicInfo,
+  quality: MusicQuality,
+): Promise<string> => {
+  try {
+    const config = await resolveLxApiConfig(scriptUrl)
+    return await requestMusicUrlFromApi(config, musicInfo, quality)
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('does not expose API_URL')) {
+      return requestLegacyScriptEndpoint(scriptUrl, musicInfo, quality)
+    }
+    throw error
+  }
+}
+
+export const getLxMusicApiConfig = resolveLxApiConfig
+
+const parseLxScriptConfig = (script: string): LxApiConfig | undefined => {
+  const apiUrl = matchJsStringConstant(script, 'API_URL')
+  const apiKey = matchJsStringConstant(script, 'API_KEY') ?? new URL(appConfig.lxMusicUrlScript ?? 'http://invalid').searchParams.get('key') ?? undefined
+  if (!apiUrl || apiKey === undefined) return undefined
+  return {
+    apiUrl: apiUrl.replace(/\/+$/, ''),
+    apiKey,
+  }
+}
+
+const matchJsStringConstant = (script: string, name: string): string | undefined => {
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const match = script.match(new RegExp(`(?:const|let|var)\\s+${escapedName}\\s*=\\s*(['"\`])([^'"\`]+)\\1`))
+  return match?.[2]
+}
+
+const requestMusicUrlFromApi = async (
+  config: LxApiConfig,
+  musicInfo: MusicInfo,
+  quality: MusicQuality,
+): Promise<string> => {
+  const requestUrl = `${config.apiUrl}/music/url`
+  const response = await fetch(requestUrl, {
+    method: 'POST',
+    headers: {
+      accept: 'application/json, text/plain, */*',
+      'content-type': 'application/json',
+      'user-agent': 'miXmusic/1.0',
+      ...(config.apiKey ? { 'x-api-key': config.apiKey } : {}),
+    },
+    body: JSON.stringify({
+      source: musicInfo.source,
+      musicId: musicInfo.songmid,
+      quality,
+    }),
+    cache: 'no-store',
+  })
+
+  const body = await response.text()
+  if (!response.ok) {
+    throw new Error(`music-url API returned ${response.status}: ${body.slice(0, 160)}`)
+  }
+
+  const url = extractMusicUrl(body)
+  if (!url) {
+    throw new Error(`music-url API did not return a URL: ${body.slice(0, 160)}`)
+  }
+
+  return url
+}
+
+const requestLegacyScriptEndpoint = async (
+  scriptUrl: string,
+  musicInfo: MusicInfo,
+  quality: MusicQuality,
+): Promise<string> => {
+  const requestUrl = buildMusicUrlRequest(scriptUrl, musicInfo, quality)
   const response = await fetch(requestUrl, {
     method: 'GET',
     headers: {
@@ -80,12 +207,7 @@ export const resolveMusicUrl = async (
     throw new Error(`music-url source did not return a URL: ${body.slice(0, 160)}`)
   }
 
-  return {
-    url,
-    quality,
-    source: musicInfo.source,
-    songmid: musicInfo.songmid,
-  }
+  return url
 }
 
 const buildMusicUrlRequest = (scriptUrl: string, musicInfo: MusicInfo, quality: MusicQuality): string => {

@@ -41,6 +41,13 @@ export interface FavoriteSummary {
   failedCount: number
 }
 
+export interface FavoriteSyncResult {
+  synced: number
+  failed: number
+  total: number
+  errors: Array<{ songmid: string; error: string }>
+}
+
 export const listLocalFavorites = (): FavoriteRecord[] => {
   const rows = db.prepare(`
     SELECT
@@ -112,6 +119,95 @@ export const setLocalFavorite = (musicInfo: MusicInfo, favorite: boolean): Favor
   const record = getFavoriteRecord(musicInfo.source, musicInfo.songmid)
   if (!record) throw new Error('Failed to load favorite state')
   return record
+}
+
+export const setLocalFavoriteSynced = (musicInfo: MusicInfo, favorite: boolean): FavoriteRecord => {
+  const track = ensureTrack(musicInfo)
+  const desiredState: FavoriteDesiredState = favorite ? 'favorite' : 'unfavorite'
+
+  db.prepare(`
+    INSERT INTO favorite_sync (track_id, desired_state, sync_state, error, updated_at)
+    VALUES (@trackId, @desiredState, 'synced', NULL, CURRENT_TIMESTAMP)
+    ON CONFLICT(track_id) DO UPDATE SET
+      desired_state = excluded.desired_state,
+      sync_state = 'synced',
+      error = NULL,
+      updated_at = CURRENT_TIMESTAMP
+  `).run({
+    trackId: track.id,
+    desiredState,
+  })
+
+  const record = getFavoriteRecord(musicInfo.source, musicInfo.songmid)
+  if (!record) throw new Error('Failed to load favorite state')
+  return record
+}
+
+export const markFavoriteSyncState = (
+  source: OnlineSource,
+  songmid: string,
+  syncState: FavoriteSyncState,
+  error?: string,
+): void => {
+  db.prepare(`
+    UPDATE favorite_sync
+    SET sync_state = @syncState,
+      error = @error,
+      updated_at = CURRENT_TIMESTAMP
+    WHERE track_id = (
+      SELECT id FROM tracks WHERE source = @source AND songmid = @songmid
+    )
+  `).run({
+    source,
+    songmid,
+    syncState,
+    error: error ?? null,
+  })
+}
+
+export const listPendingFavoriteSync = (limit = 50): FavoriteRecord[] => {
+  const rows = db.prepare(`
+    SELECT
+      t.source,
+      t.songmid,
+      t.name,
+      t.singer,
+      t.album_name,
+      t.album_id,
+      t.interval,
+      t.image_url,
+      fs.desired_state,
+      fs.sync_state,
+      fs.error,
+      fs.updated_at
+    FROM favorite_sync fs
+    INNER JOIN tracks t ON t.id = fs.track_id
+    WHERE fs.sync_state IN ('pending', 'failed')
+    ORDER BY fs.updated_at ASC, fs.id ASC
+    LIMIT ?
+  `).all(limit) as FavoriteRow[]
+
+  return rows.map(mapFavorite)
+}
+
+export const reconcileLocalFavoritesFromRemote = (remoteSongs: MusicInfo[]): FavoriteRecord[] => {
+  const remoteKeys = new Set(remoteSongs.map(song => `${song.source}:${song.songmid}`))
+  const localFavorites = listLocalFavorites()
+
+  const transaction = db.transaction(() => {
+    for (const song of remoteSongs) {
+      setLocalFavoriteSynced(song, true)
+    }
+
+    for (const local of localFavorites) {
+      if (!remoteKeys.has(`${local.source}:${local.songmid}`) && local.syncState !== 'pending') {
+        setLocalFavoriteSynced(local, false)
+      }
+    }
+  })
+  transaction()
+
+  return listLocalFavorites()
 }
 
 export const getFavoriteSummary = (): FavoriteSummary => {
