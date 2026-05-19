@@ -101,7 +101,7 @@ export const createUpstreamTeeResponse = async (
     track,
     quality,
   })
-  const headers = buildProxyHeaders(upstream.headers, shouldCache)
+  const headers = buildProxyHeaders(upstream.headers, shouldCache, upstreamUrl)
   return {
     response: new Response(body, {
       status: upstream.status,
@@ -214,7 +214,7 @@ const teeUpstreamToClientAndCache = ({
   return { body, completion }
 }
 
-const buildProxyHeaders = (upstreamHeaders: Headers, cachingFullFile: boolean): Headers => {
+const buildProxyHeaders = (upstreamHeaders: Headers, cachingFullFile: boolean, upstreamUrl: string): Headers => {
   const headers = new Headers()
   const passthrough = ['content-type', 'content-length', 'content-range', 'etag', 'last-modified']
 
@@ -223,9 +223,22 @@ const buildProxyHeaders = (upstreamHeaders: Headers, cachingFullFile: boolean): 
     if (value) headers.set(key, value)
   }
 
+  const contentType = headers.get('content-type')
+  if (!contentType || contentType === 'application/octet-stream') {
+    headers.set('content-type', fileContentTypeFromUrl(upstreamUrl))
+  }
+
   headers.set('accept-ranges', cachingFullFile ? 'none' : (upstreamHeaders.get('accept-ranges') ?? 'bytes'))
   headers.set('cache-control', 'no-store')
   return headers
+}
+
+const fileContentTypeFromUrl = (value: string): string => {
+  try {
+    return contentTypeFromPath(new URL(value).pathname)
+  } catch {
+    return contentTypeFromPath(value)
+  }
 }
 
 const parseRange = (range: string, size: number): { start: number; end: number } | undefined => {

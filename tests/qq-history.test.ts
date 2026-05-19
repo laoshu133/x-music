@@ -9,8 +9,8 @@ test.afterEach(() => {
   delete process.env.QQ_MUSIC_COOKIE
 })
 
-test('syncQQPlayHistory reports playback through QQ webreport when raw songId exists', async () => {
-  const requests: Array<{ url: URL; method: string; headers: Headers }> = []
+test('syncQQPlayHistory reports simulated player playback through QQ sdk webcomm', async () => {
+  const requests: Array<{ url: URL; method: string; headers: Headers; body: any }> = []
 
   globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
     const request = new Request(url, init)
@@ -18,11 +18,58 @@ test('syncQQPlayHistory reports playback through QQ webreport when raw songId ex
       url: new URL(request.url),
       method: request.method,
       headers: request.headers,
+      body: init?.body ? JSON.parse(String(init.body)) : undefined,
     })
-    return new Response('input id[123456]', {
-      status: 200,
-      headers: { 'content-type': 'text/html;charset=gb2312' },
-    })
+    return new Response('', { status: 200 })
+  }) as typeof fetch
+
+  const playUrl = 'https://ws6.stream.qqmusic.qq.com/O400000v8zz72pl692.ogg?guid=4438435184&vkey=test&uin=123456'
+  const result = await syncQQPlayHistory({
+    cookie: 'uin=o123456; login_type=1; qm_keyst=test-key; euin=encrypted-uin',
+    quality: 'flac',
+    playUrl,
+    musicInfo: {
+      source: 'tx',
+      songmid: '003aAYrm3GE0Ac',
+      name: '稻香',
+      singer: '周杰伦',
+      interval: '3:43',
+      raw: { songId: 449205, songType: 0 },
+    },
+  })
+
+  assert.equal(result.synced, true)
+  assert.equal(requests.length, 1)
+  assert.equal(requests[0].method, 'POST')
+  assert.equal(requests[0].url.href, 'https://stat6.y.qq.com/sdk/fcgi-bin/sdk.fcg')
+  assert.equal(requests[0].headers.get('content-type'), 'text/plain;charset=UTF-8')
+  assert.equal(requests[0].headers.get('cookie'), 'uin=o123456; login_type=1; qm_keyst=test-key; euin=encrypted-uin')
+
+  assert.equal(requests[0].body.common._appid, 'qqmusic')
+  assert.equal(requests[0].body.common._uid, 123456)
+  assert.equal(requests[0].body.common._platform, 11)
+  assert.equal(requests[0].body.common._account_source, '1')
+  assert.equal(requests[0].body.common._os, 'mac')
+  assert.equal(requests[0].body.common._app, 'mac')
+
+  const item = requests[0].body.items[0]
+  assert.equal(item._key, 'webcomm')
+  assert.equal(item.cmd, '25')
+  assert.equal(item.int1, 3)
+  assert.equal(item.str1, '123456')
+  assert.equal(item.int2, 449205)
+  assert.equal(item.str2, 'PC')
+  assert.equal(item.int3, 0)
+  assert.equal(item.str3, 'other')
+  assert.equal(item.str9, playUrl)
+  assert.equal(item.str10, 'https://y.qq.com/n/ryqq_v2/player')
+})
+
+test('syncQQPlayHistory skips sdk playback report when upstream play URL is unavailable', async () => {
+  let fetchCount = 0
+  globalThis.fetch = (async () => {
+    fetchCount += 1
+    return new Response('', { status: 200 })
   }) as typeof fetch
 
   const result = await syncQQPlayHistory({
@@ -38,53 +85,19 @@ test('syncQQPlayHistory reports playback through QQ webreport when raw songId ex
     },
   })
 
-  assert.equal(result.synced, true)
-  assert.equal(requests.length, 1)
-  assert.equal(requests[0].method, 'GET')
-  assert.equal(requests[0].url.origin, 'https://stat6.y.qq.com')
-  assert.equal(requests[0].url.pathname, '/pc/fcgi-bin/cgi_music_webreport.fcg')
-  assert.equal(requests[0].url.searchParams.get('Fqq'), '123456')
-  assert.equal(requests[0].url.searchParams.get('Fsong_id'), '449205')
-  assert.equal(requests[0].url.searchParams.get('Ffromtag1'), '10050')
-  assert.equal(requests[0].url.searchParams.get('Ffromtag2'), '449205')
-  assert.equal(requests[0].url.searchParams.get('Fplay_time'), '223')
-  assert.equal(requests[0].url.searchParams.get('Ftype'), '3')
-  assert.equal(requests[0].url.searchParams.get('Fversion'), '1')
-  assert.equal(requests[0].headers.get('cookie'), 'uin=o123456; qm_keyst=test-key; euin=encrypted-uin')
+  assert.equal(result.synced, false)
+  assert.equal(result.skipped, true)
+  assert.equal(result.reason, 'QQ play history sync requires an upstream play URL')
+  assert.equal(fetchCount, 0)
 })
 
-test('syncQQPlayHistory resolves songId from QQ detail when play URL only has songmid', async () => {
-  const requests: Array<{ url: URL; method: string; body?: any }> = []
-
-  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
-    const request = new Request(url, init)
-    const body = init?.body ? JSON.parse(String(init.body)) : undefined
-    requests.push({
-      url: new URL(request.url),
-      method: request.method,
-      body,
-    })
-
-    if (request.method === 'POST') {
-      return Response.json({
-        get_song_detail: {
-          code: 0,
-          data: {
-            track_info: {
-              id: 449205,
-              type: 0,
-            },
-          },
-        },
-      })
-    }
-
-    return new Response('input id[123456]', { status: 200 })
-  }) as typeof fetch
+test('syncQQPlayHistory reports failure when sdk playback report is rejected', async () => {
+  globalThis.fetch = (async () => Response.json({ code: 1 }, { status: 502 })) as typeof fetch
 
   const result = await syncQQPlayHistory({
     cookie: 'uin=o123456; qm_keyst=test-key; euin=encrypted-uin',
     quality: 'flac',
+    playUrl: 'https://ws6.stream.qqmusic.qq.com/test.ogg',
     musicInfo: {
       source: 'tx',
       songmid: '003aAYrm3GE0Ac',
@@ -100,11 +113,6 @@ test('syncQQPlayHistory resolves songId from QQ detail when play URL only has so
     },
   })
 
-  assert.equal(result.synced, true)
-  assert.equal(requests.length, 2)
-  assert.equal(requests[0].method, 'POST')
-  assert.equal(requests[0].url.href, 'https://u.y.qq.com/cgi-bin/musicu.fcg')
-  assert.equal(requests[0].body.get_song_detail.param.song_mid, '003aAYrm3GE0Ac')
-  assert.equal(requests[1].method, 'GET')
-  assert.equal(requests[1].url.searchParams.get('Fsong_id'), '449205')
+  assert.equal(result.synced, false)
+  assert.equal('error' in result ? result.error : '', 'QQ play history sdk report request failed')
 })

@@ -9,7 +9,6 @@ import {
   ListMusic,
   LogIn,
   LogOut,
-  Music2,
   Play,
   RefreshCw,
   Search,
@@ -352,10 +351,12 @@ export default function MusicClient() {
     <main className="app-shell">
       <aside className="sidebar">
         <div className="brand-lockup">
-          <div className="brand-mark"><Music2 size={20} /></div>
+          <div className="brand-mark">
+            <img src="/public/logo.svg" alt="" />
+          </div>
           <div>
             <h1>miXmusic</h1>
-            <span>QQ Music private console</span>
+            <span>QQ Music 控制台</span>
           </div>
         </div>
         <nav className="tabs" aria-label="主视图">
@@ -690,13 +691,38 @@ function HistoryList({
 }) {
   if (!songs.length) return <p className="empty">暂无播放历史</p>
   return (
-    <div className="song-list">
-      {songs.map(song => (
-        <div key={song.playEventId} className="history-item">
-          <SongTable songs={[song]} onPlay={onPlay} onFavorite={onFavorite} favoriteStatuses={favoriteStatuses} favoriteBusy={favoriteBusy} compact />
-          <time>{formatPlayedAt(song.playedAt)} · {song.quality}</time>
-        </div>
-      ))}
+    <div className="history-list">
+      {songs.map(song => {
+        const key = favoriteKey(song)
+        const status = favoriteStatuses[key]
+        return (
+          <article key={song.playEventId} className="history-item">
+            <div className="history-actions">
+              <button className="play-button" onClick={() => onPlay(song)} aria-label={`播放 ${song.name}`} title="播放">
+                <Play size={16} fill="currentColor" />
+              </button>
+              <button
+                className={status?.favorite ? 'favorite-button active' : 'favorite-button'}
+                onClick={() => onFavorite(song)}
+                disabled={favoriteBusy[key]}
+                aria-label={`${status?.favorite ? '取消收藏' : '收藏'} ${song.name}`}
+                title={favoriteTitle(status)}
+              >
+                <Heart size={16} fill={status?.favorite ? 'currentColor' : 'none'} />
+              </button>
+            </div>
+            <div className="history-main">
+              <strong>{song.name}</strong>
+              <span>{song.singer}{status?.favorite && status.pending ? ' · 待同步' : ''}</span>
+            </div>
+            <div className="history-meta">
+              <span>{song.albumName ?? '-'}</span>
+              <small>{song.interval ?? ''}</small>
+            </div>
+            <time>{formatPlayedAt(song.playedAt)} · {song.quality}</time>
+          </article>
+        )
+      })}
     </div>
   )
 }
@@ -722,12 +748,19 @@ function playbackErrorMessage(error: unknown): string {
 
 async function readPlaybackApiError(url: string): Promise<string> {
   try {
-    const response = await fetch(url, { headers: { accept: 'application/json' } })
+    const response = await fetch(url, { headers: { accept: 'application/json', range: 'bytes=1-1' } })
+    const contentType = response.headers.get('content-type') ?? ''
+    if (!contentType.includes('application/json')) {
+      return '播放失败：浏览器无法播放当前音频格式。'
+    }
+
     const body = await response.json().catch(() => undefined) as unknown
     if (body && typeof body === 'object' && 'error' in body) {
       return String((body as { error: unknown }).error)
     }
-    return `播放失败：音源 API 返回 ${response.status}`
+    return response.ok
+      ? '播放失败：浏览器无法播放当前音频格式。'
+      : `播放失败：音源 API 返回 ${response.status}`
   } catch (error) {
     return playbackErrorMessage(error)
   }

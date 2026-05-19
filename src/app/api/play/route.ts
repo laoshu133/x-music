@@ -1,8 +1,8 @@
 import { ensureTrack, getPlayableTrackFile, insertPlayEvent, upsertTrackFileStatus } from '@/lib/cache/store'
 import { createUpstreamTeeResponse, streamLocalFile } from '@/lib/cache/stream'
 import { MusicUrlConfigError, MusicUrlResolveError, parseRequestedQuality, qualityFallbacks, resolveMusicUrlWithFallback } from '@/lib/music-url/resolve'
-import { syncQQPlayHistoryBestEffort } from '@/lib/qq'
-import type { MusicInfo, OnlineSource } from '@/lib/types'
+import { getQQLoginState, syncQQPlayHistoryBestEffort } from '@/lib/qq'
+import type { MusicInfo, MusicQuality, OnlineSource } from '@/lib/types'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -35,19 +35,22 @@ const handlePlayRequest = async (request: Request, input: PlayRequest): Promise<
 
   const requestedQuality = parseRequestedQuality(input.quality)
   const preferredQuality = requestedQuality ?? 'flac'
+  const shouldRecordPlayback = isPlaybackStartRequest(request)
 
   const playableFile = qualityFallbacks(preferredQuality)
     .map((quality) => getPlayableTrackFile(musicInfo.source, musicInfo.songmid, quality))
     .find((file) => file !== undefined)
   const localPath = playableFile?.finalPath ?? playableFile?.rawPath
   if (playableFile && localPath) {
-    const track = ensureTrack(musicInfo)
-    insertPlayEvent(track.id, playableFile.quality)
-    syncQQPlayHistoryBestEffort({
-      cookie: request.headers.get('x-qq-music-cookie') ?? undefined,
-      musicInfo,
-      quality: playableFile.quality,
-    })
+    if (shouldRecordPlayback) {
+      const track = ensureTrack(musicInfo)
+      insertPlayEvent(track.id, playableFile.quality)
+      syncQQPlayHistoryFromResolvedUrlBestEffort({
+        cookie: request.headers.get('x-qq-music-cookie') ?? undefined,
+        musicInfo,
+        quality: playableFile.quality,
+      })
+    }
     return streamLocalFile(localPath, request)
   }
 
@@ -56,12 +59,15 @@ const handlePlayRequest = async (request: Request, input: PlayRequest): Promise<
 
   try {
     const resolved = await resolveMusicUrlWithFallback(musicInfo, preferredQuality)
-    insertPlayEvent(track.id, resolved.quality)
-    syncQQPlayHistoryBestEffort({
-      cookie: request.headers.get('x-qq-music-cookie') ?? undefined,
-      musicInfo,
-      quality: resolved.quality,
-    })
+    if (shouldRecordPlayback) {
+      insertPlayEvent(track.id, resolved.quality)
+      syncQQPlayHistoryBestEffort({
+        cookie: request.headers.get('x-qq-music-cookie') ?? undefined,
+        musicInfo,
+        quality: resolved.quality,
+        playUrl: resolved.url,
+      })
+    }
     const { response, completion } = await createUpstreamTeeResponse(resolved.url, track, resolved.quality, request)
 
     completion.catch((error: unknown) => {
@@ -78,6 +84,41 @@ const handlePlayRequest = async (request: Request, input: PlayRequest): Promise<
     })
     return jsonError(message, 502)
   }
+}
+
+const isPlaybackStartRequest = (request: Request): boolean => {
+  const range = request.headers.get('range')
+  if (!range) return true
+
+  const match = /^bytes=(\d*)-/.exec(range.trim())
+  return match?.[1] === '0'
+}
+
+function syncQQPlayHistoryFromResolvedUrlBestEffort(input: {
+  cookie?: string
+  musicInfo: MusicInfo
+  quality: MusicQuality
+}): void {
+  try {
+    if (!getQQLoginState({ cookie: input.cookie })) return
+  } catch (error) {
+    console.warn(
+      `QQ play history sync skipped for ${input.musicInfo.songmid}: ${error instanceof Error ? error.message : String(error)}`,
+    )
+    return
+  }
+
+  void resolveMusicUrlWithFallback(input.musicInfo, input.quality).then((resolved) => {
+    syncQQPlayHistoryBestEffort({
+      ...input,
+      quality: resolved.quality,
+      playUrl: resolved.url,
+    })
+  }).catch((error: unknown) => {
+    console.warn(
+      `QQ play history URL resolve failed for ${input.musicInfo.songmid}: ${error instanceof Error ? error.message : String(error)}`,
+    )
+  })
 }
 
 const playbackErrorMessage = (error: unknown): string => {

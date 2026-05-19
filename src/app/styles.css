@@ -68,45 +68,60 @@ p {
 .app-shell {
   min-height: 100vh;
   display: grid;
-  grid-template-columns: 280px minmax(0, 1fr);
+  grid-template-columns: 264px minmax(0, 1fr);
   gap: 24px;
   padding: 24px 24px 92px;
 }
 
 .sidebar {
-  position: sticky;
+  position: fixed;
   top: 24px;
+  left: 24px;
+  z-index: 4;
+  width: 264px;
   align-self: start;
   display: grid;
-  gap: 18px;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 16px;
   min-height: calc(100vh - 48px);
+  max-height: calc(100vh - 48px);
   border: 1px solid var(--line);
   border-radius: 8px;
   background: rgba(255, 253, 248, 0.92);
-  padding: 18px;
+  padding: 14px;
   box-shadow: var(--shadow);
   backdrop-filter: blur(14px);
 }
 
 .brand-lockup {
   display: grid;
-  grid-template-columns: 42px minmax(0, 1fr);
-  gap: 12px;
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: 11px;
   align-items: center;
+  min-width: 0;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 14px;
 }
 
 .brand-mark {
-  width: 42px;
-  height: 42px;
+  width: 44px;
+  height: 44px;
   display: grid;
   place-items: center;
   border-radius: 8px;
-  background: var(--ink);
-  color: var(--surface);
+  background: #050505;
+  overflow: hidden;
+}
+
+.brand-mark img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
 }
 
 .brand-lockup h1 {
-  font-size: 23px;
+  font-size: 22px;
   line-height: 1.1;
   letter-spacing: 0;
 }
@@ -125,7 +140,11 @@ p {
 
 .tabs {
   display: grid;
-  gap: 6px;
+  align-content: start;
+  gap: 5px;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 2px;
 }
 
 .tabs button,
@@ -144,25 +163,44 @@ p {
 
 .tabs button {
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr);
-  gap: 9px;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 10px;
   align-items: center;
-  padding: 0 12px;
+  min-width: 0;
+  padding: 0 11px;
   text-align: left;
+  transition: background 150ms ease, border-color 150ms ease, color 150ms ease;
+}
+
+.tabs button:hover {
+  border-color: var(--line-strong);
+  background: var(--surface-2);
+}
+
+.tabs button svg {
+  justify-self: center;
+}
+
+.tabs button span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tabs button.active {
   border-color: var(--accent);
   background: var(--accent-soft);
   color: var(--accent-strong);
+  font-weight: 600;
 }
 
 .account-panel {
   display: grid;
-  gap: 12px;
-  margin-top: auto;
+  gap: 10px;
+  min-width: 0;
   border-top: 1px solid var(--line);
-  padding-top: 16px;
+  padding-top: 14px;
 }
 
 .section-head,
@@ -192,12 +230,13 @@ p {
 
 .login-box {
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .login-box textarea {
   width: 100%;
-  min-height: 94px;
+  min-height: 78px;
+  max-height: 132px;
   resize: vertical;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -221,8 +260,8 @@ p {
 }
 
 .qr-login img {
-  width: 132px;
-  height: 132px;
+  width: 116px;
+  height: 116px;
   justify-self: center;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -232,20 +271,20 @@ p {
 
 .account-facts {
   display: grid;
-  gap: 8px;
+  gap: 6px;
 }
 
 .account-summary {
   display: grid;
-  grid-template-columns: 48px minmax(0, 1fr);
-  gap: 12px;
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: 10px;
   align-items: center;
 }
 
 .account-summary img,
 .avatar-placeholder {
-  width: 48px;
-  height: 48px;
+  width: 44px;
+  height: 44px;
   border: 1px solid var(--line);
   border-radius: 8px;
 }
@@ -266,7 +305,8 @@ p {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
+  min-width: 0;
 }
 
 .account-facts dt {
@@ -275,12 +315,14 @@ p {
 
 .account-facts dd {
   color: var(--ink);
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .content {
+  grid-column: 2;
   min-width: 0;
   display: grid;
   align-content: start;
@@ -392,22 +434,63 @@ p {
   gap: 7px;
 }
 
-.history-item {
+.history-list {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 12px;
-  align-items: center;
-  border-bottom: 1px solid var(--line);
+  gap: 8px;
 }
 
-.history-item .song-list,
-.history-item .song-row {
-  border-bottom: 0;
+.history-item {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr) minmax(150px, 0.34fr) 150px;
+  gap: 12px;
+  align-items: center;
+  min-height: 64px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 253, 248, 0.78);
+  padding: 10px 12px;
+}
+
+.history-item:hover {
+  border-color: var(--line-strong);
+  background: var(--surface);
+}
+
+.history-actions {
+  display: grid;
+  grid-template-columns: 36px 36px;
+  gap: 8px;
+}
+
+.history-main,
+.history-meta {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.history-main strong,
+.history-main span,
+.history-meta span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-main strong {
+  font-size: 15px;
+}
+
+.history-main span,
+.history-meta,
+.history-item time {
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .history-item time {
-  color: var(--muted);
-  font-size: 12px;
+  justify-self: end;
+  text-align: right;
   white-space: nowrap;
 }
 
@@ -415,16 +498,6 @@ p {
   max-height: calc(100vh - 172px);
   overflow: auto;
   padding-right: 2px;
-}
-
-.history-item .song-list.compact {
-  max-height: none;
-  overflow: visible;
-  padding-right: 0;
-}
-
-.history-item time {
-  justify-self: end;
 }
 
 .song-row {
@@ -611,6 +684,16 @@ p {
     padding: 16px 16px 128px;
   }
 
+  .sidebar {
+    grid-template-rows: auto auto auto;
+    gap: 12px;
+    width: auto;
+  }
+
+  .content {
+    grid-column: 1;
+  }
+
   .sidebar,
   .side-list {
     position: static;
@@ -620,6 +703,8 @@ p {
 
   .tabs {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+    overflow: visible;
+    padding-right: 0;
   }
 
   .tabs button {
@@ -628,9 +713,18 @@ p {
 
   .workspace.split,
   .playlist-workspace,
-  .history-item,
   .player-bar {
     grid-template-columns: 1fr;
+  }
+
+  .history-item {
+    grid-template-columns: 84px minmax(0, 1fr) minmax(128px, 0.42fr);
+  }
+
+  .history-item time {
+    grid-column: 2 / -1;
+    justify-self: start;
+    text-align: left;
   }
 
   .player-bar {
@@ -667,6 +761,20 @@ p {
 
   .song-row {
     grid-template-columns: 38px 38px minmax(0, 1fr);
+  }
+
+  .history-item {
+    grid-template-columns: 76px minmax(0, 1fr);
+  }
+
+  .history-actions {
+    grid-template-columns: 34px 34px;
+    gap: 6px;
+  }
+
+  .history-meta,
+  .history-item time {
+    grid-column: 2;
   }
 
   .song-meta {

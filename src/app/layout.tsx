@@ -5,8 +5,8 @@ export const metadata: Metadata = {
   title: 'miXmusic',
   description: 'Private music player with QQ Music metadata and local cache.',
   icons: {
-    icon: '/public/logo.svg',
-    shortcut: '/public/logo.svg',
+    icon: '/favicon.ico',
+    shortcut: '/favicon.ico',
     apple: '/public/logo.png',
   },
 }
