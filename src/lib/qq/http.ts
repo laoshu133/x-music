@@ -19,6 +19,23 @@ export class QQMusicError extends Error {
   }
 }
 
+export function qqMusicErrorResponse(error: unknown): Response {
+  if (error instanceof QQMusicError) {
+    return Response.json(
+      {
+        error: error.message,
+        payload: error.payload,
+      },
+      { status: error.status ?? 502 },
+    )
+  }
+
+  return Response.json(
+    { error: error instanceof Error ? error.message : 'QQ Music request failed' },
+    { status: 502 },
+  )
+}
+
 async function parseQQResponse<T>(response: Response): Promise<T> {
   const text = await response.text()
   const normalized = text.trim().replace(/^callback\((.*)\);?$/, '$1')
@@ -65,11 +82,13 @@ export async function qqPost<T>(url: string, body: unknown, init?: RequestInit):
   return parseQQResponse<T>(response)
 }
 
-export async function qqSignedPost<T>(body: unknown): Promise<T> {
+export async function qqSignedPost<T>(body: unknown, init?: RequestInit): Promise<T> {
   const sign = zzcSign(JSON.stringify(body))
   return qqPost<T>(`https://u.y.qq.com/cgi-bin/musics.fcg?sign=${sign}`, body, {
+    ...init,
     headers: {
       'user-agent': 'QQMusic 14090508(android 12)',
+      ...init?.headers,
     },
   })
 }

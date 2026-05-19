@@ -58,6 +58,13 @@ data/
 8. If no supported API is found, shared-directory fallback waits for `music-tag-web` to scan `data/inbox` and write the final file into `data/music`.
 9. Store `source + songmid + quality -> finalPath` mappings in SQLite.
 
+## Local Favorites and Status
+
+- `GET /api/favorites` returns local favorite songs from SQLite.
+- `POST /api/favorites` accepts a normalized song plus `favorite: true | false`, updates local state, and marks the row `pending` for later QQ sync.
+- `GET /api/favorites/status?source=tx&songmid=...` returns local favorite and pending state for one song.
+- `GET /api/health` reports database counts, cache directory access, job counts, local favorite pending counts, and missing required configuration.
+
 ## Worker Jobs
 
 The `jobs` table is created lazily and supports `queued`, `running`, `completed`, and `failed` states. The worker currently handles `tag_track_file` payloads:

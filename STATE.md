@@ -35,7 +35,7 @@ This is a personal/private application. Do not design for public multi-user dist
 - `music-tag-web` integration strategy:
   - probe for usable HTTP API first;
   - if no stable API is confirmed, fall back to shared-directory scanning and polling.
-- Temporarily ignore Chrome plugin/login-state validation issues and continue implementation.
+- Chrome QA can be used for local UI checks; QQ Music visible login state was not confirmed on `https://y.qq.com/`.
 - Every completed feature should be committed promptly.
 - Sub-agent concurrency must stay at 3 or fewer.
 
@@ -47,8 +47,8 @@ Branch:
 
 Git:
 
-- Repository has no commits yet.
-- There are uncommitted scaffold files and dependencies already present.
+- Repository has baseline commits on `codex/mixmusic-initial`.
+- Current working tree has uncommitted feature work for local favorites, account API scaffolding, recommendations, and QA health status.
 
 Observed files:
 
@@ -101,6 +101,21 @@ The current working tree appears to already contain an initial usable skeleton:
   - streams upstream audio;
   - tees stream to local cache.
 - SQLite persistence layer for tracks, track files, play events, and jobs.
+- QQ account API scaffolding:
+  - `GET /api/account` reports configured server-side QQ login state;
+  - `POST /api/account/import` validates cookie text shape without persisting secrets;
+  - `QQ_MUSIC_COOKIE` is the intended server-side env source.
+- Local favorites layer:
+  - `GET /api/favorites`;
+  - `POST /api/favorites`;
+  - `GET /api/favorites/status`;
+  - SQLite `favorite_sync` rows stay local-first and `pending` until QQ remote sync is implemented.
+- QQ remote favorites and recommendations:
+  - `GET/POST/DELETE /api/favorites?remote=qq` are conservative private-endpoint wrappers;
+  - `GET /api/recommendations` calls an experimental QQ radio/recommendation endpoint;
+  - both still require real authenticated-cookie validation.
+- QA health/status endpoint at `/api/health` reports database counts, cache directory access, job counts, local favorite sync counts, and missing config.
+- Web client exposes song search, toplists, playlist search/detail, playback controls, local favorite/unfavorite, local favorites list, "猜你喜欢" entry point, and QA status view.
 - Worker entrypoint for queued tagging jobs.
 - `music-tag-web` sidecar Docker Compose service.
 - Shared data directory layout:
@@ -109,20 +124,17 @@ The current working tree appears to already contain an initial usable skeleton:
   - `data/music`
   - `data/music-tag-web`
 
-These areas still need verification before being treated as complete.
+Chrome QA on `http://localhost:3004` verified search, local favorite/unfavorite, local favorites list, status view, and unauthenticated recommendations fallback. Playback success, cache reuse, remote QQ account features, and Docker tagging remain unverified.
 
 ## Known Blockers / Risks
 
-- Chrome plugin could not be used in this thread to validate existing QQ Music login state.
-  - Prior separate Codex thread successfully used the Chrome plugin and saw `https://y.qq.com/`.
-  - Current thread had `agent.browsers.list() -> []`.
-  - User approved ignoring this for now.
-- QQ account features are not yet implemented:
-  - login state import/capture;
-  - favorite songs read;
-  - favorite/unfavorite sync back to QQ Music;
-  - recommendations / "猜你喜欢".
+- Chrome QA connected successfully, but `https://y.qq.com/` did not show clear visible logged-in account evidence.
+- QQ remote account APIs are implemented as conservative wrappers but not validated against a real logged-in `QQ_MUSIC_COOKIE`.
+  - Favorite read likely needs `euin`/`enc_host_uin`.
+  - Favorite write and recommendations use private endpoints that may change.
+  - Pending local favorite/unfavorite queue is not yet reconciled or replayed to QQ.
 - Real `LX_MUSIC_URL_SCRIPT` end-to-end playback has not been verified.
+- Current local health status reports missing `LX_MUSIC_URL_SCRIPT`; playback success and cache reuse are blocked until real `.env` is provided.
 - Single upstream tee behavior must be tested carefully:
   - browser disconnect;
   - partial Range request;
@@ -134,11 +146,11 @@ These areas still need verification before being treated as complete.
 
 ## Immediate TODO
 
-1. Stabilize and commit the current project skeleton.
+1. Stabilize and commit the current feature set.
    - Run `npm run typecheck`.
    - Run `npm run build`.
    - Fix any compile/runtime issues.
-   - Commit the baseline scaffold.
+   - Commit the local favorites/account/recommendations/health feature set.
 
 2. Verify QQ metadata APIs.
    - Song search returns normalized `MusicInfo`.
@@ -163,13 +175,13 @@ These areas still need verification before being treated as complete.
    - Confirm whether `music-tag-web` has usable HTTP API.
    - If not, validate shared-directory polling.
 
-6. Implement QQ account features after core playback works.
-   - Login state import/capture.
-   - Read favorite songs.
-   - Local favorite/unfavorite pending queue.
-   - Sync pending operations back to QQ.
-   - Periodic reconciliation where QQ remote state wins.
-   - Explore "猜你喜欢" endpoint and treat it as experimental.
+6. Verify and harden QQ account features.
+   - Provide real `QQ_MUSIC_COOKIE` with required encrypted UIN data.
+   - Verify remote favorite read.
+   - Verify favorite/unfavorite write.
+   - Verify "猜你喜欢" response mapping.
+   - Implement pending local favorite sync worker/API.
+   - Add periodic reconciliation where QQ remote state wins.
 
 ## Suggested Sub-Agent Split
 
@@ -234,4 +246,3 @@ Main thread should act as integrator:
 - Commit after each independently working feature.
 - Avoid overlapping writes between agents.
 - Keep `STATE.md` updated when architecture or implementation status changes.
-

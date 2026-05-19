@@ -178,7 +178,7 @@ p {
 
 .song-row {
   display: grid;
-  grid-template-columns: 40px minmax(0, 1fr) minmax(160px, 0.45fr);
+  grid-template-columns: 40px 40px minmax(0, 1fr) minmax(160px, 0.45fr);
   gap: 12px;
   align-items: center;
   min-height: 58px;
@@ -195,6 +195,23 @@ p {
   border-radius: 18px;
   background: var(--accent);
   color: #fff;
+}
+
+.favorite-button {
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--panel-soft);
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+}
+
+.favorite-button.active {
+  border-color: #d98b00;
+  background: #fff8e6;
+  color: #b76e00;
 }
 
 .song-main,
@@ -228,6 +245,30 @@ p {
 .playlist-list small {
   color: var(--muted);
   font-size: 13px;
+}
+
+.health-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.health-grid section {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  padding: 12px;
+}
+
+.health-grid h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
+.health-grid p {
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .board-list,
@@ -290,10 +331,14 @@ p {
   }
 
   .song-row {
-    grid-template-columns: 40px minmax(0, 1fr);
+    grid-template-columns: 40px 40px minmax(0, 1fr);
   }
 
   .song-meta {
-    grid-column: 2;
+    grid-column: 3;
+  }
+
+  .health-grid {
+    grid-template-columns: 1fr;
   }
 }
