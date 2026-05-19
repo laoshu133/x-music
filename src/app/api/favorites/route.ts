@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { listLocalFavorites, setLocalFavorite, setLocalFavoriteSynced } from '@/lib/db/favorites'
-import { getQQFavoriteSongs, pullRemoteFavorites, qqMusicErrorResponse, setQQFavoriteSong, syncPendingFavorites } from '@/lib/qq'
+import { getQQFavoriteSongs, pullRemoteFavorites, QQMusicError, qqMusicErrorResponse, setQQFavoriteSong, syncPendingFavorites } from '@/lib/qq'
 import type { MusicInfo } from '@/lib/types'
 
 export const runtime = 'nodejs'
@@ -17,6 +17,8 @@ type FavoriteRequest = {
   interval?: string
   img?: string
   raw?: unknown
+  songId?: number | string
+  songType?: number | string
   favorite?: boolean
   favorited?: boolean
   action?: 'add' | 'remove' | 'favorite' | 'unfavorite'
@@ -78,10 +80,11 @@ export async function POST(request: Request) {
   if (!body?.songmid) return NextResponse.json({ error: 'Missing songmid' }, { status: 400 })
 
   const url = new URL(request.url)
+  const cookie = body.cookie ?? request.headers.get('x-qq-music-cookie') ?? undefined
   if (url.searchParams.get('sync') === 'push') {
     try {
       return NextResponse.json(await syncPendingFavorites({
-        cookie: body.cookie,
+        cookie,
         limit: getPositiveInt(url.searchParams.get('limit'), 50, 200),
       }))
     } catch (error) {
@@ -101,12 +104,21 @@ export async function POST(request: Request) {
     let record = setLocalFavorite(musicInfo, body.favorite)
     let remoteSynced = false
     let remoteError: string | undefined
+    let remotePayload: unknown
     try {
-      await setQQFavoriteSong({ cookie: body.cookie, songmid: musicInfo.songmid, favorited: body.favorite })
+      await setQQFavoriteSong({
+        cookie,
+        songmid: musicInfo.songmid,
+        favorited: body.favorite,
+        songId: readFavoriteSongNumber(body, 'songId'),
+        songType: readFavoriteSongNumber(body, 'songType'),
+        raw: musicInfo.raw,
+      })
       record = setLocalFavoriteSynced(musicInfo, body.favorite)
       remoteSynced = true
     } catch (error) {
       remoteError = error instanceof Error ? error.message : String(error)
+      remotePayload = error instanceof QQMusicError ? error.payload : undefined
     }
 
     return NextResponse.json({
@@ -116,6 +128,7 @@ export async function POST(request: Request) {
       record,
       remoteSynced,
       remoteError,
+      remotePayload,
     })
   }
 
@@ -125,7 +138,14 @@ export async function POST(request: Request) {
   }
 
   try {
-    return NextResponse.json(await setQQFavoriteSong({ cookie: body.cookie, songmid: body.songmid, favorited }))
+    return NextResponse.json(await setQQFavoriteSong({
+      cookie,
+      songmid: body.songmid,
+      favorited,
+      songId: readFavoriteSongNumber(body, 'songId'),
+      songType: readFavoriteSongNumber(body, 'songType'),
+      raw: body.raw,
+    }))
   } catch (error) {
     return qqMusicErrorResponse(error)
   }
@@ -141,23 +161,53 @@ export async function DELETE(request: Request) {
   if (!body?.songmid) return NextResponse.json({ error: 'Missing songmid' }, { status: 400 })
 
   const url = new URL(request.url)
+  const cookie = body.cookie ?? request.headers.get('x-qq-music-cookie') ?? undefined
   if (url.searchParams.get('remote') !== 'qq') {
     const musicInfo = parseMusicInfo(body)
     if (!musicInfo) {
       return NextResponse.json({ error: 'Missing required local song fields' }, { status: 400 })
     }
 
-    const record = setLocalFavorite(musicInfo, false)
+    let record = setLocalFavorite(musicInfo, false)
+    let remoteSynced = false
+    let remoteError: string | undefined
+    let remotePayload: unknown
+    try {
+      await setQQFavoriteSong({
+        cookie,
+        songmid: musicInfo.songmid,
+        favorited: false,
+        songId: readFavoriteSongNumber(body, 'songId'),
+        songType: readFavoriteSongNumber(body, 'songType'),
+        raw: musicInfo.raw,
+      })
+      record = setLocalFavoriteSynced(musicInfo, false)
+      remoteSynced = true
+    } catch (error) {
+      remoteError = error instanceof Error ? error.message : String(error)
+      remotePayload = error instanceof QQMusicError ? error.payload : undefined
+    }
+
     return NextResponse.json({
       source: 'local',
       favorite: false,
       pending: record.syncState === 'pending',
       record,
+      remoteSynced,
+      remoteError,
+      remotePayload,
     })
   }
 
   try {
-    return NextResponse.json(await setQQFavoriteSong({ cookie: body.cookie, songmid: body.songmid, favorited: false }))
+    return NextResponse.json(await setQQFavoriteSong({
+      cookie,
+      songmid: body.songmid,
+      favorited: false,
+      songId: readFavoriteSongNumber(body, 'songId'),
+      songType: readFavoriteSongNumber(body, 'songType'),
+      raw: body.raw,
+    }))
   } catch (error) {
     return qqMusicErrorResponse(error)
   }
@@ -186,4 +236,31 @@ const isNonEmptyString = (value: unknown): value is string => {
 
 const normalizeOptional = (value: unknown): string | undefined => {
   return typeof value === 'string' && value.length > 0 ? value : undefined
+}
+
+function readFavoriteSongNumber(input: FavoriteRequest, key: 'songId' | 'songType'): number | undefined {
+  const direct = parseFiniteNumber(input[key])
+  if (direct !== undefined) return direct
+  if (!input.raw || typeof input.raw !== 'object') return undefined
+
+  const raw = input.raw as Record<string, unknown>
+  const aliases = key === 'songId'
+    ? ['songId', 'songid', 'song_id', 'id']
+    : ['songType', 'songtype', 'song_type', 'type']
+
+  for (const alias of aliases) {
+    const parsed = parseFiniteNumber(raw[alias])
+    if (parsed !== undefined) return parsed
+  }
+
+  return undefined
+}
+
+function parseFiniteNumber(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value)
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return undefined
 }

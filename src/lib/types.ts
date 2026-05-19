@@ -93,3 +93,9 @@ export interface TrackFileRecord {
   sha256?: string
   error?: string
 }
+
+export interface PlayHistoryRecord extends MusicInfo {
+  playEventId: number
+  quality: MusicQuality
+  playedAt: string
+}

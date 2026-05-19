@@ -23,9 +23,9 @@ export async function GET() {
   const favorites = getFavoriteSummary()
   const config = {
     missing: [
-      ...(!appConfig.lxMusicUrlScript ? ['LX_MUSIC_URL_SCRIPT'] : []),
+      ...(!appConfig.lxMusicSourceScript ? ['LX_MUSIC_SOURCE_SCRIPT'] : []),
     ],
-    lxMusicUrlScript: Boolean(appConfig.lxMusicUrlScript),
+    lxMusicSourceScript: Boolean(appConfig.lxMusicSourceScript),
   }
 
   const ok = database.ok

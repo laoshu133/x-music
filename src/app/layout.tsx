@@ -4,6 +4,11 @@ import './styles.css'
 export const metadata: Metadata = {
   title: 'miXmusic',
   description: 'Private music player with QQ Music metadata and local cache.',
+  icons: {
+    icon: '/public/logo.svg',
+    shortcut: '/public/logo.svg',
+    apple: '/public/logo.png',
+  },
 }
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

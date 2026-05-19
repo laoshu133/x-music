@@ -18,6 +18,7 @@ export interface FavoriteRecord {
   syncState: FavoriteSyncState
   error?: string
   updatedAt: string
+  raw?: unknown
 }
 
 interface FavoriteRow {
@@ -33,6 +34,7 @@ interface FavoriteRow {
   sync_state: FavoriteSyncState
   error: string | null
   updated_at: string
+  raw_json: string | null
 }
 
 export interface FavoriteSummary {
@@ -59,6 +61,7 @@ export const listLocalFavorites = (): FavoriteRecord[] => {
       t.album_id,
       t.interval,
       t.image_url,
+      t.raw_json,
       fs.desired_state,
       fs.sync_state,
       fs.error,
@@ -176,6 +179,7 @@ export const listPendingFavoriteSync = (limit = 50): FavoriteRecord[] => {
       t.album_id,
       t.interval,
       t.image_url,
+      t.raw_json,
       fs.desired_state,
       fs.sync_state,
       fs.error,
@@ -237,6 +241,7 @@ const getFavoriteRecord = (source: OnlineSource, songmid: string): FavoriteRecor
       t.album_id,
       t.interval,
       t.image_url,
+      t.raw_json,
       fs.desired_state,
       fs.sync_state,
       fs.error,
@@ -262,4 +267,14 @@ const mapFavorite = (row: FavoriteRow): FavoriteRecord => ({
   syncState: row.sync_state,
   error: row.error ?? undefined,
   updatedAt: row.updated_at,
+  raw: parseRawJson(row.raw_json),
 })
+
+const parseRawJson = (rawJson: string | null): unknown => {
+  if (!rawJson) return undefined
+  try {
+    return JSON.parse(rawJson)
+  } catch {
+    return undefined
+  }
+}

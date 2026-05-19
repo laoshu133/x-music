@@ -16,8 +16,6 @@ services:
       - "3000:3000"
     volumes:
       - ./data:/app/data
-    depends_on:
-      - music-tag-web
 
   worker:
     image: mixmusic-app:latest
@@ -32,18 +30,5 @@ services:
     environment:
       MUSIC_DATA_DIR: /app/data
       DATABASE_URL: file:/app/data/app.sqlite
-      MUSIC_TAG_WEB_API_URL: http://music-tag-web:8001
     volumes:
       - ./data:/app/data
-    depends_on:
-      - music-tag-web
-
-  music-tag-web:
-    image: xhongc/music_tag_web:latest
-    restart: unless-stopped
-    ports:
-      - "8002:8002"
-    volumes:
-      - ./data/inbox:/app/media:rw
-      - ./data/music:/app/music:rw
-      - ./data/music-tag-web:/app/data:rw

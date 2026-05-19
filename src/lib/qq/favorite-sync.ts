@@ -20,6 +20,7 @@ export async function syncPendingFavorites(input: { cookie?: string; limit?: num
         cookie: input.cookie,
         songmid: record.songmid,
         favorited: record.desiredState === 'favorite',
+        raw: record.raw,
       })
       setLocalFavoriteSynced(record, record.desiredState === 'favorite')
       synced += 1

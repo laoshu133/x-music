@@ -1,4 +1,5 @@
 import { QQMusicError } from './http'
+import { db } from '@/lib/db'
 
 export type QQLoginState = {
   cookie: string
@@ -10,6 +11,10 @@ export type QQLoginState = {
 
 type CookieInput = {
   cookie?: string
+}
+
+interface QQSessionRow {
+  cookie: string
 }
 
 const SESSION_COOKIE_NAMES = ['qm_keyst', 'qqmusic_key', 'p_skey', 'skey']
@@ -92,15 +97,11 @@ export function getQQLoginState(input?: CookieInput): QQLoginState | undefined {
 
 function loadStoredQQLoginState(): QQLoginState | undefined {
   try {
-    return globalThis.__mixmusicGetStoredQQLoginState?.()
+    const row = db.prepare('SELECT cookie FROM qq_session WHERE id = 1').get() as QQSessionRow | undefined
+    return row ? buildQQLoginState(row.cookie, 'stored') : undefined
   } catch {
     return undefined
   }
-}
-
-declare global {
-  // eslint-disable-next-line no-var
-  var __mixmusicGetStoredQQLoginState: (() => QQLoginState | undefined) | undefined
 }
 
 export function requireQQLoginState(input?: CookieInput): QQLoginState {

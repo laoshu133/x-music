@@ -5,6 +5,7 @@ import path from 'node:path'
 import { Readable } from 'node:stream'
 import { appConfig } from '@/lib/config'
 import { enqueueTagJob, fileExtensionFromContentType, upsertTrackFileStatus } from '@/lib/cache/store'
+import { triggerInlineTagging } from '@/lib/tagging/inline'
 import type { MusicQuality, TrackRecord } from '@/lib/types'
 
 interface TeeResult {
@@ -162,6 +163,7 @@ const teeUpstreamToClientAndCache = ({
         sha256: hash.digest('hex'),
       })
       enqueueTagJob(completedFile, track)
+      triggerInlineTagging()
       resolveCompletion()
     } catch (error) {
       await unlink(partPath).catch(() => undefined)

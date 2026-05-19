@@ -46,5 +46,3 @@ export function saveQQLoginCookie(cookieText: string) {
 export function clearQQLoginCookie(): void {
   db.prepare('DELETE FROM qq_session WHERE id = 1').run()
 }
-
-globalThis.__mixmusicGetStoredQQLoginState = getStoredQQLoginState

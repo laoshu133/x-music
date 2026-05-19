@@ -20,8 +20,10 @@
   "dependencies": {
     "better-sqlite3": "^12.10.0",
     "lucide-react": "^1.16.0",
+    "metaflac-js": "^1.0.5",
     "music-metadata": "^11.12.3",
     "next": "^16.2.6",
+    "node-id3": "^0.2.9",
     "pino": "^10.3.1",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",

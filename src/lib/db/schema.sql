@@ -51,6 +51,8 @@ CREATE TABLE IF NOT EXISTS play_events (
   played_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE INDEX IF NOT EXISTS idx_play_events_played_at ON play_events(played_at DESC, id DESC);
+
 CREATE TABLE IF NOT EXISTS favorite_sync (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,

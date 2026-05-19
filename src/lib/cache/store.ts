@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { db } from '@/lib/db'
 import { createJob } from '@/lib/jobs'
-import type { MusicInfo, MusicQuality, OnlineSource, TrackFileRecord, TrackFileStatus, TrackRecord } from '@/lib/types'
+import type { MusicInfo, MusicQuality, OnlineSource, PlayHistoryRecord, TrackFileRecord, TrackFileStatus, TrackRecord } from '@/lib/types'
 
 interface TrackRow {
   id: number
@@ -27,6 +27,12 @@ interface TrackFileRow {
   size_bytes: number | null
   sha256: string | null
   error: string | null
+}
+
+interface PlayHistoryRow extends TrackRow {
+  play_event_id: number
+  quality: MusicQuality
+  played_at: string
 }
 
 const now = () => new Date().toISOString()
@@ -122,6 +128,23 @@ export const insertPlayEvent = (trackId: number, quality: MusicQuality): void =>
   db.prepare('INSERT INTO play_events (track_id, quality) VALUES (?, ?)').run(trackId, quality)
 }
 
+export const listPlayHistory = (limit = 50): PlayHistoryRecord[] => {
+  const normalizedLimit = Math.min(Math.max(Math.trunc(limit) || 50, 1), 200)
+  const rows = db.prepare(`
+    SELECT
+      pe.id AS play_event_id,
+      pe.quality,
+      pe.played_at,
+      t.*
+    FROM play_events pe
+    INNER JOIN tracks t ON t.id = pe.track_id
+    ORDER BY pe.played_at DESC, pe.id DESC
+    LIMIT ?
+  `).all(normalizedLimit) as PlayHistoryRow[]
+
+  return rows.map(mapPlayHistory)
+}
+
 export const enqueueTagJob = (trackFile: TrackFileRecord, track: TrackRecord): void => {
   if (!trackFile.rawPath) return
 
@@ -185,6 +208,33 @@ const mapTrackFile = (row: TrackFileRow): TrackFileRecord => ({
   sha256: row.sha256 ?? undefined,
   error: row.error ?? undefined,
 })
+
+const mapPlayHistory = (row: PlayHistoryRow): PlayHistoryRecord => {
+  const track = mapTrack(row)
+  return {
+    source: track.source,
+    songmid: track.songmid,
+    name: track.name,
+    singer: track.singer,
+    albumName: track.albumName,
+    albumId: track.albumId,
+    interval: track.interval,
+    img: track.imageUrl,
+    raw: parseRawJson(track.rawJson),
+    playEventId: row.play_event_id,
+    quality: row.quality,
+    playedAt: row.played_at,
+  }
+}
+
+const parseRawJson = (value?: string): unknown | undefined => {
+  if (!value) return undefined
+  try {
+    return JSON.parse(value)
+  } catch {
+    return undefined
+  }
+}
 
 const fail = (message: string): never => {
   throw new Error(message)

@@ -1,6 +1,6 @@
 # miXmusic
 
-Private QQ Music web player with LX-compatible music URL resolution, local caching, and music-tag-web scraping.
+Private QQ Music web player with LX-compatible music URL resolution, local caching, and built-in metadata tagging.
 
 ## Development
 
@@ -22,11 +22,10 @@ cp .env.example .env
 docker compose up --build
 ```
 
-Compose starts three services:
+Compose starts two services:
 
 - `web`: Next.js UI and API on port `3000`.
-- `worker`: SQLite job poller for tagging jobs.
-- `music-tag-web`: scraper/tagger sidecar on port `8001`.
+- `worker`: SQLite job poller for cache/tagging jobs.
 
 All services share `./data`:
 
@@ -36,27 +35,25 @@ data/
   staging/          # incomplete transfer files
   inbox/            # completed raw downloads awaiting tagging
   music/            # final tagged music library
-  music-tag-web/    # music-tag-web application data
 ```
 
 ## Architecture
 
 - Next.js serves the UI and API routes.
 - A Node worker handles background jobs using SQLite-backed job rows.
-- `music-tag-web` runs as a sidecar and shares the `data/inbox` and `data/music` directories.
+- The worker tags and organizes cached files with the built-in provider.
 - First release targets QQ Music only.
 
 ## Cache Flow
 
-1. Resolve a playable URL through `LX_MUSIC_URL_SCRIPT`.
+1. Resolve a playable URL through `LX_MUSIC_SOURCE_SCRIPT`.
 2. Stream the single upstream response to the browser first.
 3. Tee the same stream to `data/staging/*.part`.
 4. Move completed files to `data/inbox`.
 5. Create a SQLite `tag_track_file` job.
 6. The worker claims queued jobs and calls the configured tagging provider.
-7. If `MUSIC_TAG_WEB_API_URL` is configured, the provider probes `music-tag-web` HTTP endpoints and tries to submit a tagging task.
-8. If no supported API is found, shared-directory fallback waits for `music-tag-web` to scan `data/inbox` and write the final file into `data/music`.
-9. Store `source + songmid + quality -> finalPath` mappings in SQLite.
+7. The default built-in provider reads existing tags with `music-metadata`, enriches QQ Music metadata when available, writes MP3/FLAC tags, and copies the final file into `data/music`.
+8. Store `source + songmid + quality -> finalPath` mappings in SQLite.
 
 ## Local Favorites and Status
 
@@ -64,6 +61,12 @@ data/
 - `POST /api/favorites` accepts a normalized song plus `favorite: true | false`, updates local state, and marks the row `pending` for later QQ sync.
 - `GET /api/favorites/status?source=tx&songmid=...` returns local favorite and pending state for one song.
 - `GET /api/health` reports database counts, cache directory access, job counts, local favorite pending counts, and missing required configuration.
+
+## Playback History
+
+- `GET /api/history?limit=50` returns recent local play events joined with normalized song metadata.
+- The web client includes a "历史" tab that can refresh recent plays and replay any listed track.
+- After `/api/play` successfully starts a local or upstream stream, miXmusic records the local play event and best-effort calls a conservative QQ Music private play-history write wrapper. That QQ call is intentionally non-blocking; missing login state, endpoint rejection, or network failure must not stop local playback.
 
 ## QQ Account and User APIs
 
@@ -75,7 +78,7 @@ data/
 - `GET /api/user/avatar?uin=...&size=140` returns a QQ avatar URL.
 - `GET /api/user/playlists?limit=30` returns the logged-in user's QQ playlists; `uin=...` can target a specific QQ number.
 
-The QR and user APIs follow the request flow from `sansenjian/qq-music-api`. They still need live-account verification because QQ's private login and profile endpoints can change without notice.
+The QR and user APIs follow the request flow from `sansenjian/qq-music-api`. The play-history sync wrapper is conservative because the current upstream source does not expose a documented stable write endpoint. These private QQ Music flows still need live-account verification because QQ's private login, profile, and history endpoints can change without notice.
 
 ## Worker Jobs
 
@@ -96,18 +99,21 @@ The `jobs` table is created lazily and supports `queued`, `running`, `completed`
 
 Relevant environment variables:
 
+- `LX_MUSIC_SOURCE_SCRIPT`: required LX Music custom source script URL for playback.
 - `WORKER_POLL_INTERVAL_MS`: idle polling interval, default `5000`.
 - `WORKER_MAX_ATTEMPTS`: max attempts before a job is marked failed, default `3`.
-- `MUSIC_TAG_WEB_API_URL`: optional music-tag-web base URL. In Compose this is `http://music-tag-web:8001`.
-- `TAGGING_POLL_TIMEOUT_MS`: shared-directory fallback timeout, default `120000`.
-- `TAGGING_POLL_INTERVAL_MS`: fallback scan interval, default `5000`.
+- `TAGGING_WRITE_TAGS`: write supported file tags, default `true`.
+- `TAGGING_FETCH_ONLINE_METADATA`: fetch QQ Music detail, lyrics, and cover metadata when possible, default `true`.
+- `TAGGING_ORGANIZE_FILES`: organize final files as `artist/album/artist - title.ext`, default `true`.
+- `TAGGING_FETCH_TIMEOUT_MS`: network metadata/API timeout, default `5000`.
 
-## music-tag-web Integration
+## Tagging Provider
 
-The HTTP integration is intentionally a probe-first skeleton because `music-tag-web` does not provide a stable API contract in this project yet. Until the real endpoint is confirmed, the worker falls back to shared directories:
+The built-in provider ports the practical parts of music-tag-web's scraping flow into miXmusic. Reference project: https://github.com/xhongc/music-tag-web
 
-- raw completed files land in `data/inbox`;
-- `music-tag-web` scans and organizes them;
-- the worker polls `data/music` and matches candidates by title, artist, songmid, size, and modification time.
+- match candidates by title, artist, and album score;
+- prefer QQ Music song detail by `songmid`, then search by title and artist;
+- write title, artist, album, year, lyrics, cover, and QQ album id for MP3/FLAC when supported;
+- organize final files under `data/music`.
 
-Before relying on this in production, verify the actual `music-tag-web` container paths, scan settings, and any available API endpoints.
+Unsupported tag-write formats degrade to organized file copy with a worker warning instead of failing the cache job.

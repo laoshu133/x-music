@@ -1,6 +1,6 @@
 import type { MusicInfo, PagedResult } from '@/lib/types'
 import { compactSongs, type QQSong } from './mapper'
-import { QQMusicError, qqPost, qqSignedPost } from './http'
+import { QQMusicError, qqSignedPost } from './http'
 import { requireQQLoginState, type QQLoginState } from './account'
 
 type QQFavoriteListResponse = {
@@ -18,11 +18,36 @@ type QQFavoriteListResponse = {
 
 type QQFavoriteMutationResponse = {
   code: number
-  req?: {
-    code?: number
-    msg?: string
-    message?: string
-    data?: unknown
+  req?: QQFavoriteMutationItem
+}
+
+type QQFavoriteMutationItem = {
+  code?: number
+  msg?: string
+  message?: string
+  data?: {
+    result?: number
+    ret?: number
+    [key: string]: unknown
+  } | unknown
+  subcode?: number
+  subCode?: number
+  trace?: string
+  [key: string]: unknown
+}
+
+type FavoriteSongInfo = {
+  songId?: number
+  songType?: number
+  raw?: unknown
+}
+
+type FavoriteMutationPayload = {
+  comm: Record<string, unknown>
+  req: {
+    module: string
+    method: string
+    param: Record<string, unknown>
   }
 }
 
@@ -67,7 +92,21 @@ function buildFavoriteListPayload(login: QQLoginState, page: number, limit: numb
   }
 }
 
-function buildFavoriteMutationPayload(login: QQLoginState, songmid: string, favorited: boolean) {
+function buildFavoriteMutationPayload(
+  login: QQLoginState,
+  songmid: string,
+  favorited: boolean,
+  songInfo: FavoriteSongInfo = {},
+): FavoriteMutationPayload {
+  const songId = resolveSongId(songInfo)
+  if (!Number.isFinite(songId)) {
+    throw new QQMusicError('QQ favorite sync requires numeric songId', 400, {
+      actionable: 'Refresh the song from QQ Music search/playlist data so raw.songId is available before syncing favorites.',
+      songmid,
+      raw: songInfo.raw,
+    })
+  }
+
   return {
     comm: {
       cv: 4747474,
@@ -77,21 +116,59 @@ function buildFavoriteMutationPayload(login: QQLoginState, songmid: string, favo
       g_tk: 5381,
     },
     req: {
-      module: 'music.musicasset.SongFavWrite',
-      method: favorited ? 'AddSongFan' : 'DelSongFan',
+      module: 'music.musicasset.PlaylistDetailWrite',
+      method: favorited ? 'AddSonglist' : 'DelSonglist',
       param: {
-        uin: login.uin,
-        songMids: [songmid],
+        dirId: 201,
+        v_songInfo: [{
+          songId,
+          songType: resolveSongType(songInfo),
+        }],
       },
     },
   }
 }
 
+function resolveSongId(input: FavoriteSongInfo): number {
+  const fromRaw = readRawNumber(input.raw, ['songId', 'songid', 'song_id', 'id'])
+  return input.songId ?? fromRaw ?? Number.NaN
+}
+
+function resolveSongType(input: FavoriteSongInfo): number {
+  return input.songType ?? readRawNumber(input.raw, ['songType', 'songtype', 'song_type', 'type']) ?? 0
+}
+
+function readRawNumber(raw: unknown, keys: string[]): number | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const record = raw as Record<string, unknown>
+
+  for (const key of keys) {
+    const value = record[key]
+    if (typeof value === 'number' && Number.isFinite(value)) return value
+    if (typeof value === 'string' && value.trim()) {
+      const parsed = Number(value)
+      if (Number.isFinite(parsed)) return parsed
+    }
+  }
+
+  return undefined
+}
+
+function mutationSucceeded(item: QQFavoriteMutationItem | undefined): boolean {
+  if (!item) return false
+  if (item.code !== 0 && item.code !== undefined) return false
+  const data = item.data
+  if (!data || typeof data !== 'object') return true
+  const resultCode = (data as { result?: unknown; ret?: unknown; retCode?: unknown }).retCode
+    ?? (data as { ret?: unknown }).ret
+  return resultCode === undefined || resultCode === 0
+}
+
 function assertRemoteSuccess(data: QQFavoriteMutationResponse, action: string) {
-  if (data.code === 0 && (data.req?.code === 0 || data.req?.code === undefined)) return
+  if (data.code === 0 && mutationSucceeded(data.req)) return
 
   throw new QQMusicError(`QQ favorite ${action} request was rejected`, 502, {
-    actionable: 'The QQ Music favorite write endpoint is private and may have changed. Recheck the module/method with a real authenticated request.',
+    actionable: 'QQ Music rejected the favorite write request. Recheck login state and the private PlaylistDetailWrite payload against a real authenticated y.qq.com request.',
     response: data,
   })
 }
@@ -135,11 +212,17 @@ export async function setQQFavoriteSong(input: {
   cookie?: string
   songmid: string
   favorited: boolean
+  songId?: number
+  songType?: number
+  raw?: unknown
 }): Promise<FavoriteMutationResult> {
   const login = requireQQLoginState(input)
-  const data = await qqPost<QQFavoriteMutationResponse>(
-    'https://u.y.qq.com/cgi-bin/musicu.fcg',
-    buildFavoriteMutationPayload(login, input.songmid, input.favorited),
+  const data = await qqSignedPost<QQFavoriteMutationResponse>(
+    buildFavoriteMutationPayload(login, input.songmid, input.favorited, {
+      songId: input.songId,
+      songType: input.songType,
+      raw: input.raw,
+    }),
     {
       headers: {
         cookie: login.cookie,

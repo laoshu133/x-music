@@ -1,6 +1,7 @@
 import { ensureTrack, getReadyTrackFile, insertPlayEvent, upsertTrackFileStatus } from '@/lib/cache/store'
 import { createUpstreamTeeResponse, streamLocalFile } from '@/lib/cache/stream'
 import { MusicUrlConfigError, MusicUrlResolveError, parseRequestedQuality, qualityFallbacks, resolveMusicUrlWithFallback } from '@/lib/music-url/resolve'
+import { syncQQPlayHistoryBestEffort } from '@/lib/qq'
 import type { MusicInfo, OnlineSource } from '@/lib/types'
 
 export const runtime = 'nodejs'
@@ -41,6 +42,11 @@ const handlePlayRequest = async (request: Request, input: PlayRequest): Promise<
   if (readyFile?.finalPath) {
     const track = ensureTrack(musicInfo)
     insertPlayEvent(track.id, readyFile.quality)
+    syncQQPlayHistoryBestEffort({
+      cookie: request.headers.get('x-qq-music-cookie') ?? undefined,
+      musicInfo,
+      quality: readyFile.quality,
+    })
     return streamLocalFile(readyFile.finalPath, request)
   }
 
@@ -50,6 +56,11 @@ const handlePlayRequest = async (request: Request, input: PlayRequest): Promise<
   try {
     const resolved = await resolveMusicUrlWithFallback(musicInfo, preferredQuality)
     insertPlayEvent(track.id, resolved.quality)
+    syncQQPlayHistoryBestEffort({
+      cookie: request.headers.get('x-qq-music-cookie') ?? undefined,
+      musicInfo,
+      quality: resolved.quality,
+    })
     const { response, completion } = await createUpstreamTeeResponse(resolved.url, track, resolved.quality, request)
 
     completion.catch((error: unknown) => {
@@ -70,7 +81,7 @@ const handlePlayRequest = async (request: Request, input: PlayRequest): Promise<
 
 const playbackErrorMessage = (error: unknown): string => {
   if (error instanceof MusicUrlConfigError) {
-    return `${error.message}. Set LX_MUSIC_URL_SCRIPT to the LX script URL; miXmusic will parse API_URL/API_KEY from that script and call the API directly.`
+    return `${error.message}. Set LX_MUSIC_SOURCE_SCRIPT to the LX source script URL; miXmusic will simulate the source request handler and call the captured API shape directly.`
   }
 
   if (error instanceof MusicUrlResolveError) {

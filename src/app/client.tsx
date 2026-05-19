@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity,
+  Clock3,
   DownloadCloud,
   Heart,
   ListMusic,
@@ -15,9 +16,9 @@ import {
   Sparkles,
   Star,
 } from 'lucide-react'
-import type { MusicInfo, PagedResult, QQPlaylistDetail, QQPlaylistInfo, QQToplistInfo } from '@/lib/types'
+import type { MusicInfo, PagedResult, PlayHistoryRecord, QQPlaylistDetail, QQPlaylistInfo, QQToplistInfo } from '@/lib/types'
 
-type View = 'search' | 'toplists' | 'playlists' | 'favorites' | 'recommendations' | 'status'
+type View = 'search' | 'toplists' | 'playlists' | 'favorites' | 'history' | 'recommendations' | 'status'
 
 interface ApiState<T> {
   loading: boolean
@@ -58,7 +59,7 @@ interface HealthStatus {
   cache: Record<string, { path: string; exists: boolean; writable: boolean; isDirectory: boolean; entries: number; error?: string }>
   jobs: { byStatus: Record<string, number>; queued: number; running: number; failed: number }
   favorites: { favoriteCount: number; pendingCount: number; failedCount: number }
-  config: { missing: string[]; lxMusicUrlScript: boolean }
+  config: { missing: string[]; lxMusicSourceScript: boolean }
 }
 
 type RecommendationsResult = PagedResult<MusicInfo> & {
@@ -95,6 +96,7 @@ const viewMeta: Record<View, { label: string; icon: React.ComponentType<{ size?:
   toplists: { label: '排行', icon: Star },
   playlists: { label: '歌单', icon: ListMusic },
   favorites: { label: '收藏', icon: Heart },
+  history: { label: '历史', icon: Clock3 },
   recommendations: { label: '猜你喜欢', icon: Sparkles },
   status: { label: '状态', icon: Activity },
 }
@@ -142,6 +144,7 @@ export default function MusicClient() {
   const [userPlaylists, setUserPlaylists] = useState<ApiState<PagedResult<QQPlaylistInfo> & { offset: number }>>(emptyState)
   const [playlistDetail, setPlaylistDetail] = useState<ApiState<QQPlaylistDetail>>(emptyState)
   const [favorites, setFavorites] = useState<ApiState<{ source: 'local'; list: FavoriteRecord[] }>>(emptyState)
+  const [history, setHistory] = useState<ApiState<{ source: 'local'; list: PlayHistoryRecord[] }>>(emptyState)
   const [recommendations, setRecommendations] = useState<ApiState<RecommendationsResult>>(emptyState)
   const [loginQr, setLoginQr] = useState<ApiState<LoginQrState>>(emptyState)
   const [avatar, setAvatar] = useState<ApiState<UserAvatarResult>>(emptyState)
@@ -172,6 +175,7 @@ export default function MusicClient() {
   const loadUserPlaylists = () => run(s => setUserPlaylists(s), () => fetchJson<PagedResult<QQPlaylistInfo> & { offset: number }>('/api/user/playlists?limit=30'))
   const openPlaylist = (id: string) => run(s => setPlaylistDetail(s), () => fetchJson<QQPlaylistDetail>(`/api/playlists/${encodeURIComponent(id)}`))
   const loadFavorites = () => run(s => setFavorites(s), () => fetchJson<{ source: 'local'; list: FavoriteRecord[] }>('/api/favorites'))
+  const loadHistory = () => run(s => setHistory(s), () => fetchJson<{ source: 'local'; list: PlayHistoryRecord[] }>('/api/history?limit=100'))
   const loadRecommendations = () => run(s => setRecommendations(s), () => fetchJson<RecommendationsResult>('/api/recommendations?limit=30'))
   const loadHealth = () => run(s => setHealth(s), async () => {
     const response = await fetch('/api/health')
@@ -263,7 +267,7 @@ export default function MusicClient() {
     const nextFavorite = !(favoriteStatuses[key]?.favorite ?? false)
     setFavoriteBusy(previous => ({ ...previous, [key]: true }))
     try {
-      const response = await fetchJson<{ favorite: boolean; pending: boolean; record: FavoriteRecord; remoteError?: string }>('/api/favorites', {
+      const response = await fetchJson<{ favorite: boolean; pending: boolean; record: FavoriteRecord; remoteError?: string; remoteSynced?: boolean }>('/api/favorites', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(favoritePayload(song, nextFavorite)),
@@ -275,7 +279,7 @@ export default function MusicClient() {
           pending: response.pending,
           desiredState: response.record.desiredState,
           syncState: response.record.syncState,
-          error: response.remoteError ?? response.record.error,
+          error: response.remoteSynced ? undefined : response.remoteError ?? response.record.error,
         },
       }))
       if (view === 'favorites' || favorites.data) loadFavorites()
@@ -299,6 +303,7 @@ export default function MusicClient() {
     setView(next)
     if (next === 'toplists' && !toplists.data) loadToplists()
     if (next === 'favorites') loadFavorites()
+    if (next === 'history') loadHistory()
     if (next === 'recommendations') loadRecommendations()
     if (next === 'status') loadHealth()
   }
@@ -322,6 +327,7 @@ export default function MusicClient() {
       ...(toplistSongs.data?.list ?? []),
       ...(playlistDetail.data?.list ?? []),
       ...(favorites.data?.list ?? []),
+      ...(history.data?.list ?? []),
       ...(recommendations.data?.list ?? []),
     ]
     const missing = visibleSongs.filter(song => favoriteStatuses[favoriteKey(song)] === undefined)
@@ -340,7 +346,7 @@ export default function MusicClient() {
     return () => {
       cancelled = true
     }
-  }, [songs.data, toplistSongs.data, playlistDetail.data, favorites.data, recommendations.data, favoriteStatuses])
+  }, [songs.data, toplistSongs.data, playlistDetail.data, favorites.data, history.data, recommendations.data, favoriteStatuses])
 
   return (
     <main className="app-shell">
@@ -473,6 +479,17 @@ export default function MusicClient() {
           </section>
         )}
 
+        {view === 'history' && (
+          <section className="workspace">
+            <div className="section-head">
+              <h3>播放历史</h3>
+              <IconButton label="刷新" onClick={loadHistory} disabled={history.loading}><RefreshCw size={16} /></IconButton>
+            </div>
+            <Status state={history} />
+            <HistoryList songs={history.data?.list ?? []} onPlay={playSong} onFavorite={toggleFavorite} favoriteStatuses={favoriteStatuses} favoriteBusy={favoriteBusy} />
+          </section>
+        )}
+
         {view === 'recommendations' && (
           <section className="workspace">
             <div className="action-strip">
@@ -508,7 +525,10 @@ export default function MusicClient() {
             {playerError ? <em>{playerError}</em> : null}
           </div>
         </div>
-        <audio ref={audioRef} src={currentSong ? currentPlayUrl : undefined} controls onError={() => setPlayerError('播放失败：音源 API 未返回可播放地址。')} />
+        <audio ref={audioRef} src={currentSong ? currentPlayUrl : undefined} controls onError={() => {
+          if (!currentPlayUrl) return
+          void readPlaybackApiError(currentPlayUrl).then(setPlayerError)
+        }} />
       </footer>
     </main>
   )
@@ -655,12 +675,62 @@ function SongTable({
   )
 }
 
+function HistoryList({
+  songs,
+  onPlay,
+  onFavorite,
+  favoriteStatuses,
+  favoriteBusy,
+}: {
+  songs: PlayHistoryRecord[]
+  onPlay: (song: MusicInfo) => void
+  onFavorite: (song: MusicInfo) => void
+  favoriteStatuses: Record<string, FavoriteStatus>
+  favoriteBusy: Record<string, boolean>
+}) {
+  if (!songs.length) return <p className="empty">暂无播放历史</p>
+  return (
+    <div className="song-list">
+      {songs.map(song => (
+        <div key={song.playEventId} className="history-item">
+          <SongTable songs={[song]} onPlay={onPlay} onFavorite={onFavorite} favoriteStatuses={favoriteStatuses} favoriteBusy={favoriteBusy} compact />
+          <time>{formatPlayedAt(song.playedAt)} · {song.quality}</time>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function formatPlayedAt(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
 function playbackErrorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error)
   if (message.includes('no supported source') || message.includes('NotSupportedError')) {
     return '播放失败：音源 API 未返回可播放地址。'
   }
   return message || '播放失败：音源 API 未返回可播放地址。'
+}
+
+async function readPlaybackApiError(url: string): Promise<string> {
+  try {
+    const response = await fetch(url, { headers: { accept: 'application/json' } })
+    const body = await response.json().catch(() => undefined) as unknown
+    if (body && typeof body === 'object' && 'error' in body) {
+      return String((body as { error: unknown }).error)
+    }
+    return `播放失败：音源 API 返回 ${response.status}`
+  } catch (error) {
+    return playbackErrorMessage(error)
+  }
 }
 
 function favoriteTitle(status: FavoriteStatus | undefined): string {
@@ -675,6 +745,7 @@ function headingFor(view: View): string {
   if (view === 'toplists') return '按榜单快速发现'
   if (view === 'playlists') return '检索公开歌单'
   if (view === 'favorites') return '收藏与喜欢同步'
+  if (view === 'history') return '播放历史'
   if (view === 'recommendations') return '猜你喜欢'
   return '系统健康与缓存'
 }

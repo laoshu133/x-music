@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { db } from '@/lib/db'
 import { claimNextJob, completeJob, createJob, failJob, getJob, requeueJob } from '@/lib/jobs'
 
 test('job lifecycle claim complete and retry states', () => {
+  db.prepare("DELETE FROM jobs WHERE type = 'tag_track_file'").run()
+
   const created = createJob({
     type: 'tag_track_file',
     payload: { trackFileId: Date.now(), rawPath: '/tmp/example.flac' },
