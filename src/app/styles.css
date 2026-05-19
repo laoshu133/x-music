@@ -215,9 +215,51 @@ p {
   color: white;
 }
 
+.qr-login {
+  display: grid;
+  gap: 8px;
+}
+
+.qr-login img {
+  width: 132px;
+  height: 132px;
+  justify-self: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  padding: 6px;
+}
+
 .account-facts {
   display: grid;
   gap: 8px;
+}
+
+.account-summary {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+}
+
+.account-summary img,
+.avatar-placeholder {
+  width: 48px;
+  height: 48px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.account-summary img {
+  object-fit: cover;
+}
+
+.avatar-placeholder {
+  display: grid;
+  place-items: center;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .account-facts div {
@@ -283,6 +325,11 @@ p {
 
 .workspace.split {
   grid-template-columns: 320px minmax(0, 1fr);
+  align-items: start;
+}
+
+.playlist-workspace {
+  grid-template-columns: 280px minmax(0, 1fr) 280px;
   align-items: start;
 }
 
@@ -537,6 +584,7 @@ p {
   }
 
   .workspace.split,
+  .playlist-workspace,
   .player-bar {
     grid-template-columns: 1fr;
   }

@@ -65,6 +65,18 @@ data/
 - `GET /api/favorites/status?source=tx&songmid=...` returns local favorite and pending state for one song.
 - `GET /api/health` reports database counts, cache directory access, job counts, local favorite pending counts, and missing required configuration.
 
+## QQ Account and User APIs
+
+- `GET /api/account` reports the active QQ login state from stored Cookie or `QQ_MUSIC_COOKIE`.
+- `POST /api/account/import` validates and optionally persists a copied QQ Music Cookie.
+- `DELETE /api/account` clears the locally stored login state.
+- `GET /api/account/qr` returns a QQ login QR image plus `ptqrtoken` and `qrsig`.
+- `POST /api/account/qr/check` polls QQ QR login status and persists the returned session Cookie on success.
+- `GET /api/user/avatar?uin=...&size=140` returns a QQ avatar URL.
+- `GET /api/user/playlists?limit=30` returns the logged-in user's QQ playlists; `uin=...` can target a specific QQ number.
+
+The QR and user APIs follow the request flow from `sansenjian/qq-music-api`. They still need live-account verification because QQ's private login and profile endpoints can change without notice.
+
 ## Worker Jobs
 
 The `jobs` table is created lazily and supports `queued`, `running`, `completed`, and `failed` states. The worker currently handles `tag_track_file` payloads:

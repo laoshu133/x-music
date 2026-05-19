@@ -5,4 +5,5 @@ export { buildQQLoginState, getQQLoginState, requireQQLoginState, summarizeQQLog
 export { getQQFavoriteSongs, setQQFavoriteSong } from './favorites'
 export { pullRemoteFavorites, syncPendingFavorites } from './favorite-sync'
 export { getQQRecommendations } from './recommendations'
+export { checkQQLoginQr, getQQLoginQr, getQQUserAvatar, getQQUserPlaylists } from './user'
 export { QQMusicError, qqMusicErrorResponse } from './http'

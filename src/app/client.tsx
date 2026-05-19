@@ -66,6 +66,18 @@ type RecommendationsResult = PagedResult<MusicInfo> & {
   personalized?: boolean
 }
 
+interface LoginQrState {
+  img: string
+  ptqrtoken: number
+  qrsig: string
+}
+
+interface UserAvatarResult {
+  source: 'tx'
+  avatarUrl: string
+  size: number
+}
+
 const fetchJson = async <T,>(url: string, init?: RequestInit): Promise<T> => {
   const response = await fetch(url, init)
   const body = await response.json().catch(() => undefined) as unknown
@@ -127,9 +139,12 @@ export default function MusicClient() {
   const [toplists, setToplists] = useState<ApiState<{ source: 'tx'; list: QQToplistInfo[] }>>(emptyState)
   const [toplistSongs, setToplistSongs] = useState<ApiState<PagedResult<MusicInfo>>>(emptyState)
   const [playlists, setPlaylists] = useState<ApiState<PagedResult<QQPlaylistInfo>>>(emptyState)
+  const [userPlaylists, setUserPlaylists] = useState<ApiState<PagedResult<QQPlaylistInfo> & { offset: number }>>(emptyState)
   const [playlistDetail, setPlaylistDetail] = useState<ApiState<QQPlaylistDetail>>(emptyState)
   const [favorites, setFavorites] = useState<ApiState<{ source: 'local'; list: FavoriteRecord[] }>>(emptyState)
   const [recommendations, setRecommendations] = useState<ApiState<RecommendationsResult>>(emptyState)
+  const [loginQr, setLoginQr] = useState<ApiState<LoginQrState>>(emptyState)
+  const [avatar, setAvatar] = useState<ApiState<UserAvatarResult>>(emptyState)
   const [health, setHealth] = useState<ApiState<HealthStatus>>(emptyState)
   const [favoriteStatuses, setFavoriteStatuses] = useState<Record<string, FavoriteStatus>>({})
   const [favoriteBusy, setFavoriteBusy] = useState<Record<string, boolean>>({})
@@ -154,6 +169,7 @@ export default function MusicClient() {
   const loadToplists = () => run(s => setToplists(s), () => fetchJson<{ source: 'tx'; list: QQToplistInfo[] }>('/api/toplists'))
   const loadToplistSongs = (id: string) => run(s => setToplistSongs(s), () => fetchJson<PagedResult<MusicInfo>>(`/api/toplists/${encodeURIComponent(id)}?limit=50`))
   const searchPlaylists = () => run(s => setPlaylists(s), () => fetchJson<PagedResult<QQPlaylistInfo>>(`/api/playlists?q=${encodeURIComponent(playlistQuery)}&limit=20`))
+  const loadUserPlaylists = () => run(s => setUserPlaylists(s), () => fetchJson<PagedResult<QQPlaylistInfo> & { offset: number }>('/api/user/playlists?limit=30'))
   const openPlaylist = (id: string) => run(s => setPlaylistDetail(s), () => fetchJson<QQPlaylistDetail>(`/api/playlists/${encodeURIComponent(id)}`))
   const loadFavorites = () => run(s => setFavorites(s), () => fetchJson<{ source: 'local'; list: FavoriteRecord[] }>('/api/favorites'))
   const loadRecommendations = () => run(s => setRecommendations(s), () => fetchJson<RecommendationsResult>('/api/recommendations?limit=30'))
@@ -172,6 +188,40 @@ export default function MusicClient() {
       body: JSON.stringify({ cookie: cookieText, persist: true }),
     }))
     setCookieText('')
+  }
+
+  const requestLoginQr = () => {
+    setSyncMessage('')
+    run(s => setLoginQr(s), () => fetchJson<LoginQrState>('/api/account/qr'))
+  }
+
+  const checkLoginQr = async () => {
+    const qr = loginQr.data
+    if (!qr) return
+    setSyncMessage('')
+    await run(s => setAccount(s), async () => {
+      const result = await fetchJson<
+        | { isOk: false; refresh: boolean; message: string }
+        | { isOk: true; message: string; account: AccountState }
+      >('/api/account/qr/check', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          ptqrtoken: qr.ptqrtoken,
+          qrsig: qr.qrsig,
+          persist: true,
+        }),
+      })
+
+      if (!result.isOk) {
+        setSyncMessage(result.message)
+        return account.data ?? { loggedIn: false }
+      }
+
+      setLoginQr(emptyState())
+      setSyncMessage(result.message)
+      return result.account
+    })
   }
 
   const logout = async () => {
@@ -259,6 +309,14 @@ export default function MusicClient() {
   }, [])
 
   useEffect(() => {
+    if (!account.data?.loggedIn || !account.data.uin) {
+      setAvatar(emptyState())
+      return
+    }
+    void run(s => setAvatar(s), () => fetchJson<UserAvatarResult>(`/api/user/avatar?uin=${encodeURIComponent(account.data!.uin!)}&size=100`))
+  }, [account.data?.loggedIn, account.data?.uin])
+
+  useEffect(() => {
     const visibleSongs = [
       ...(songs.data?.list ?? []),
       ...(toplistSongs.data?.list ?? []),
@@ -311,6 +369,10 @@ export default function MusicClient() {
           onCookieTextChange={setCookieText}
           onLogin={login}
           onLogout={logout}
+          loginQr={loginQr}
+          avatarUrl={avatar.data?.avatarUrl}
+          onRequestLoginQr={requestLoginQr}
+          onCheckLoginQr={checkLoginQr}
         />
       </aside>
 
@@ -355,7 +417,7 @@ export default function MusicClient() {
         )}
 
         {view === 'playlists' && (
-          <section className="workspace split">
+          <section className="workspace playlist-workspace">
             <div className="side-list">
               <ToolbarSearch value={playlistQuery} onChange={setPlaylistQuery} onSubmit={searchPlaylists} loading={playlists.loading} placeholder="搜索歌单" />
               <Status state={playlists} />
@@ -374,6 +436,21 @@ export default function MusicClient() {
               </div>
               <Status state={playlistDetail} />
               <SongTable songs={playlistDetail.data?.list ?? []} onPlay={playSong} onFavorite={toggleFavorite} favoriteStatuses={favoriteStatuses} favoriteBusy={favoriteBusy} compact />
+            </div>
+            <div className="side-list">
+              <div className="section-head">
+                <h3>我的歌单</h3>
+                <IconButton label="刷新我的歌单" onClick={loadUserPlaylists} disabled={userPlaylists.loading}><RefreshCw size={16} /></IconButton>
+              </div>
+              <Status state={userPlaylists} />
+              <div className="playlist-list">
+                {(userPlaylists.data?.list ?? []).map(item => (
+                  <button key={item.id} onClick={() => openPlaylist(item.id)}>
+                    <span>{item.name}</span>
+                    <small>{item.author ?? 'QQ 音乐'} · {item.total ?? 0} 首</small>
+                  </button>
+                ))}
+              </div>
             </div>
           </section>
         )}
@@ -443,12 +520,20 @@ function AccountPanel({
   onCookieTextChange,
   onLogin,
   onLogout,
+  loginQr,
+  avatarUrl,
+  onRequestLoginQr,
+  onCheckLoginQr,
 }: {
   account: ApiState<AccountState>
   cookieText: string
   onCookieTextChange: (value: string) => void
   onLogin: () => void
   onLogout: () => void
+  loginQr: ApiState<LoginQrState>
+  avatarUrl?: string
+  onRequestLoginQr: () => void
+  onCheckLoginQr: () => void
 }) {
   return (
     <section className="account-panel">
@@ -457,13 +542,24 @@ function AccountPanel({
         {account.data?.loggedIn ? <button className="ghost-button" onClick={onLogout}><LogOut size={16} />登出</button> : null}
       </div>
       {account.data?.loggedIn ? (
-        <dl className="account-facts">
-          <div><dt>UIN</dt><dd>{account.data.uin}</dd></div>
-          <div><dt>来源</dt><dd>{account.data.source}</dd></div>
-          <div><dt>Key</dt><dd>{account.data.hasQQMusicKey ? 'ready' : 'missing'}</dd></div>
-        </dl>
+        <div className="account-summary">
+          {avatarUrl ? <img src={avatarUrl} alt="" /> : <div className="avatar-placeholder">{account.data.uin?.slice(-2) ?? 'QQ'}</div>}
+          <dl className="account-facts">
+            <div><dt>UIN</dt><dd>{account.data.uin}</dd></div>
+            <div><dt>来源</dt><dd>{account.data.source}</dd></div>
+            <div><dt>Key</dt><dd>{account.data.hasQQMusicKey ? 'ready' : 'missing'}</dd></div>
+          </dl>
+        </div>
       ) : (
         <div className="login-box">
+          {loginQr.data ? (
+            <div className="qr-login">
+              <img src={loginQr.data.img} alt="QQ 登录二维码" />
+              <button onClick={onCheckLoginQr} disabled={account.loading}><RefreshCw size={16} />检查扫码</button>
+            </div>
+          ) : null}
+          <button onClick={onRequestLoginQr} disabled={loginQr.loading}><LogIn size={16} />获取扫码登录</button>
+          <Status state={loginQr} />
           <textarea value={cookieText} onChange={event => onCookieTextChange(event.target.value)} placeholder="粘贴 y.qq.com 已登录请求里的 Cookie" />
           <button onClick={onLogin} disabled={account.loading || !cookieText.trim()}><LogIn size={16} />保存登录</button>
         </div>

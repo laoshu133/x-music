@@ -22,7 +22,12 @@
 - [x] Conservative QQ "猜你喜欢" recommendations API entry point.
 - [x] Local QQ login persistence and logout flow.
 - [x] API/UI entry points for pulling QQ favorites and pushing pending local changes.
+- [x] QQ扫码登录 API and UI flow based on `sansenjian/qq-music-api`.
+- [x] QQ用户头像 API and logged-in avatar display.
+- [x] QQ用户歌单 API and "我的歌单" browser in the playlist view.
 - [ ] Verify QQ account APIs with a real logged-in `QQ_MUSIC_COOKIE` including `euin`/`enc_host_uin`.
+- [ ] Verify QR login end-to-end with a real QQ scan and confirm the returned cookie has the keys required by favorites.
+- [ ] Verify QQ user playlists with a real logged-in account and private/created playlist variants.
 - [ ] Verify local pending favorite/unfavorite actions sync back to QQ Music with a real cookie.
 - [ ] Verify reconciliation: QQ remote favorite state wins and local pending operations are replayed.
 
@@ -32,3 +37,11 @@
 - [x] Align Docker standalone output with `node .next/standalone/server.js`.
 - [x] Add automated tests for URL resolution, job claiming, and cache state transitions.
 - [ ] Add admin UI for cache/job status and failed job retry.
+
+## Reference API Coverage Gaps
+
+- [ ] Music detail APIs from `sansenjian/qq-music-api`: lyric, song info, batch song info, MV play/detail.
+- [ ] Discovery APIs: hot key, smartbox, radio lists, new disks, playlist categories/tags, batch playlist detail.
+- [ ] Singer APIs: singer list, singer detail/description, hot songs, albums, MV, similar singers, star count.
+- [ ] Album/comment/digital album APIs.
+- [ ] Compatibility routes using the upstream naming style such as `/getQQLoginQr`, `/checkQQLoginQr`, and `/user/getUserPlaylists`.
