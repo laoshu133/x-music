@@ -1,5 +1,6 @@
 import { db } from '@/lib/db'
 import { claimNextJob, completeJob, failJob, requeueJob } from '@/lib/jobs'
+import { cleanupInboxFile } from '@/lib/tagging/cleanup'
 import { createTaggingProvider } from '@/lib/tagging/provider'
 import type { TagTrackFileJobPayload } from '@/lib/tagging/types'
 
@@ -36,6 +37,17 @@ async function drainTaggingJobs(): Promise<void> {
         lyricsPath: result.lyricsPath ?? null,
         coverPath: result.coverPath ?? null,
         trackFileId: job.payload.trackFileId,
+      })
+      await cleanupInboxFile({
+        trackFileId: job.payload.trackFileId,
+        rawPath: job.payload.rawPath,
+        finalPath: result.finalPath,
+      }).catch((cleanupError: unknown) => {
+        console.warn(
+          `failed to clean inbox file for track file ${job.payload.trackFileId}: ${
+            cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+          }`,
+        )
       })
       completeJob(job.id)
     } catch (error) {

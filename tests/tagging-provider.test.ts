@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs/promises'
-import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { ensureTrack, upsertTrackFileStatus } from '@/lib/cache/store'
+import { appConfig } from '@/lib/config'
 import { db } from '@/lib/db'
 import { createJob } from '@/lib/jobs'
 import { triggerInlineTagging } from '@/lib/tagging/inline'
@@ -90,8 +90,8 @@ test('payload metadata wins over existing file metadata', () => {
 })
 
 test('inline tagging drains queued builtin tag jobs', async () => {
-  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'mixmusic-tagging-'))
-  const rawPath = path.join(tempRoot, 'raw.txt')
+  await fs.mkdir(appConfig.inboxDir, { recursive: true })
+  const rawPath = path.join(appConfig.inboxDir, `raw-${Date.now()}.txt`)
   await fs.writeFile(rawPath, 'fake audio')
 
   const musicInfo: MusicInfo = {
@@ -123,12 +123,15 @@ test('inline tagging drains queued builtin tag jobs', async () => {
     return row?.status === 'completed'
   })
 
-  const row = db.prepare('SELECT status, final_path, tagged_at FROM track_files WHERE id = ?').get(trackFile.id) as
-    | { status: string; final_path: string; tagged_at: string | null }
+  const row = db.prepare('SELECT status, final_path, raw_path, tagged_at FROM track_files WHERE id = ?').get(trackFile.id) as
+    | { status: string; final_path: string; raw_path: string | null; tagged_at: string | null }
     | undefined
   assert.equal(row?.status, 'ready')
   assert.ok(row?.final_path.includes(path.join('Tester', 'Inline Album')))
   assert.ok(row?.tagged_at)
+  assert.equal(row?.raw_path, null)
+  await assert.rejects(fs.access(rawPath), { code: 'ENOENT' })
+  await fs.access(row!.final_path)
 })
 
 async function waitFor(predicate: () => boolean): Promise<void> {
