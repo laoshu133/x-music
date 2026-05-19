@@ -78,3 +78,25 @@ CREATE TABLE IF NOT EXISTS qq_session (
 );
 
 CREATE INDEX IF NOT EXISTS idx_favorite_sync_state ON favorite_sync(sync_state, updated_at);
+
+CREATE TABLE IF NOT EXISTS app_settings (
+  key TEXT PRIMARY KEY,
+  value_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS request_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  path TEXT NOT NULL,
+  method TEXT NOT NULL,
+  status INTEGER NOT NULL,
+  duration_ms INTEGER NOT NULL,
+  source TEXT NOT NULL,
+  error TEXT,
+  started_at TEXT NOT NULL,
+  completed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_request_logs_completed_at ON request_logs(completed_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_request_logs_path_completed_at ON request_logs(path, completed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_request_logs_status_completed_at ON request_logs(status, completed_at DESC);

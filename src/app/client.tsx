@@ -9,15 +9,17 @@ import {
   ListMusic,
   LogIn,
   LogOut,
+  Radio,
   Play,
   RefreshCw,
   Search,
+  Settings,
   Sparkles,
   Star,
 } from 'lucide-react'
 import type { MusicInfo, PagedResult, PlayHistoryRecord, QQPlaylistDetail, QQPlaylistInfo, QQToplistInfo } from '@/lib/types'
 
-type View = 'search' | 'toplists' | 'playlists' | 'favorites' | 'history' | 'recommendations' | 'status'
+type View = 'search' | 'toplists' | 'playlists' | 'favorites' | 'history' | 'recommendations' | 'config' | 'logs' | 'status'
 
 interface ApiState<T> {
   loading: boolean
@@ -61,6 +63,24 @@ interface HealthStatus {
   config: { missing: string[]; lxMusicSourceScript: boolean }
 }
 
+interface AdminConfig {
+  lx: { sourceScriptUrl?: string }
+  emby: { baseUrl?: string; apiKey?: string; hasApiKey?: boolean; proxyTimeoutMs: number }
+  qq: { enabled: boolean; syncFavorites: boolean; syncPlayHistory: boolean }
+}
+
+interface RequestLogRecord {
+  id: number
+  path: string
+  method: string
+  status: number
+  durationMs: number
+  source: 'local' | 'upstream'
+  error?: string
+  startedAt: string
+  completedAt: string
+}
+
 type RecommendationsResult = PagedResult<MusicInfo> & {
   strategy?: string
   personalized?: boolean
@@ -97,6 +117,8 @@ const viewMeta: Record<View, { label: string; icon: React.ComponentType<{ size?:
   favorites: { label: '收藏', icon: Heart },
   history: { label: '历史', icon: Clock3 },
   recommendations: { label: '猜你喜欢', icon: Sparkles },
+  config: { label: '配置', icon: Settings },
+  logs: { label: '日志', icon: Radio },
   status: { label: '状态', icon: Activity },
 }
 
@@ -148,6 +170,17 @@ export default function MusicClient() {
   const [loginQr, setLoginQr] = useState<ApiState<LoginQrState>>(emptyState)
   const [avatar, setAvatar] = useState<ApiState<UserAvatarResult>>(emptyState)
   const [health, setHealth] = useState<ApiState<HealthStatus>>(emptyState)
+  const [adminConfig, setAdminConfig] = useState<ApiState<AdminConfig>>(emptyState)
+  const [requestLogs, setRequestLogs] = useState<ApiState<{ list: RequestLogRecord[] }>>(emptyState)
+  const [configDraft, setConfigDraft] = useState({
+    lxSourceScriptUrl: '',
+    embyBaseUrl: '',
+    embyApiKey: '',
+    embyProxyTimeoutMs: 30000,
+    qqEnabled: true,
+    qqSyncFavorites: true,
+    qqSyncPlayHistory: true,
+  })
   const [favoriteStatuses, setFavoriteStatuses] = useState<Record<string, FavoriteStatus>>({})
   const [favoriteBusy, setFavoriteBusy] = useState<Record<string, boolean>>({})
   const [syncMessage, setSyncMessage] = useState('')
@@ -176,6 +209,20 @@ export default function MusicClient() {
   const loadFavorites = () => run(s => setFavorites(s), () => fetchJson<{ source: 'local'; list: FavoriteRecord[] }>('/api/favorites'))
   const loadHistory = () => run(s => setHistory(s), () => fetchJson<{ source: 'local'; list: PlayHistoryRecord[] }>('/api/history?limit=100'))
   const loadRecommendations = () => run(s => setRecommendations(s), () => fetchJson<RecommendationsResult>('/api/recommendations?limit=30'))
+  const loadAdminConfig = () => run(s => setAdminConfig(s), async () => {
+    const data = await fetchJson<AdminConfig>('/api/admin/config')
+    setConfigDraft({
+      lxSourceScriptUrl: data.lx.sourceScriptUrl ?? '',
+      embyBaseUrl: data.emby.baseUrl ?? '',
+      embyApiKey: '',
+      embyProxyTimeoutMs: data.emby.proxyTimeoutMs,
+      qqEnabled: data.qq.enabled,
+      qqSyncFavorites: data.qq.syncFavorites,
+      qqSyncPlayHistory: data.qq.syncPlayHistory,
+    })
+    return data
+  })
+  const loadRequestLogs = () => run(s => setRequestLogs(s), () => fetchJson<{ list: RequestLogRecord[] }>('/api/admin/request-logs?limit=120'))
   const loadHealth = () => run(s => setHealth(s), async () => {
     const response = await fetch('/api/health')
     const body = await response.json().catch(() => undefined) as HealthStatus | undefined
@@ -304,7 +351,29 @@ export default function MusicClient() {
     if (next === 'favorites') loadFavorites()
     if (next === 'history') loadHistory()
     if (next === 'recommendations') loadRecommendations()
+    if (next === 'config') loadAdminConfig()
+    if (next === 'logs') loadRequestLogs()
     if (next === 'status') loadHealth()
+  }
+
+  const saveAdminConfig = async () => {
+    setSyncMessage('')
+    const payload: Record<string, unknown> = {
+      lxSourceScriptUrl: configDraft.lxSourceScriptUrl,
+      embyBaseUrl: configDraft.embyBaseUrl,
+      embyProxyTimeoutMs: configDraft.embyProxyTimeoutMs,
+      qqEnabled: configDraft.qqEnabled,
+      qqSyncFavorites: configDraft.qqSyncFavorites,
+      qqSyncPlayHistory: configDraft.qqSyncPlayHistory,
+    }
+    if (configDraft.embyApiKey.trim()) payload.embyApiKey = configDraft.embyApiKey
+    await run(s => setAdminConfig(s), () => fetchJson<AdminConfig>('/api/admin/config', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    }))
+    setConfigDraft(previous => ({ ...previous, embyApiKey: '' }))
+    setSyncMessage('配置已保存')
   }
 
   useEffect(() => {
@@ -502,6 +571,35 @@ export default function MusicClient() {
             </div>
             <Status state={recommendations} />
             <SongTable songs={recommendations.data?.list ?? []} onPlay={playSong} onFavorite={toggleFavorite} favoriteStatuses={favoriteStatuses} favoriteBusy={favoriteBusy} />
+          </section>
+        )}
+
+        {view === 'config' && (
+          <section className="workspace">
+            <div className="section-head">
+              <h3>服务配置</h3>
+              <IconButton label="刷新" onClick={loadAdminConfig} disabled={adminConfig.loading}><RefreshCw size={16} /></IconButton>
+            </div>
+            {syncMessage ? <p className="status">{syncMessage}</p> : null}
+            <Status state={adminConfig} />
+            <ConfigPanel
+              draft={configDraft}
+              hasEmbyApiKey={Boolean(adminConfig.data?.emby.hasApiKey)}
+              onChange={setConfigDraft}
+              onSave={saveAdminConfig}
+              loading={adminConfig.loading}
+            />
+          </section>
+        )}
+
+        {view === 'logs' && (
+          <section className="workspace">
+            <div className="section-head">
+              <h3>请求日志</h3>
+              <IconButton label="刷新" onClick={loadRequestLogs} disabled={requestLogs.loading}><RefreshCw size={16} /></IconButton>
+            </div>
+            <Status state={requestLogs} />
+            <RequestLogTable logs={requestLogs.data?.list ?? []} />
           </section>
         )}
 
@@ -780,7 +878,104 @@ function headingFor(view: View): string {
   if (view === 'favorites') return '收藏与喜欢同步'
   if (view === 'history') return '播放历史'
   if (view === 'recommendations') return '猜你喜欢'
+  if (view === 'config') return '管理同步与上游服务'
+  if (view === 'logs') return '代理与管理请求日志'
   return '系统健康与缓存'
+}
+
+function ConfigPanel({
+  draft,
+  hasEmbyApiKey,
+  onChange,
+  onSave,
+  loading,
+}: {
+  draft: {
+    lxSourceScriptUrl: string
+    embyBaseUrl: string
+    embyApiKey: string
+    embyProxyTimeoutMs: number
+    qqEnabled: boolean
+    qqSyncFavorites: boolean
+    qqSyncPlayHistory: boolean
+  }
+  hasEmbyApiKey: boolean
+  onChange: (value: {
+    lxSourceScriptUrl: string
+    embyBaseUrl: string
+    embyApiKey: string
+    embyProxyTimeoutMs: number
+    qqEnabled: boolean
+    qqSyncFavorites: boolean
+    qqSyncPlayHistory: boolean
+  }) => void
+  onSave: () => void
+  loading: boolean
+}) {
+  const patch = (value: Partial<typeof draft>) => onChange({ ...draft, ...value })
+  return (
+    <div className="config-grid">
+      <section>
+        <h3>LX 音源</h3>
+        <label>
+          <span>脚本 URL</span>
+          <input value={draft.lxSourceScriptUrl} onChange={event => patch({ lxSourceScriptUrl: event.target.value })} placeholder="https://..." />
+        </label>
+      </section>
+      <section>
+        <h3>上游 Emby</h3>
+        <label>
+          <span>Base URL</span>
+          <input value={draft.embyBaseUrl} onChange={event => patch({ embyBaseUrl: event.target.value })} placeholder="http://emby:8096" />
+        </label>
+        <label>
+          <span>API Key{hasEmbyApiKey ? '（已保存）' : ''}</span>
+          <input value={draft.embyApiKey} onChange={event => patch({ embyApiKey: event.target.value })} placeholder={hasEmbyApiKey ? '留空保留现有 key' : 'X-Emby-Token'} />
+        </label>
+        <label>
+          <span>代理超时 ms</span>
+          <input type="number" min={1000} step={1000} value={draft.embyProxyTimeoutMs} onChange={event => patch({ embyProxyTimeoutMs: Number(event.target.value) })} />
+        </label>
+      </section>
+      <section>
+        <h3>QQ 同步</h3>
+        <label className="check-row">
+          <input type="checkbox" checked={draft.qqEnabled} onChange={event => patch({ qqEnabled: event.target.checked })} />
+          <span>启用 QQ 帐号能力</span>
+        </label>
+        <label className="check-row">
+          <input type="checkbox" checked={draft.qqSyncFavorites} onChange={event => patch({ qqSyncFavorites: event.target.checked })} />
+          <span>同步收藏</span>
+        </label>
+        <label className="check-row">
+          <input type="checkbox" checked={draft.qqSyncPlayHistory} onChange={event => patch({ qqSyncPlayHistory: event.target.checked })} />
+          <span>同步播放历史</span>
+        </label>
+      </section>
+      <div className="form-actions">
+        <button onClick={onSave} disabled={loading}>保存配置</button>
+      </div>
+    </div>
+  )
+}
+
+function RequestLogTable({ logs }: { logs: RequestLogRecord[] }) {
+  if (!logs.length) return <p className="empty">暂无请求日志</p>
+  return (
+    <div className="log-table">
+      {logs.map(log => (
+        <article key={log.id} className="log-row">
+          <strong>{log.method}</strong>
+          <span>{log.path}</span>
+          <small className={log.status >= 400 ? 'bad' : ''}>{log.status}</small>
+          <small>{log.source}</small>
+          <small>{log.durationMs}ms</small>
+          <time>{formatPlayedAt(log.completedAt)}</time>
+          {log.error ? <em>{log.error}</em> : null}
+        </article>
+      ))}
+    </div>
+  )
 }
 
 function HealthPanel({ health }: { health: HealthStatus }) {

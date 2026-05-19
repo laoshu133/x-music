@@ -620,7 +620,8 @@ p {
   gap: 12px;
 }
 
-.health-grid section {
+.health-grid section,
+.config-grid section {
   min-width: 0;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -628,9 +629,102 @@ p {
   padding: 14px;
 }
 
-.health-grid h3 {
+.health-grid h3,
+.config-grid h3 {
   margin: 0 0 8px;
   font-size: 14px;
+}
+
+.config-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.config-grid label {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.config-grid input {
+  min-width: 0;
+  height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fffaf1;
+  color: var(--ink);
+  padding: 0 10px;
+}
+
+.config-grid .check-row {
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+}
+
+.config-grid .check-row input {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+}
+
+.form-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.form-actions button {
+  min-height: 40px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--accent);
+  color: white;
+  padding: 0 16px;
+}
+
+.log-table {
+  display: grid;
+  gap: 7px;
+}
+
+.log-row {
+  display: grid;
+  grid-template-columns: 74px minmax(0, 1fr) 64px 78px 84px 120px;
+  gap: 10px;
+  align-items: center;
+  min-height: 48px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 253, 248, 0.78);
+  padding: 9px 11px;
+}
+
+.log-row span,
+.log-row em {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-row small,
+.log-row time {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.log-row small.bad,
+.log-row em {
+  color: var(--danger);
+}
+
+.log-row em {
+  grid-column: 2 / -1;
+  font-size: 12px;
+  font-style: normal;
 }
 
 .player-bar {
@@ -739,8 +833,19 @@ p {
     padding-bottom: 14px;
   }
 
-  .health-grid {
+  .health-grid,
+  .config-grid {
     grid-template-columns: 1fr;
+  }
+
+  .log-row {
+    grid-template-columns: 62px minmax(0, 1fr) 52px;
+  }
+
+  .log-row small:nth-of-type(2),
+  .log-row small:nth-of-type(3),
+  .log-row time {
+    grid-column: 2 / -1;
   }
 }
 
