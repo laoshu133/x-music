@@ -8,10 +8,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "worker": "tsx src/worker/index.ts",
+    "worker": "tsx --tsconfig tsconfig.json src/worker/index.ts",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "test": "npm run typecheck"
+    "test": "npm run typecheck && node --test --import tsx tests/*.test.ts"
   },
   "keywords": [],
   "author": "",

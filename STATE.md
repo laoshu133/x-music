@@ -101,10 +101,11 @@ The current working tree appears to already contain an initial usable skeleton:
   - streams upstream audio;
   - tees stream to local cache.
 - SQLite persistence layer for tracks, track files, play events, and jobs.
-- QQ account API scaffolding:
-  - `GET /api/account` reports configured server-side QQ login state;
-  - `POST /api/account/import` validates cookie text shape without persisting secrets;
-  - `QQ_MUSIC_COOKIE` is the intended server-side env source.
+- QQ account API:
+  - `GET /api/account` reports configured server-side or locally stored QQ login state;
+  - `POST /api/account/import` validates and stores QQ Music Cookie text by default;
+  - `DELETE /api/account` clears the locally stored login state;
+  - `QQ_MUSIC_COOKIE` remains supported as an env fallback.
 - Local favorites layer:
   - `GET /api/favorites`;
   - `POST /api/favorites`;
@@ -112,8 +113,11 @@ The current working tree appears to already contain an initial usable skeleton:
   - SQLite `favorite_sync` rows stay local-first and `pending` until QQ remote sync is implemented.
 - QQ remote favorites and recommendations:
   - `GET/POST/DELETE /api/favorites?remote=qq` are conservative private-endpoint wrappers;
-  - `GET /api/recommendations` calls an experimental QQ radio/recommendation endpoint;
+  - `GET /api/favorites?sync=pull` pulls QQ favorite songs into local state;
+  - `POST /api/favorites?sync=push` replays pending/failed local favorite changes to QQ;
+  - `GET /api/recommendations` calls an experimental QQ radio/recommendation endpoint, then falls back to favorite-seeded search and public toplists;
   - both still require real authenticated-cookie validation.
+- Playback URL resolution now downloads the LX script, parses `API_URL` and `API_KEY`, and calls `{API_URL}/music/url` directly. The old direct-script request shape remains as a compatibility fallback if no API config is exposed.
 - QA health/status endpoint at `/api/health` reports database counts, cache directory access, job counts, local favorite sync counts, and missing config.
 - Web client exposes song search, toplists, playlist search/detail, playback controls, local favorite/unfavorite, local favorites list, "猜你喜欢" entry point, and QA status view.
 - Worker entrypoint for queued tagging jobs.
@@ -124,17 +128,17 @@ The current working tree appears to already contain an initial usable skeleton:
   - `data/music`
   - `data/music-tag-web`
 
-Chrome QA on `http://localhost:3004` verified search, local favorite/unfavorite, local favorites list, status view, and unauthenticated recommendations fallback. Playback success, cache reuse, remote QQ account features, and Docker tagging remain unverified.
+Chrome QA on `http://localhost:3004` verified search rendering, local UI layout, and browser console health after the Impeccable-style frontend rebuild. Automated tests cover URL script parsing, job claiming, and cache ready-file state. Playback success, cache reuse, remote QQ account features, and Docker tagging remain unverified without a real `LX_MUSIC_URL_SCRIPT` and server-side QQ cookie.
 
 ## Known Blockers / Risks
 
-- Chrome QA connected successfully, but `https://y.qq.com/` did not show clear visible logged-in account evidence.
+- Chrome can be used to inspect visible y.qq.com login state, but the Chrome plugin security policy does not allow exporting browser cookies. Server-side QQ API verification still requires the user to paste a Cookie into the app or set `QQ_MUSIC_COOKIE`.
 - QQ remote account APIs are implemented as conservative wrappers but not validated against a real logged-in `QQ_MUSIC_COOKIE`.
   - Favorite read likely needs `euin`/`enc_host_uin`.
   - Favorite write and recommendations use private endpoints that may change.
-  - Pending local favorite/unfavorite queue is not yet reconciled or replayed to QQ.
+- Pending local favorite/unfavorite replay and QQ pull reconciliation are implemented but still need validation against a real cookie.
 - Real `LX_MUSIC_URL_SCRIPT` end-to-end playback has not been verified.
-- Current local health status reports missing `LX_MUSIC_URL_SCRIPT`; playback success and cache reuse are blocked until real `.env` is provided.
+- Current local repo only contains `.env.example` with `key=replace-me`; playback success and cache reuse are blocked until a real `.env` is provided.
 - Single upstream tee behavior must be tested carefully:
   - browser disconnect;
   - partial Range request;
@@ -146,11 +150,9 @@ Chrome QA on `http://localhost:3004` verified search, local favorite/unfavorite,
 
 ## Immediate TODO
 
-1. Stabilize and commit the current feature set.
-   - Run `npm run typecheck`.
-   - Run `npm run build`.
-   - Fix any compile/runtime issues.
-   - Commit the local favorites/account/recommendations/health feature set.
+1. Provide real local secrets for final acceptance.
+   - Set `LX_MUSIC_URL_SCRIPT` in `.env` with the real script URL/key.
+   - Paste a current y.qq.com Cookie into the app login panel or set `QQ_MUSIC_COOKIE`.
 
 2. Verify QQ metadata APIs.
    - Song search returns normalized `MusicInfo`.
@@ -180,8 +182,8 @@ Chrome QA on `http://localhost:3004` verified search, local favorite/unfavorite,
    - Verify remote favorite read.
    - Verify favorite/unfavorite write.
    - Verify "猜你喜欢" response mapping.
-   - Implement pending local favorite sync worker/API.
-   - Add periodic reconciliation where QQ remote state wins.
+   - Verify pending local favorite sync API.
+   - Verify reconciliation where QQ remote state wins.
 
 ## Suggested Sub-Agent Split
 

@@ -1,9 +1,10 @@
 services:
   web:
+    image: mixmusic-app:latest
     build:
       context: .
       dockerfile: Dockerfile
-    command: npm run start
+    command: node .next/standalone/server.js
     restart: unless-stopped
     env_file:
       - path: .env
@@ -19,6 +20,7 @@ services:
       - music-tag-web
 
   worker:
+    image: mixmusic-app:latest
     build:
       context: .
       dockerfile: Dockerfile
@@ -40,7 +42,7 @@ services:
     image: xhongc/music_tag_web:latest
     restart: unless-stopped
     ports:
-      - "8001:8001"
+      - "8002:8002"
     volumes:
       - ./data/inbox:/app/media:rw
       - ./data/music:/app/music:rw

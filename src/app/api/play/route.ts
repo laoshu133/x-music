@@ -1,6 +1,6 @@
 import { ensureTrack, getReadyTrackFile, insertPlayEvent, upsertTrackFileStatus } from '@/lib/cache/store'
 import { createUpstreamTeeResponse, streamLocalFile } from '@/lib/cache/stream'
-import { MusicUrlResolveError, parseRequestedQuality, qualityFallbacks, resolveMusicUrlWithFallback } from '@/lib/music-url/resolve'
+import { MusicUrlConfigError, MusicUrlResolveError, parseRequestedQuality, qualityFallbacks, resolveMusicUrlWithFallback } from '@/lib/music-url/resolve'
 import type { MusicInfo, OnlineSource } from '@/lib/types'
 
 export const runtime = 'nodejs'
@@ -69,6 +69,10 @@ const handlePlayRequest = async (request: Request, input: PlayRequest): Promise<
 }
 
 const playbackErrorMessage = (error: unknown): string => {
+  if (error instanceof MusicUrlConfigError) {
+    return `${error.message}. Set LX_MUSIC_URL_SCRIPT to the LX script URL; miXmusic will parse API_URL/API_KEY from that script and call the API directly.`
+  }
+
   if (error instanceof MusicUrlResolveError) {
     const detail = error.attempts.map((attempt) => `${attempt.quality}: ${attempt.error}`).join('; ')
     return `Unable to resolve a playable music URL. ${detail}`

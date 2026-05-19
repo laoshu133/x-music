@@ -33,6 +33,13 @@ export class MusicUrlResolveError extends Error {
   }
 }
 
+export class MusicUrlConfigError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'MusicUrlConfigError'
+  }
+}
+
 export const qualityFallbacks = (preferred?: MusicQuality): MusicQuality[] => {
   if (!preferred) return preferredQualities
   const startIndex = preferredQualities.indexOf(preferred)
@@ -64,11 +71,12 @@ export const resolveMusicUrl = async (
   musicInfo: MusicInfo,
   quality: MusicQuality,
 ): Promise<ResolvedMusicUrl> => {
-  if (!appConfig.lxMusicUrlScript) {
-    throw new Error('LX_MUSIC_URL_SCRIPT is not configured')
+  const scriptUrl = getConfiguredLxScriptUrl()
+  if (!scriptUrl) {
+    throw new MusicUrlConfigError('LX_MUSIC_URL_SCRIPT is not configured')
   }
 
-  const url = await resolveThroughLxApi(appConfig.lxMusicUrlScript, musicInfo, quality)
+  const url = await resolveThroughLxApi(scriptUrl, musicInfo, quality)
 
   return {
     url,
@@ -97,12 +105,12 @@ const resolveLxApiConfig = async (scriptUrl: string): Promise<LxApiConfig> => {
 
   const body = await response.text()
   if (!response.ok) {
-    throw new Error(`LX music URL script returned ${response.status}: ${body.slice(0, 160)}`)
+    throw new MusicUrlConfigError(`LX music URL script returned ${response.status}: ${body.slice(0, 160)}`)
   }
 
   const config = parseLxScriptConfig(body)
   if (!config) {
-    throw new Error('LX music URL script does not expose API_URL and API_KEY')
+    throw new MusicUrlConfigError('LX music URL script does not expose API_URL and API_KEY')
   }
 
   lxScriptConfigCache = {
@@ -133,12 +141,16 @@ export const getLxMusicApiConfig = resolveLxApiConfig
 
 const parseLxScriptConfig = (script: string): LxApiConfig | undefined => {
   const apiUrl = matchJsStringConstant(script, 'API_URL')
-  const apiKey = matchJsStringConstant(script, 'API_KEY') ?? new URL(appConfig.lxMusicUrlScript ?? 'http://invalid').searchParams.get('key') ?? undefined
+  const apiKey = matchJsStringConstant(script, 'API_KEY') ?? new URL(getConfiguredLxScriptUrl() ?? 'http://invalid').searchParams.get('key') ?? undefined
   if (!apiUrl || apiKey === undefined) return undefined
   return {
     apiUrl: apiUrl.replace(/\/+$/, ''),
     apiKey,
   }
+}
+
+const getConfiguredLxScriptUrl = (): string | undefined => {
+  return process.env.LX_MUSIC_URL_SCRIPT?.trim() || appConfig.lxMusicUrlScript
 }
 
 const matchJsStringConstant = (script: string, name: string): string | undefined => {

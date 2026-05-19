@@ -20,13 +20,15 @@
 - [x] QQ Music cookie-shape validation/import endpoint.
 - [x] Conservative QQ remote favorite read/write API entry points.
 - [x] Conservative QQ "猜你喜欢" recommendations API entry point.
+- [x] Local QQ login persistence and logout flow.
+- [x] API/UI entry points for pulling QQ favorites and pushing pending local changes.
 - [ ] Verify QQ account APIs with a real logged-in `QQ_MUSIC_COOKIE` including `euin`/`enc_host_uin`.
-- [ ] Sync local pending favorite/unfavorite actions back to QQ Music.
-- [ ] Periodic reconciliation: QQ remote favorite state wins, local pending operations are replayed.
+- [ ] Verify local pending favorite/unfavorite actions sync back to QQ Music with a real cookie.
+- [ ] Verify reconciliation: QQ remote favorite state wins and local pending operations are replayed.
 
 ## P2 - Hardening
 
-- [ ] Improve `/api/play` API-level error reporting for missing `LX_MUSIC_URL_SCRIPT`.
-- [ ] Align Docker standalone output with `node .next/standalone/server.js`.
-- [ ] Add automated tests for URL resolution, job claiming, and cache state transitions.
+- [x] Improve `/api/play` API-level error reporting for missing `LX_MUSIC_URL_SCRIPT`.
+- [x] Align Docker standalone output with `node .next/standalone/server.js`.
+- [x] Add automated tests for URL resolution, job claiming, and cache state transitions.
 - [ ] Add admin UI for cache/job status and failed job retry.
