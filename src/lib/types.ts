@@ -89,8 +89,11 @@ export interface TrackFileRecord {
   status: TrackFileStatus
   rawPath?: string
   finalPath?: string
+  lyricsPath?: string
+  coverPath?: string
   sizeBytes?: number
   sha256?: string
+  taggedAt?: string
   error?: string
 }
 

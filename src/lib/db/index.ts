@@ -16,3 +16,15 @@ db.pragma('foreign_keys = ON')
 
 const schemaPath = path.join(process.cwd(), 'src/lib/db/schema.sql')
 db.exec(fs.readFileSync(schemaPath, 'utf8'))
+
+for (const statement of [
+  'ALTER TABLE track_files ADD COLUMN lyrics_path TEXT',
+  'ALTER TABLE track_files ADD COLUMN cover_path TEXT',
+  'ALTER TABLE track_files ADD COLUMN tagged_at TEXT',
+]) {
+  try {
+    db.exec(statement)
+  } catch (error) {
+    if (!String(error).includes('duplicate column name')) throw error
+  }
+}

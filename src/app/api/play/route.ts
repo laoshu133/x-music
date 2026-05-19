@@ -1,4 +1,4 @@
-import { ensureTrack, getReadyTrackFile, insertPlayEvent, upsertTrackFileStatus } from '@/lib/cache/store'
+import { ensureTrack, getPlayableTrackFile, insertPlayEvent, upsertTrackFileStatus } from '@/lib/cache/store'
 import { createUpstreamTeeResponse, streamLocalFile } from '@/lib/cache/stream'
 import { MusicUrlConfigError, MusicUrlResolveError, parseRequestedQuality, qualityFallbacks, resolveMusicUrlWithFallback } from '@/lib/music-url/resolve'
 import { syncQQPlayHistoryBestEffort } from '@/lib/qq'
@@ -36,18 +36,19 @@ const handlePlayRequest = async (request: Request, input: PlayRequest): Promise<
   const requestedQuality = parseRequestedQuality(input.quality)
   const preferredQuality = requestedQuality ?? 'flac'
 
-  const readyFile = qualityFallbacks(preferredQuality)
-    .map((quality) => getReadyTrackFile(musicInfo.source, musicInfo.songmid, quality))
+  const playableFile = qualityFallbacks(preferredQuality)
+    .map((quality) => getPlayableTrackFile(musicInfo.source, musicInfo.songmid, quality))
     .find((file) => file !== undefined)
-  if (readyFile?.finalPath) {
+  const localPath = playableFile?.finalPath ?? playableFile?.rawPath
+  if (playableFile && localPath) {
     const track = ensureTrack(musicInfo)
-    insertPlayEvent(track.id, readyFile.quality)
+    insertPlayEvent(track.id, playableFile.quality)
     syncQQPlayHistoryBestEffort({
       cookie: request.headers.get('x-qq-music-cookie') ?? undefined,
       musicInfo,
-      quality: readyFile.quality,
+      quality: playableFile.quality,
     })
-    return streamLocalFile(readyFile.finalPath, request)
+    return streamLocalFile(localPath, request)
   }
 
   const track = ensureTrack(musicInfo)

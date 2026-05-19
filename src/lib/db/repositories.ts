@@ -30,8 +30,11 @@ export interface TrackFileRow {
   status: TrackFileStatus
   raw_path: string | null
   final_path: string | null
+  lyrics_path: string | null
+  cover_path: string | null
   size_bytes: number | null
   sha256: string | null
+  tagged_at: string | null
   error: string | null
 }
 
@@ -78,19 +81,25 @@ export const upsertTrackFile = (input: {
   status: TrackFileStatus
   rawPath?: string | null
   finalPath?: string | null
+  lyricsPath?: string | null
+  coverPath?: string | null
   sizeBytes?: number | null
   sha256?: string | null
+  taggedAt?: string | null
   error?: string | null
 }): TrackFileRow => {
   db.prepare(`
-    INSERT INTO track_files (track_id, quality, status, raw_path, final_path, size_bytes, sha256, error, updated_at)
-    VALUES (@trackId, @quality, @status, @rawPath, @finalPath, @sizeBytes, @sha256, @error, @updatedAt)
+    INSERT INTO track_files (track_id, quality, status, raw_path, final_path, lyrics_path, cover_path, size_bytes, sha256, tagged_at, error, updated_at)
+    VALUES (@trackId, @quality, @status, @rawPath, @finalPath, @lyricsPath, @coverPath, @sizeBytes, @sha256, @taggedAt, @error, @updatedAt)
     ON CONFLICT(track_id, quality) DO UPDATE SET
       status = excluded.status,
       raw_path = COALESCE(excluded.raw_path, track_files.raw_path),
       final_path = COALESCE(excluded.final_path, track_files.final_path),
+      lyrics_path = COALESCE(excluded.lyrics_path, track_files.lyrics_path),
+      cover_path = COALESCE(excluded.cover_path, track_files.cover_path),
       size_bytes = COALESCE(excluded.size_bytes, track_files.size_bytes),
       sha256 = COALESCE(excluded.sha256, track_files.sha256),
+      tagged_at = COALESCE(excluded.tagged_at, track_files.tagged_at),
       error = excluded.error,
       updated_at = excluded.updated_at
   `).run({
@@ -99,8 +108,11 @@ export const upsertTrackFile = (input: {
     status: input.status,
     rawPath: input.rawPath ?? null,
     finalPath: input.finalPath ?? null,
+    lyricsPath: input.lyricsPath ?? null,
+    coverPath: input.coverPath ?? null,
     sizeBytes: input.sizeBytes ?? null,
     sha256: input.sha256 ?? null,
+    taggedAt: input.taggedAt ?? null,
     error: input.error ?? null,
     updatedAt: now(),
   })

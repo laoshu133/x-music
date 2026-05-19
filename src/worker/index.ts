@@ -44,11 +44,16 @@ async function processTagJob(): Promise<boolean> {
       UPDATE track_files
       SET status = 'ready',
           final_path = @finalPath,
+          lyrics_path = COALESCE(@lyricsPath, lyrics_path),
+          cover_path = COALESCE(@coverPath, cover_path),
+          tagged_at = CURRENT_TIMESTAMP,
           error = NULL,
           updated_at = CURRENT_TIMESTAMP
       WHERE id = @trackFileId
     `).run({
       finalPath: result.finalPath,
+      lyricsPath: result.lyricsPath ?? null,
+      coverPath: result.coverPath ?? null,
       trackFileId: job.payload.trackFileId,
     })
     completeJob(job.id)

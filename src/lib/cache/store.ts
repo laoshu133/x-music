@@ -24,8 +24,11 @@ interface TrackFileRow {
   status: TrackFileStatus
   raw_path: string | null
   final_path: string | null
+  lyrics_path: string | null
+  cover_path: string | null
   size_bytes: number | null
   sha256: string | null
+  tagged_at: string | null
   error: string | null
 }
 
@@ -85,6 +88,30 @@ export const getReadyTrackFile = (source: OnlineSource, songmid: string, quality
   return record
 }
 
+export const getPlayableTrackFile = (source: OnlineSource, songmid: string, quality: MusicQuality): TrackFileRecord | undefined => {
+  const row = db.prepare(`
+    SELECT tf.*
+    FROM track_files tf
+    INNER JOIN tracks t ON t.id = tf.track_id
+    WHERE t.source = ? AND t.songmid = ? AND tf.quality = ?
+      AND tf.status IN ('ready', 'tagging', 'cached_raw', 'failed')
+    ORDER BY
+      CASE tf.status
+        WHEN 'ready' THEN 0
+        WHEN 'tagging' THEN 1
+        WHEN 'cached_raw' THEN 2
+        WHEN 'failed' THEN 3
+        ELSE 3
+      END
+    LIMIT 1
+  `).get(source, songmid, quality) as TrackFileRow | undefined
+
+  const record = row ? mapTrackFile(row) : undefined
+  if (record?.finalPath && fs.existsSync(record.finalPath)) return record
+  if (record?.rawPath && fs.existsSync(record.rawPath)) return record
+  return undefined
+}
+
 export const upsertTrackFileStatus = (
   trackId: number,
   quality: MusicQuality,
@@ -92,14 +119,17 @@ export const upsertTrackFileStatus = (
   fields: Partial<Pick<TrackFileRecord, 'rawPath' | 'finalPath' | 'sizeBytes' | 'sha256' | 'error'>> = {},
 ): TrackFileRecord => {
   db.prepare(`
-    INSERT INTO track_files (track_id, quality, status, raw_path, final_path, size_bytes, sha256, error, updated_at)
-    VALUES (@trackId, @quality, @status, @rawPath, @finalPath, @sizeBytes, @sha256, @error, @updatedAt)
+    INSERT INTO track_files (track_id, quality, status, raw_path, final_path, lyrics_path, cover_path, size_bytes, sha256, tagged_at, error, updated_at)
+    VALUES (@trackId, @quality, @status, @rawPath, @finalPath, @lyricsPath, @coverPath, @sizeBytes, @sha256, @taggedAt, @error, @updatedAt)
     ON CONFLICT(track_id, quality) DO UPDATE SET
       status = excluded.status,
       raw_path = COALESCE(excluded.raw_path, track_files.raw_path),
       final_path = COALESCE(excluded.final_path, track_files.final_path),
+      lyrics_path = COALESCE(excluded.lyrics_path, track_files.lyrics_path),
+      cover_path = COALESCE(excluded.cover_path, track_files.cover_path),
       size_bytes = COALESCE(excluded.size_bytes, track_files.size_bytes),
       sha256 = COALESCE(excluded.sha256, track_files.sha256),
+      tagged_at = COALESCE(excluded.tagged_at, track_files.tagged_at),
       error = excluded.error,
       updated_at = excluded.updated_at
   `).run({
@@ -108,8 +138,11 @@ export const upsertTrackFileStatus = (
     status,
     rawPath: fields.rawPath ?? null,
     finalPath: fields.finalPath ?? null,
+    lyricsPath: null,
+    coverPath: null,
     sizeBytes: fields.sizeBytes ?? null,
     sha256: fields.sha256 ?? null,
+    taggedAt: null,
     error: fields.error ?? null,
     updatedAt: now(),
   })
@@ -147,6 +180,15 @@ export const listPlayHistory = (limit = 50): PlayHistoryRecord[] => {
 
 export const enqueueTagJob = (trackFile: TrackFileRecord, track: TrackRecord): void => {
   if (!trackFile.rawPath) return
+  const existing = db.prepare(`
+    SELECT id
+    FROM jobs
+    WHERE type = 'tag_track_file'
+      AND status IN ('queued', 'running')
+      AND json_extract(payload_json, '$.trackFileId') = ?
+    LIMIT 1
+  `).get(trackFile.id) as { id: number } | undefined
+  if (existing) return
 
   createJob({
     type: 'tag_track_file',
@@ -204,8 +246,11 @@ const mapTrackFile = (row: TrackFileRow): TrackFileRecord => ({
   status: row.status,
   rawPath: row.raw_path ?? undefined,
   finalPath: row.final_path ?? undefined,
+  lyricsPath: row.lyrics_path ?? undefined,
+  coverPath: row.cover_path ?? undefined,
   sizeBytes: row.size_bytes ?? undefined,
   sha256: row.sha256 ?? undefined,
+  taggedAt: row.tagged_at ?? undefined,
   error: row.error ?? undefined,
 })
 

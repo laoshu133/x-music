@@ -49,6 +49,22 @@ test('tagging path segments are sanitized and organized by artist and album', ()
   assert.equal(finalPath.includes(path.join('周杰伦 杰伦', '叶惠美 2003')), true)
 })
 
+test('tagging sidecars use Emby-compatible album cover and track lyrics paths', () => {
+  const finalPath = taggingInternals.buildFinalPath(payload, {
+    title: '晴天',
+    artist: '周杰伦',
+    album: '叶惠美',
+  })
+  const sidecars = taggingInternals.buildSidecarPaths(finalPath, {
+    lyrics: '[00:00.00]晴天',
+    cover: { data: Buffer.from('cover'), mime: 'image/jpeg' },
+  })
+
+  assert.equal(path.basename(sidecars.lyricsPath ?? ''), '周杰伦 - 晴天.lrc')
+  assert.equal(path.basename(sidecars.coverPath ?? ''), 'cover.jpg')
+  assert.equal(path.dirname(sidecars.coverPath ?? ''), path.dirname(finalPath))
+})
+
 test('payload metadata wins over existing file metadata', () => {
   const existingMetadata = {
     format: { tagTypes: [] },
@@ -107,11 +123,12 @@ test('inline tagging drains queued builtin tag jobs', async () => {
     return row?.status === 'completed'
   })
 
-  const row = db.prepare('SELECT status, final_path FROM track_files WHERE id = ?').get(trackFile.id) as
-    | { status: string; final_path: string }
+  const row = db.prepare('SELECT status, final_path, tagged_at FROM track_files WHERE id = ?').get(trackFile.id) as
+    | { status: string; final_path: string; tagged_at: string | null }
     | undefined
   assert.equal(row?.status, 'ready')
   assert.ok(row?.final_path.includes(path.join('Tester', 'Inline Album')))
+  assert.ok(row?.tagged_at)
 })
 
 async function waitFor(predicate: () => boolean): Promise<void> {

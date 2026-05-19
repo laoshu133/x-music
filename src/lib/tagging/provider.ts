@@ -13,6 +13,8 @@ export type TaggingMode = 'builtin'
 export interface TaggingResult {
   mode: TaggingMode
   finalPath: string
+  lyricsPath?: string
+  coverPath?: string
   warnings?: string[]
 }
 
@@ -155,6 +157,17 @@ function buildFinalPath(payload: TagTrackFileJobPayload, metadata: NormalizedMet
   return path.join(appConfig.musicDir, artist, album, filename)
 }
 
+function buildSidecarPaths(finalPath: string, metadata: NormalizedMetadata): {
+  lyricsPath?: string
+  coverPath?: string
+} {
+  const parsed = path.parse(finalPath)
+  return {
+    lyricsPath: metadata.lyrics ? path.join(parsed.dir, `${parsed.name}.lrc`) : undefined,
+    coverPath: metadata.cover ? path.join(parsed.dir, `cover${extensionFromMime(metadata.cover.mime)}`) : undefined,
+  }
+}
+
 async function pathExists(filePath: string): Promise<boolean> {
   try {
     await fs.access(filePath)
@@ -164,23 +177,15 @@ async function pathExists(filePath: string): Promise<boolean> {
   }
 }
 
-async function uniquePath(targetPath: string): Promise<string> {
-  if (!await pathExists(targetPath)) return targetPath
-
-  const parsed = path.parse(targetPath)
-  for (let index = 1; index < 1000; index += 1) {
-    const candidate = path.join(parsed.dir, `${parsed.name} (${index})${parsed.ext}`)
-    if (!await pathExists(candidate)) return candidate
-  }
-
-  throw new Error(`Unable to allocate unique tagged path for ${targetPath}`)
+async function copyRawToLibrary(rawPath: string, targetPath: string): Promise<string> {
+  await fs.mkdir(path.dirname(targetPath), { recursive: true })
+  await fs.copyFile(rawPath, targetPath)
+  return targetPath
 }
 
-async function copyRawToLibrary(rawPath: string, targetPath: string): Promise<string> {
-  const finalPath = await uniquePath(targetPath)
-  await fs.mkdir(path.dirname(finalPath), { recursive: true })
-  await fs.copyFile(rawPath, finalPath)
-  return finalPath
+function extensionFromMime(mime: string): string {
+  if (mime === 'image/png') return '.png'
+  return '.jpg'
 }
 
 function mergePayloadMetadata(payload: TagTrackFileJobPayload, existing?: IAudioMetadata): NormalizedMetadata {
@@ -349,7 +354,11 @@ async function fetchQQLyrics(songmid: string): Promise<string | undefined> {
   ).catch(() => undefined)
 
   if (!data?.lyric) return undefined
-  return Buffer.from(data.lyric, 'base64').toString('utf8')
+  return normalizeLyrics(Buffer.from(data.lyric, 'base64').toString('utf8'))
+}
+
+function normalizeLyrics(value: string): string {
+  return value.replace(/\r\n?/g, '\n').trimEnd()
 }
 
 async function fetchCover(url: string | undefined): Promise<CoverImage | undefined> {
@@ -450,6 +459,22 @@ async function writeTags(filePath: string, metadata: NormalizedMetadata): Promis
   return undefined
 }
 
+async function writeEmbySidecars(finalPath: string, metadata: NormalizedMetadata): Promise<{
+  lyricsPath?: string
+  coverPath?: string
+}> {
+  const sidecars = buildSidecarPaths(finalPath, metadata)
+  if (sidecars.lyricsPath && metadata.lyrics) {
+    await fs.writeFile(sidecars.lyricsPath, `${normalizeLyrics(metadata.lyrics)}\n`, 'utf8')
+  }
+
+  if (sidecars.coverPath && metadata.cover) {
+    await fs.writeFile(sidecars.coverPath, metadata.cover.data)
+  }
+
+  return sidecars
+}
+
 function setFlacTag(flac: MetaflacFile, name: string, value: string | string[] | undefined): void {
   flac.removeTag(name)
   const values = Array.isArray(value) ? value : value ? [value] : []
@@ -463,15 +488,22 @@ async function tagWithBuiltinProvider(payload: TagTrackFileJobPayload): Promise<
   const payloadMetadata = mergePayloadMetadata(payload, existing)
   const onlineMetadata = await resolveOnlineMetadata(payload, payloadMetadata).catch(() => undefined)
   const metadata = mergeOnlineMetadata(payloadMetadata, onlineMetadata)
-  const finalPath = await copyRawToLibrary(payload.rawPath, buildFinalPath(payload, metadata))
+  const targetPath = buildFinalPath(payload, metadata)
+  const finalPath = await copyRawToLibrary(payload.rawPath, targetPath)
   const warnings: string[] = []
 
-  const writeWarning = await writeTags(finalPath, metadata)
+  const shouldWriteTags = supportedTagWriteExtensions.has(path.extname(finalPath).toLowerCase())
+  const writeWarning = shouldWriteTags
+    ? await writeTags(finalPath, metadata)
+    : `tag writing unsupported for ${path.extname(finalPath).toLowerCase() || 'unknown extension'}`
   if (writeWarning) warnings.push(writeWarning)
+  const sidecars = await writeEmbySidecars(finalPath, metadata)
 
   return {
     mode: 'builtin',
     finalPath,
+    lyricsPath: sidecars.lyricsPath,
+    coverPath: sidecars.coverPath,
     warnings: warnings.length ? warnings : undefined,
   }
 }
@@ -494,5 +526,6 @@ export const taggingInternals = {
   scoreMetadataMatch,
   safePathSegment,
   buildFinalPath,
+  buildSidecarPaths,
   mergePayloadMetadata,
 }

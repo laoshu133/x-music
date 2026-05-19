@@ -53,7 +53,8 @@ data/
 5. Create a SQLite `tag_track_file` job.
 6. The worker claims queued jobs and calls the configured tagging provider.
 7. The default built-in provider reads existing tags with `music-metadata`, enriches QQ Music metadata when available, writes MP3/FLAC tags, and copies the final file into `data/music`.
-8. Store `source + songmid + quality -> finalPath` mappings in SQLite.
+8. Store `source + songmid + quality -> rawPath/finalPath/lyricsPath/coverPath/taggedAt` mappings in SQLite.
+9. Later playback first checks SQLite for an existing local `ready`, `tagging`, `cached_raw`, or cached-but-failed file before resolving another upstream URL.
 
 ## Local Favorites and Status
 
@@ -113,7 +114,9 @@ The built-in provider ports the practical parts of music-tag-web's scraping flow
 
 - match candidates by title, artist, and album score;
 - prefer QQ Music song detail by `songmid`, then search by title and artist;
+- fetch QQ Music lyrics and cover images during scraping when enabled;
 - write title, artist, album, year, lyrics, cover, and QQ album id for MP3/FLAC when supported;
-- organize final files under `data/music`.
+- organize final files under `data/music` using deterministic paths so repeated jobs replace the same library file instead of creating `(... )` duplicates;
+- write Emby-friendly sidecars next to the track: `cover.jpg/png` for the album cover and `artist - title.lrc` for synchronized lyrics when available.
 
 Unsupported tag-write formats degrade to organized file copy with a worker warning instead of failing the cache job.

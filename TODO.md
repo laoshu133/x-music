@@ -14,9 +14,11 @@
 - [x] Local playback history API returns recent play events from SQLite.
 - [x] Health API reports database, cache directory, job, favorite, and missing config status.
 - [ ] End-to-end playback with the real `LX_MUSIC_SOURCE_SCRIPT` source is verified.
-- [ ] End-to-end cache reuse is verified: second play reads local file instead of resolving URL again.
+- [x] API-level cache reuse checks `ready`, `tagging`, `cached_raw`, and cached failed-tag files before resolving a new URL.
 - [ ] End-to-end local playback history is verified after real playback.
-- [ ] End-to-end built-in tagging writes tags and organizes cached MP3/FLAC files.
+- [x] Built-in tagging uses deterministic library paths, records tagged sidecars in SQLite, and writes Emby-friendly cover/lyrics files when metadata is available.
+- [ ] End-to-end cache reuse is verified with real browser playback and the real `LX_MUSIC_SOURCE_SCRIPT`.
+- [ ] End-to-end built-in tagging is verified against real MP3/FLAC playback files and an Emby scan.
 
 ## P1 - QQ Account Features
 
