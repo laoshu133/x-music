@@ -621,7 +621,8 @@ p {
 }
 
 .health-grid section,
-.config-grid section {
+.config-grid section,
+.connection-panel {
   min-width: 0;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -630,9 +631,68 @@ p {
 }
 
 .health-grid h3,
-.config-grid h3 {
+.config-grid h3,
+.connection-panel h3 {
   margin: 0 0 8px;
   font-size: 14px;
+}
+
+.home-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.connection-list {
+  display: grid;
+  gap: 9px;
+}
+
+.connection-list div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.connection-list dt,
+.connection-panel label span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.connection-list dd {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.connection-panel label {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.connection-panel input {
+  min-width: 0;
+  height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fffaf1;
+  color: var(--ink);
+  padding: 0 10px;
+}
+
+.connection-panel button {
+  min-height: 40px;
+  margin-top: 12px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--accent);
+  color: white;
+  padding: 0 14px;
 }
 
 .config-grid {
@@ -834,6 +894,7 @@ p {
   }
 
   .health-grid,
+  .home-grid,
   .config-grid {
     grid-template-columns: 1fr;
   }

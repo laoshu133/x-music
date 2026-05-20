@@ -6,6 +6,7 @@ import {
   Clock3,
   DownloadCloud,
   Heart,
+  Home,
   ListMusic,
   LogIn,
   LogOut,
@@ -17,9 +18,10 @@ import {
   Sparkles,
   Star,
 } from 'lucide-react'
+import { useRouter, useSearchParams } from 'next/navigation'
 import type { MusicInfo, PagedResult, PlayHistoryRecord, QQPlaylistDetail, QQPlaylistInfo, QQToplistInfo } from '@/lib/types'
 
-type View = 'search' | 'toplists' | 'playlists' | 'favorites' | 'history' | 'recommendations' | 'config' | 'logs' | 'status'
+type View = 'home' | 'search' | 'toplists' | 'playlists' | 'favorites' | 'history' | 'recommendations' | 'config' | 'logs' | 'status'
 
 interface ApiState<T> {
   loading: boolean
@@ -66,6 +68,7 @@ interface HealthStatus {
 interface AdminConfig {
   lx: { sourceScriptUrl?: string }
   emby: { baseUrl?: string; apiKey?: string; hasApiKey?: boolean; username?: string; hasPassword?: boolean; proxyTimeoutMs: number }
+  gateway: { hasPassword?: boolean }
   qq: { enabled: boolean; syncFavorites: boolean; syncPlayHistory: boolean }
 }
 
@@ -111,6 +114,7 @@ const fetchJson = async <T,>(url: string, init?: RequestInit): Promise<T> => {
 }
 
 const viewMeta: Record<View, { label: string; icon: React.ComponentType<{ size?: number }> }> = {
+  home: { label: '首页', icon: Home },
   search: { label: '搜索', icon: Search },
   toplists: { label: '排行', icon: Star },
   playlists: { label: '歌单', icon: ListMusic },
@@ -120,6 +124,12 @@ const viewMeta: Record<View, { label: string; icon: React.ComponentType<{ size?:
   config: { label: '配置', icon: Settings },
   logs: { label: '日志', icon: Radio },
   status: { label: '状态', icon: Activity },
+}
+
+const views = Object.keys(viewMeta) as View[]
+
+function parseView(value: string | null): View {
+  return value && views.includes(value as View) ? value as View : 'home'
 }
 
 const playUrlFor = (song: MusicInfo): string => {
@@ -153,7 +163,10 @@ const favoritePayload = (song: MusicInfo, favorite: boolean) => ({
 })
 
 export default function MusicClient() {
-  const [view, setView] = useState<View>('search')
+  const router = useRouter()
+  const searchParams = useSearchParams()
+  const routeView = parseView(searchParams.get('view'))
+  const [view, setView] = useState<View>(routeView)
   const [query, setQuery] = useState('周杰伦')
   const [playlistQuery, setPlaylistQuery] = useState('周杰伦')
   const [cookieText, setCookieText] = useState('')
@@ -178,6 +191,7 @@ export default function MusicClient() {
     embyDsn: '',
     embyApiKey: '',
     embyProxyTimeoutMs: 30000,
+    gatewayPassword: '',
     qqEnabled: true,
     qqSyncFavorites: true,
     qqSyncPlayHistory: true,
@@ -187,6 +201,7 @@ export default function MusicClient() {
   const [syncMessage, setSyncMessage] = useState('')
   const [currentSong, setCurrentSong] = useState<MusicInfo | null>(null)
   const [playerError, setPlayerError] = useState('')
+  const [browserOrigin, setBrowserOrigin] = useState('')
   const audioRef = useRef<HTMLAudioElement>(null)
 
   const currentPlayUrl = useMemo(() => currentSong ? playUrlFor(currentSong) : '', [currentSong])
@@ -218,6 +233,7 @@ export default function MusicClient() {
       embyDsn: '',
       embyApiKey: '',
       embyProxyTimeoutMs: data.emby.proxyTimeoutMs,
+      gatewayPassword: '',
       qqEnabled: data.qq.enabled,
       qqSyncFavorites: data.qq.syncFavorites,
       qqSyncPlayHistory: data.qq.syncPlayHistory,
@@ -349,10 +365,16 @@ export default function MusicClient() {
 
   const openView = (next: View) => {
     setView(next)
+    router.push(next === 'home' ? '/admin' : `/admin?view=${next}`)
+    loadViewData(next)
+  }
+
+  const loadViewData = (next: View) => {
     if (next === 'toplists' && !toplists.data) loadToplists()
     if (next === 'favorites') loadFavorites()
     if (next === 'history') loadHistory()
     if (next === 'recommendations') loadRecommendations()
+    if (next === 'home') loadAdminConfig()
     if (next === 'config') loadAdminConfig()
     if (next === 'logs') loadRequestLogs()
     if (next === 'status') loadHealth()
@@ -365,6 +387,7 @@ export default function MusicClient() {
       embyBaseUrl: configDraft.embyBaseUrl,
       embyDsn: configDraft.embyDsn,
       embyProxyTimeoutMs: configDraft.embyProxyTimeoutMs,
+      gatewayPassword: configDraft.gatewayPassword,
       qqEnabled: configDraft.qqEnabled,
       qqSyncFavorites: configDraft.qqSyncFavorites,
       qqSyncPlayHistory: configDraft.qqSyncPlayHistory,
@@ -375,14 +398,21 @@ export default function MusicClient() {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(payload),
     }))
-    setConfigDraft(previous => ({ ...previous, embyApiKey: '' }))
+    setConfigDraft(previous => ({ ...previous, embyApiKey: '', gatewayPassword: '' }))
     setSyncMessage('配置已保存')
   }
 
   useEffect(() => {
     void loadAccount()
     void searchSongs()
+    void loadAdminConfig()
+    setBrowserOrigin(window.location.origin)
   }, [])
+
+  useEffect(() => {
+    setView(routeView)
+    loadViewData(routeView)
+  }, [routeView])
 
   useEffect(() => {
     if (!account.data?.loggedIn || !account.data.uin) {
@@ -432,7 +462,7 @@ export default function MusicClient() {
           </div>
         </div>
         <nav className="tabs" aria-label="主视图">
-          {(Object.keys(viewMeta) as View[]).map(key => {
+          {views.map(key => {
             const Icon = viewMeta[key].icon
             return (
               <button key={key} className={view === key ? 'active' : ''} onClick={() => openView(key)}>
@@ -465,6 +495,20 @@ export default function MusicClient() {
             {account.data?.loggedIn ? <span className="account-pill">QQ {account.data.uin}</span> : <span className="account-pill muted">未登录 QQ</span>}
           </div>
         </header>
+
+        {view === 'home' && (
+          <section className="workspace">
+            <Status state={adminConfig} />
+            <HomePanel
+              config={adminConfig.data}
+              origin={browserOrigin}
+              password={configDraft.gatewayPassword}
+              onPasswordChange={value => setConfigDraft(previous => ({ ...previous, gatewayPassword: value }))}
+              onSave={saveAdminConfig}
+              loading={adminConfig.loading}
+            />
+          </section>
+        )}
 
         {view === 'search' && (
           <section className="workspace">
@@ -875,6 +919,7 @@ function favoriteTitle(status: FavoriteStatus | undefined): string {
 }
 
 function headingFor(view: View): string {
+  if (view === 'home') return 'Emby 连接信息'
   if (view === 'search') return '搜索并播放 QQ 音乐'
   if (view === 'toplists') return '按榜单快速发现'
   if (view === 'playlists') return '检索公开歌单'
@@ -884,6 +929,53 @@ function headingFor(view: View): string {
   if (view === 'config') return '管理同步与上游服务'
   if (view === 'logs') return '代理与管理请求日志'
   return '系统健康与缓存'
+}
+
+function HomePanel({
+  config,
+  origin,
+  password,
+  onPasswordChange,
+  onSave,
+  loading,
+}: {
+  config: AdminConfig | null
+  origin: string
+  password: string
+  onPasswordChange: (value: string) => void
+  onSave: () => void
+  loading: boolean
+}) {
+  const dsn = password.trim() ? `${origin.replace('://', `://mixmusic:${encodeURIComponent(password.trim())}@`)}` : origin
+  return (
+    <div className="home-grid">
+      <section className="connection-panel">
+        <h3>播放器连接</h3>
+        <dl className="connection-list">
+          <div><dt>服务器地址</dt><dd>{origin || '-'}</dd></div>
+          <div><dt>用户名</dt><dd>mixmusic</dd></div>
+          <div><dt>密码</dt><dd>{config?.gateway.hasPassword ? '已设置' : '未设置'}</dd></div>
+          <div><dt>DSN</dt><dd>{dsn || '-'}</dd></div>
+        </dl>
+      </section>
+      <section className="connection-panel">
+        <h3>上游 Emby</h3>
+        <dl className="connection-list">
+          <div><dt>地址</dt><dd>{config?.emby.baseUrl ?? '-'}</dd></div>
+          <div><dt>用户</dt><dd>{config?.emby.username ?? '-'}</dd></div>
+          <div><dt>认证</dt><dd>{config?.emby.hasApiKey ? 'API Key' : config?.emby.hasPassword ? '用户名密码' : '-'}</dd></div>
+        </dl>
+      </section>
+      <section className="connection-panel">
+        <h3>连接密码</h3>
+        <label>
+          <span>播放器访问密码</span>
+          <input value={password} onChange={event => onPasswordChange(event.target.value)} placeholder={config?.gateway.hasPassword ? '留空保留现有密码' : '设置连接密码'} />
+        </label>
+        <button onClick={onSave} disabled={loading || !password.trim()}>保存密码</button>
+      </section>
+    </div>
+  )
 }
 
 function ConfigPanel({
@@ -899,6 +991,7 @@ function ConfigPanel({
     embyDsn: string
     embyApiKey: string
     embyProxyTimeoutMs: number
+    gatewayPassword: string
     qqEnabled: boolean
     qqSyncFavorites: boolean
     qqSyncPlayHistory: boolean
@@ -910,6 +1003,7 @@ function ConfigPanel({
     embyDsn: string
     embyApiKey: string
     embyProxyTimeoutMs: number
+    gatewayPassword: string
     qqEnabled: boolean
     qqSyncFavorites: boolean
     qqSyncPlayHistory: boolean

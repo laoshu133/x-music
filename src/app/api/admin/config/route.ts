@@ -11,6 +11,7 @@ const updateSchema = z.object({
   embyDsn: z.string().optional(),
   embyApiKey: z.string().optional(),
   embyProxyTimeoutMs: z.coerce.number().int().positive().optional(),
+  gatewayPassword: z.string().optional(),
   qqEnabled: z.boolean().optional(),
   qqSyncFavorites: z.boolean().optional(),
   qqSyncPlayHistory: z.boolean().optional(),
@@ -43,6 +44,10 @@ function redactSettings(settings = getEffectiveSettings()) {
       apiKey: settings.emby.apiKey ? '********' : undefined,
       password: settings.emby.password ? '********' : undefined,
       accessToken: settings.emby.accessToken ? '********' : undefined,
+    },
+    gateway: {
+      hasPassword: Boolean(settings.gateway.password),
+      password: settings.gateway.password ? '********' : undefined,
     },
   }
 }

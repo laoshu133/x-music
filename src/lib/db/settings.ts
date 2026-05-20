@@ -11,6 +11,7 @@ export type AppSettingKey =
   | 'emby.userId'
   | 'emby.serverId'
   | 'emby.proxyTimeoutMs'
+  | 'gateway.password'
   | 'qq.enabled'
   | 'qq.syncFavorites'
   | 'qq.syncPlayHistory'
@@ -33,6 +34,9 @@ export interface EffectiveAppSettings {
     enabled: boolean
     syncFavorites: boolean
     syncPlayHistory: boolean
+  }
+  gateway: {
+    password?: string
   }
 }
 
@@ -94,6 +98,9 @@ export function getEffectiveSettings(): EffectiveAppSettings {
       syncFavorites: booleanSetting('qq.syncFavorites', true),
       syncPlayHistory: booleanSetting('qq.syncPlayHistory', true),
     },
+    gateway: {
+      password: stringSetting('gateway.password'),
+    },
   }
 }
 
@@ -103,6 +110,7 @@ export function updateEffectiveSettings(input: Partial<{
   embyDsn: string
   embyApiKey: string
   embyProxyTimeoutMs: number
+  gatewayPassword: string
   qqEnabled: boolean
   qqSyncFavorites: boolean
   qqSyncPlayHistory: boolean
@@ -114,6 +122,7 @@ export function updateEffectiveSettings(input: Partial<{
   if ('embyProxyTimeoutMs' in input && input.embyProxyTimeoutMs !== undefined) {
     setSetting('emby.proxyTimeoutMs', Math.max(1000, Math.floor(input.embyProxyTimeoutMs)))
   }
+  if ('gatewayPassword' in input) setNullableString('gateway.password', input.gatewayPassword)
   if ('qqEnabled' in input && typeof input.qqEnabled === 'boolean') setSetting('qq.enabled', input.qqEnabled)
   if ('qqSyncFavorites' in input && typeof input.qqSyncFavorites === 'boolean') setSetting('qq.syncFavorites', input.qqSyncFavorites)
   if ('qqSyncPlayHistory' in input && typeof input.qqSyncPlayHistory === 'boolean') setSetting('qq.syncPlayHistory', input.qqSyncPlayHistory)
