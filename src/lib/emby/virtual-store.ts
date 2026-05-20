@@ -1,0 +1,30 @@
+import type { MusicInfo, QQPlaylistInfo } from '@/lib/types'
+import { db } from '@/lib/db'
+
+export function rememberVirtualSong(song: MusicInfo, playlistId?: string): void {
+  db.prepare(`
+    INSERT INTO app_settings (key, value_json, updated_at)
+    VALUES (?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP
+  `).run(`virtual.song.${song.songmid}`, JSON.stringify({ song, playlistId }))
+}
+
+export function loadVirtualSong(songmid: string): { song: MusicInfo; playlistId?: string } | undefined {
+  const row = db.prepare('SELECT value_json FROM app_settings WHERE key = ?').get(`virtual.song.${songmid}`) as { value_json: string } | undefined
+  if (!row) return undefined
+  return JSON.parse(row.value_json) as { song: MusicInfo; playlistId?: string }
+}
+
+export function rememberVirtualPlaylist(playlist: QQPlaylistInfo): void {
+  db.prepare(`
+    INSERT INTO app_settings (key, value_json, updated_at)
+    VALUES (?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP
+  `).run(`virtual.playlist.${playlist.id}`, JSON.stringify(playlist))
+}
+
+export function loadVirtualPlaylist(id: string): QQPlaylistInfo | undefined {
+  const row = db.prepare('SELECT value_json FROM app_settings WHERE key = ?').get(`virtual.playlist.${id}`) as { value_json: string } | undefined
+  if (!row) return undefined
+  return JSON.parse(row.value_json) as QQPlaylistInfo
+}

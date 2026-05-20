@@ -7,9 +7,17 @@ import {
   failJob,
   requeueJob,
 } from '@/lib/jobs'
+import {
+  createOrUpdateEmbyPlaylist,
+  notifyEmbyMediaUpdated,
+  refreshEmbyLibrary,
+  searchEmbyAudioByName,
+} from '@/lib/emby/upstream-api'
+import { upsertRemoteMapping } from '@/lib/db/remote-mappings'
 import { cleanupInboxFile } from '@/lib/tagging/cleanup'
 import { createTaggingProvider } from '@/lib/tagging/provider'
 import type { TagTrackFileJobPayload } from '@/lib/tagging/types'
+import type { SyncEmbyTrackJobPayload } from '@/lib/emby/sync'
 
 const pollIntervalMs = Number(process.env.WORKER_POLL_INTERVAL_MS ?? 5000)
 const maxAttempts = Number(process.env.WORKER_MAX_ATTEMPTS ?? 3)
@@ -93,6 +101,58 @@ async function processTagJob(): Promise<boolean> {
   return true
 }
 
+async function processEmbySyncJob(): Promise<boolean> {
+  const job = claimNextJob<SyncEmbyTrackJobPayload>({
+    type: 'sync_emby_track',
+    maxAttempts,
+  })
+
+  if (!job) return false
+
+  try {
+    const row = db.prepare(`
+      SELECT tf.final_path AS finalPath, tf.raw_path AS rawPath
+      FROM track_files tf
+      INNER JOIN tracks t ON t.id = tf.track_id
+      WHERE t.source = ? AND t.songmid = ?
+      ORDER BY
+        CASE tf.status WHEN 'ready' THEN 0 WHEN 'tagging' THEN 1 WHEN 'cached_raw' THEN 2 ELSE 3 END,
+        tf.updated_at DESC
+      LIMIT 1
+    `).get(job.payload.source, job.payload.songmid) as { finalPath?: string; rawPath?: string } | undefined
+
+    await notifyEmbyMediaUpdated(row?.finalPath ?? row?.rawPath).catch(() => refreshEmbyLibrary())
+    const embyItemId = await searchEmbyAudioByName(job.payload.musicInfo)
+    if (embyItemId) {
+      upsertRemoteMapping({
+        localType: 'track',
+        localKey: `${job.payload.source}:${job.payload.songmid}`,
+        remote: 'emby',
+        remoteId: embyItemId,
+        raw: job.payload.musicInfo,
+      })
+      if (job.payload.playlistId) {
+        await createOrUpdateEmbyPlaylist({
+          name: `QQ ${job.payload.playlistId}`,
+          itemIds: [embyItemId],
+        }).catch((error: unknown) => {
+          console.warn(`failed to update Emby playlist ${job.payload.playlistId}`, error)
+        })
+      }
+    }
+
+    completeJob(job.id)
+  } catch (error) {
+    if (job.attempts >= maxAttempts) {
+      failJob(job.id, error)
+    } else {
+      requeueJob(job.id, error)
+    }
+  }
+
+  return true
+}
+
 async function main(): Promise<void> {
   ensureJobsTable()
 
@@ -101,7 +161,7 @@ async function main(): Promise<void> {
   console.log(`poll interval: ${pollIntervalMs}ms`)
 
   while (!stopping) {
-    const didWork = await processTagJob()
+    const didWork = await processTagJob() || await processEmbySyncJob()
     if (!didWork) await sleep(pollIntervalMs)
   }
 }

@@ -100,3 +100,29 @@ CREATE TABLE IF NOT EXISTS request_logs (
 CREATE INDEX IF NOT EXISTS idx_request_logs_completed_at ON request_logs(completed_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_request_logs_path_completed_at ON request_logs(path, completed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_request_logs_status_completed_at ON request_logs(status, completed_at DESC);
+
+CREATE TABLE IF NOT EXISTS remote_mappings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  local_type TEXT NOT NULL,
+  local_key TEXT NOT NULL,
+  remote TEXT NOT NULL,
+  remote_id TEXT NOT NULL,
+  raw_json TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(local_type, local_key, remote)
+);
+
+CREATE INDEX IF NOT EXISTS idx_remote_mappings_remote ON remote_mappings(remote, remote_id);
+
+CREATE TABLE IF NOT EXISTS sync_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  type TEXT NOT NULL,
+  status TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  error TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_sync_events_status_type ON sync_events(status, type, updated_at);

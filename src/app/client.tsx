@@ -65,7 +65,7 @@ interface HealthStatus {
 
 interface AdminConfig {
   lx: { sourceScriptUrl?: string }
-  emby: { baseUrl?: string; apiKey?: string; hasApiKey?: boolean; proxyTimeoutMs: number }
+  emby: { baseUrl?: string; apiKey?: string; hasApiKey?: boolean; username?: string; hasPassword?: boolean; proxyTimeoutMs: number }
   qq: { enabled: boolean; syncFavorites: boolean; syncPlayHistory: boolean }
 }
 
@@ -175,6 +175,7 @@ export default function MusicClient() {
   const [configDraft, setConfigDraft] = useState({
     lxSourceScriptUrl: '',
     embyBaseUrl: '',
+    embyDsn: '',
     embyApiKey: '',
     embyProxyTimeoutMs: 30000,
     qqEnabled: true,
@@ -214,6 +215,7 @@ export default function MusicClient() {
     setConfigDraft({
       lxSourceScriptUrl: data.lx.sourceScriptUrl ?? '',
       embyBaseUrl: data.emby.baseUrl ?? '',
+      embyDsn: '',
       embyApiKey: '',
       embyProxyTimeoutMs: data.emby.proxyTimeoutMs,
       qqEnabled: data.qq.enabled,
@@ -361,6 +363,7 @@ export default function MusicClient() {
     const payload: Record<string, unknown> = {
       lxSourceScriptUrl: configDraft.lxSourceScriptUrl,
       embyBaseUrl: configDraft.embyBaseUrl,
+      embyDsn: configDraft.embyDsn,
       embyProxyTimeoutMs: configDraft.embyProxyTimeoutMs,
       qqEnabled: configDraft.qqEnabled,
       qqSyncFavorites: configDraft.qqSyncFavorites,
@@ -893,6 +896,7 @@ function ConfigPanel({
   draft: {
     lxSourceScriptUrl: string
     embyBaseUrl: string
+    embyDsn: string
     embyApiKey: string
     embyProxyTimeoutMs: number
     qqEnabled: boolean
@@ -903,6 +907,7 @@ function ConfigPanel({
   onChange: (value: {
     lxSourceScriptUrl: string
     embyBaseUrl: string
+    embyDsn: string
     embyApiKey: string
     embyProxyTimeoutMs: number
     qqEnabled: boolean
@@ -924,6 +929,10 @@ function ConfigPanel({
       </section>
       <section>
         <h3>上游 Emby</h3>
+        <label>
+          <span>DSN</span>
+          <input value={draft.embyDsn} onChange={event => patch({ embyDsn: event.target.value })} placeholder="https://user:pass@host:8096/" />
+        </label>
         <label>
           <span>Base URL</span>
           <input value={draft.embyBaseUrl} onChange={event => patch({ embyBaseUrl: event.target.value })} placeholder="http://emby:8096" />

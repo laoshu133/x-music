@@ -1,5 +1,6 @@
 import vm from 'node:vm'
 import { appConfig } from '@/lib/config'
+import { getEffectiveSettings } from '@/lib/db/settings'
 import { isMusicQuality, preferredQualities } from '@/lib/quality'
 import type { MusicInfo, MusicQuality, ResolvedMusicUrl } from '@/lib/types'
 
@@ -170,7 +171,8 @@ const parseLxScriptConfig = (script: string): LxApiConfig | undefined => {
 }
 
 const getConfiguredLxScriptUrl = (): string | undefined => {
-  return process.env.LX_MUSIC_SOURCE_SCRIPT?.trim()
+  return getEffectiveSettings().lx.sourceScriptUrl
+    || process.env.LX_MUSIC_SOURCE_SCRIPT?.trim()
     || appConfig.lxMusicSourceScript
 }
 

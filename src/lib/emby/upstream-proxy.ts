@@ -1,5 +1,6 @@
 import { getEffectiveSettings } from '@/lib/db/settings'
 import { markRequestSource } from '@/lib/request-log'
+import { embyAuthorizationHeader, getEmbyAccessToken, refreshEmbyAccessToken } from './auth'
 
 const hopByHopHeaders = new Set([
   'connection',
@@ -26,27 +27,30 @@ export async function proxyToUpstreamEmby(request: Request, embyPath: string): P
   const upstreamUrl = new URL(settings.emby.baseUrl)
   upstreamUrl.pathname = joinPaths(upstreamUrl.pathname, embyPath)
   upstreamUrl.search = incomingUrl.search
-  if (settings.emby.apiKey && !upstreamUrl.searchParams.has('api_key')) {
-    upstreamUrl.searchParams.set('api_key', settings.emby.apiKey)
-  }
 
   const headers = new Headers()
   request.headers.forEach((value, key) => {
     if (!hopByHopHeaders.has(key.toLowerCase())) headers.set(key, value)
   })
-  if (settings.emby.apiKey && !headers.has('X-Emby-Token')) {
-    headers.set('X-Emby-Token', settings.emby.apiKey)
-  }
-
+  const token = await getEmbyAccessToken()
+  applyToken(upstreamUrl, headers, token)
   const method = request.method.toUpperCase()
-  const response = await fetch(upstreamUrl, {
+  const init = {
     method,
     headers,
     body: method === 'GET' || method === 'HEAD' ? undefined : request.body,
     cache: 'no-store',
     signal: AbortSignal.timeout(settings.emby.proxyTimeoutMs),
     duplex: method === 'GET' || method === 'HEAD' ? undefined : 'half',
-  } as RequestInit & { duplex?: 'half' })
+  } as RequestInit & { duplex?: 'half' }
+  let response = await fetch(upstreamUrl, init)
+  if (response.status === 401 && !settings.emby.apiKey && settings.emby.username && settings.emby.password) {
+    const refreshed = await refreshEmbyAccessToken()
+    if (refreshed) {
+      applyToken(upstreamUrl, headers, refreshed)
+      response = await fetch(upstreamUrl, init)
+    }
+  }
 
   const responseHeaders = new Headers(response.headers)
   responseHeaders.set('x-mixmusic-source', 'upstream')
@@ -55,6 +59,13 @@ export async function proxyToUpstreamEmby(request: Request, embyPath: string): P
     statusText: response.statusText,
     headers: responseHeaders,
   }), 'upstream')
+}
+
+function applyToken(url: URL, headers: Headers, token: string | undefined): void {
+  if (!token) return
+  url.searchParams.set('api_key', token)
+  headers.set('X-Emby-Token', token)
+  headers.set('X-Emby-Authorization', embyAuthorizationHeader(token))
 }
 
 function joinPaths(basePath: string, embyPath: string): string {

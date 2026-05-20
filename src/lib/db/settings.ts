@@ -5,6 +5,11 @@ export type AppSettingKey =
   | 'lx.sourceScriptUrl'
   | 'emby.baseUrl'
   | 'emby.apiKey'
+  | 'emby.username'
+  | 'emby.password'
+  | 'emby.accessToken'
+  | 'emby.userId'
+  | 'emby.serverId'
   | 'emby.proxyTimeoutMs'
   | 'qq.enabled'
   | 'qq.syncFavorites'
@@ -17,6 +22,11 @@ export interface EffectiveAppSettings {
   emby: {
     baseUrl?: string
     apiKey?: string
+    username?: string
+    password?: string
+    accessToken?: string
+    userId?: string
+    serverId?: string
     proxyTimeoutMs: number
   }
   qq: {
@@ -72,6 +82,11 @@ export function getEffectiveSettings(): EffectiveAppSettings {
     emby: {
       baseUrl: stringSetting('emby.baseUrl', appConfig.embyUpstreamUrl),
       apiKey: stringSetting('emby.apiKey', appConfig.embyApiKey),
+      username: stringSetting('emby.username'),
+      password: stringSetting('emby.password'),
+      accessToken: stringSetting('emby.accessToken'),
+      userId: stringSetting('emby.userId'),
+      serverId: stringSetting('emby.serverId'),
       proxyTimeoutMs: numberSetting('emby.proxyTimeoutMs', appConfig.embyProxyTimeoutMs),
     },
     qq: {
@@ -85,6 +100,7 @@ export function getEffectiveSettings(): EffectiveAppSettings {
 export function updateEffectiveSettings(input: Partial<{
   lxSourceScriptUrl: string
   embyBaseUrl: string
+  embyDsn: string
   embyApiKey: string
   embyProxyTimeoutMs: number
   qqEnabled: boolean
@@ -93,6 +109,7 @@ export function updateEffectiveSettings(input: Partial<{
 }>): EffectiveAppSettings {
   if ('lxSourceScriptUrl' in input) setNullableString('lx.sourceScriptUrl', input.lxSourceScriptUrl)
   if ('embyBaseUrl' in input) setNullableString('emby.baseUrl', input.embyBaseUrl)
+  if ('embyDsn' in input) applyEmbyDsn(input.embyDsn)
   if ('embyApiKey' in input) setNullableString('emby.apiKey', input.embyApiKey)
   if ('embyProxyTimeoutMs' in input && input.embyProxyTimeoutMs !== undefined) {
     setSetting('emby.proxyTimeoutMs', Math.max(1000, Math.floor(input.embyProxyTimeoutMs)))
@@ -101,6 +118,16 @@ export function updateEffectiveSettings(input: Partial<{
   if ('qqSyncFavorites' in input && typeof input.qqSyncFavorites === 'boolean') setSetting('qq.syncFavorites', input.qqSyncFavorites)
   if ('qqSyncPlayHistory' in input && typeof input.qqSyncPlayHistory === 'boolean') setSetting('qq.syncPlayHistory', input.qqSyncPlayHistory)
   return getEffectiveSettings()
+}
+
+function applyEmbyDsn(value: string | undefined): void {
+  const normalized = value?.trim()
+  if (!normalized) return
+  const parsed = new URL(normalized)
+  const baseUrl = `${parsed.protocol}//${parsed.host}${parsed.pathname === '/' ? '' : parsed.pathname.replace(/\/+$/, '')}`
+  setSetting('emby.baseUrl', baseUrl)
+  if (parsed.username) setSetting('emby.username', decodeURIComponent(parsed.username))
+  if (parsed.password) setSetting('emby.password', decodeURIComponent(parsed.password))
 }
 
 function setNullableString(key: AppSettingKey, value: string | undefined): void {

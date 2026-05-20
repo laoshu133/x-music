@@ -2,6 +2,7 @@ import { ensureTrack, getPlayableTrackFile, insertPlayEvent, upsertTrackFileStat
 import { createUpstreamTeeResponse, streamLocalFile } from '@/lib/cache/stream'
 import { MusicUrlConfigError, MusicUrlResolveError, parseRequestedQuality, qualityFallbacks, resolveMusicUrlWithFallback } from '@/lib/music-url/resolve'
 import { getQQLoginState, syncQQPlayHistoryBestEffort } from '@/lib/qq'
+import { markRequestSource, withRequestLog } from '@/lib/request-log'
 import type { MusicInfo, MusicQuality, OnlineSource } from '@/lib/types'
 
 export const runtime = 'nodejs'
@@ -14,19 +15,21 @@ type PlayRequest = Partial<MusicInfo> & {
 
 export async function GET(request: Request): Promise<Response> {
   const url = new URL(request.url)
-  return handlePlayRequest(request, Object.fromEntries(url.searchParams.entries()))
+  return withRequestLog(request, () => handlePlayRequest(request, Object.fromEntries(url.searchParams.entries())))
 }
 
 export async function POST(request: Request): Promise<Response> {
-  const contentType = request.headers.get('content-type') ?? ''
-  if (!contentType.includes('application/json')) {
-    return jsonError('POST /api/play expects application/json', 415)
-  }
+  return withRequestLog(request, async () => {
+    const contentType = request.headers.get('content-type') ?? ''
+    if (!contentType.includes('application/json')) {
+      return jsonError('POST /api/play expects application/json', 415)
+    }
 
-  const body = (await request.json().catch(() => undefined)) as PlayRequest | undefined
-  if (!body) return jsonError('Invalid JSON body', 400)
+    const body = (await request.json().catch(() => undefined)) as PlayRequest | undefined
+    if (!body) return jsonError('Invalid JSON body', 400)
 
-  return handlePlayRequest(request, body)
+    return handlePlayRequest(request, body)
+  })
 }
 
 const handlePlayRequest = async (request: Request, input: PlayRequest): Promise<Response> => {
@@ -51,7 +54,7 @@ const handlePlayRequest = async (request: Request, input: PlayRequest): Promise<
         quality: playableFile.quality,
       })
     }
-    return streamLocalFile(localPath, request)
+    return markRequestSource(await streamLocalFile(localPath, request), 'local')
   }
 
   const track = ensureTrack(musicInfo)
@@ -76,7 +79,7 @@ const handlePlayRequest = async (request: Request, input: PlayRequest): Promise<
       })
     })
 
-    return response
+    return markRequestSource(response, 'upstream')
   } catch (error) {
     const message = playbackErrorMessage(error)
     upsertTrackFileStatus(track.id, preferredQuality, 'failed', {

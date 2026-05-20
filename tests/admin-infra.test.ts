@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { db } from '@/lib/db'
-import { deleteSetting, getEffectiveSettings, getSetting, setSetting } from '@/lib/db/settings'
+import { deleteSetting, getEffectiveSettings, getSetting, setSetting, updateEffectiveSettings } from '@/lib/db/settings'
 import { listRequestLogs, recordRequestLog } from '@/lib/db/request-logs'
 import { normalizeEmbyPath, stripOptionalEmbyPrefix } from '@/lib/emby/paths'
+import { decodeVirtualId, encodeVirtualId } from '@/lib/emby/virtual-ids'
 
 test('settings store persists typed values and merges effective defaults', () => {
   deleteSetting('emby.baseUrl')
@@ -55,4 +56,25 @@ test('emby path helpers normalize optional emby prefix', () => {
   assert.equal(stripOptionalEmbyPrefix('/emby/Items'), '/Items')
   assert.equal(stripOptionalEmbyPrefix('/Items'), '/Items')
   assert.equal(normalizeEmbyPath(['emby', 'System', 'Info', 'Public']), '/System/Info/Public')
+})
+
+test('emby dsn updates base url and credentials', () => {
+  const before = getEffectiveSettings().emby
+  updateEffectiveSettings({ embyDsn: 'https://tv:000@tom.07340.com:8097/' })
+  const settings = getEffectiveSettings().emby
+  assert.equal(settings.baseUrl, 'https://tom.07340.com:8097')
+  assert.equal(settings.username, 'tv')
+  assert.equal(settings.password, '000')
+
+  if (before.baseUrl) setSetting('emby.baseUrl', before.baseUrl)
+  else deleteSetting('emby.baseUrl')
+  if (before.username) setSetting('emby.username', before.username)
+  else deleteSetting('emby.username')
+  if (before.password) setSetting('emby.password', before.password)
+  else deleteSetting('emby.password')
+})
+
+test('virtual emby ids round-trip structured ids', () => {
+  const id = encodeVirtualId({ kind: 'qq-song', songmid: 'abc', playlistId: 'list1' })
+  assert.deepEqual(decodeVirtualId(id), { kind: 'qq-song', songmid: 'abc', playlistId: 'list1' })
 })
