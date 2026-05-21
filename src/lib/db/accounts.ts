@@ -36,7 +36,7 @@ interface AccountRow {
 export function upsertAccountFromQQCookie(cookieText: string): AccountUpsertResult {
   const state = buildQQLoginState(cookieText, 'stored')
   const existing = getAccountByQQ(state.uin)
-  const embyUsername = existing?.embyUsername ?? state.uin
+  const embyUsername = embyUsernameForQQ(state.uin)
   const generatedPassword = existing ? undefined : generateAccountPassword()
   const embyPassword = existing?.embyPassword ?? generatedPassword!
 
@@ -183,4 +183,8 @@ function rowToAccount(row: AccountRow): AccountRecord {
 
 function generateAccountPassword(): string {
   return crypto.randomBytes(18).toString('base64url')
+}
+
+export function embyUsernameForQQ(qqUin: string): string {
+  return `QQ${qqUin}`
 }

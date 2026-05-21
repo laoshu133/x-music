@@ -1,4 +1,4 @@
-# miXmusic Product TODO
+# XMusic Product TODO
 
 ## P0 - Test Environment Acceptance
 

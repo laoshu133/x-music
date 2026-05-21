@@ -67,7 +67,7 @@ test('resolveMusicUrl simulates LX request event scripts and reuses captured req
               authorization: 'Bearer captured-key'
             },
             body: JSON.stringify({
-              source: '__MIXMUSIC_SOURCE__',
+              source: '__X_MUSIC_SOURCE__',
               id: info.musicInfo.songmid,
               quality: info.type
             })
@@ -105,7 +105,7 @@ test('resolveMusicUrl does not let LX source scripts reach Node process through 
           globalThis.lx.request('https://api.example/sandboxed', {
             method: 'POST',
             headers: { 'x-leak-check': leaked },
-            body: JSON.stringify({ musicId: '__MIXMUSIC_MUSIC_ID__' })
+            body: JSON.stringify({ musicId: '__X_MUSIC_MUSIC_ID__' })
           })
         })
       `)

@@ -54,7 +54,6 @@ export async function proxyToUpstreamEmby(request: Request, embyPath: string): P
   const response = await fetch(upstreamUrl, init)
 
   const responseHeaders = responseHeadersForDecodedBody(response.headers)
-  responseHeaders.set('x-mixmusic-source', 'upstream')
   return markRequestSource(new Response(response.body, {
     status: response.status,
     statusText: response.statusText,

@@ -323,7 +323,7 @@ export default function MusicClient() {
             <img src="/public/logo.svg" alt="" />
           </div>
           <div>
-            <h1>miXmusic</h1>
+            <h1>XMusic</h1>
             <span>Emby 音乐网关</span>
           </div>
         </div>
@@ -427,7 +427,7 @@ function LoginPage({
           <img src="/public/logo.svg" alt="" />
         </div>
         <div>
-          <h1>miXmusic</h1>
+          <h1>XMusic</h1>
           <span>登录后进入 Emby 音乐网关</span>
         </div>
       </div>
@@ -489,7 +489,7 @@ function HomePanel({
     <div className="home-layout">
       <section className="intro-panel">
         <h3>产品架构</h3>
-        <p>miXmusic 现在作为 QQ 音乐到 Emby 的网关运行。搜索、排行、歌单、收藏、历史和猜你喜欢不再作为独立页面维护，统一通过对外提供的 Emby 服务暴露给播放器。</p>
+        <p>XMusic 现在作为 QQ 音乐到 Emby 的网关运行。搜索、排行、歌单、收藏、历史和猜你喜欢不再作为独立页面维护，统一通过对外提供的 Emby 服务暴露给播放器。</p>
         <p>Web 端主要负责登录、服务配置、连接信息和运行状态检查；实际播放与服务可用性测试交给 ampcast。</p>
       </section>
       <section className="quick-grid">
@@ -501,7 +501,7 @@ function HomePanel({
       <section className="steps-panel">
         <h3>使用说明</h3>
         <ol>
-          <li>登录后在配置页确认 miXmusic 对外提供的 Emby Host、UserName 和 PWD。</li>
+          <li>登录后在配置页确认 XMusic 对外提供的 Emby Host、UserName 和 PWD。</li>
           <li>UserName 默认使用当前 QQ 号，PWD 可在配置页修改。</li>
           <li>打开播放器页，用 ampcast 连接当前服务的 Emby 地址进行播放测试。</li>
           <li>在状态页确认数据库、缓存目录、后台任务和同步状态。</li>
@@ -518,7 +518,7 @@ function PlayerPanel({ config, embyUrl, ampcastUrl }: { config: AdminConfig | nu
       <section className="ampcast-panel">
         <div>
           <h3>ampcast 播放器</h3>
-          <p>使用 rekkyrosso/ampcast 连接当前服务对外提供的 Emby 地址。登录时选择 Emby，服务器填写下方地址，用户名使用当前 QQ 号，密码使用登录 miXmusic 时自动生成的播放器密码。</p>
+          <p>使用 rekkyrosso/ampcast 连接当前服务对外提供的 Emby 地址。登录时选择 Emby，服务器填写下方地址，用户名使用当前 QQ 号，密码使用登录 XMusic 时自动生成的播放器密码。</p>
         </div>
         <div className="player-actions">
           <a className="primary-link" href={ampcastUrl} target="_blank" rel="noreferrer"><ExternalLink size={16} />打开 ampcast</a>

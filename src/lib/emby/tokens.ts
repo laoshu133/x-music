@@ -3,7 +3,7 @@ import crypto from 'node:crypto'
 export function createLocalAccessToken(account: { qqUin: string; embyUsername: string; embyPassword: string }): string {
   return crypto
     .createHash('sha256')
-    .update(`mixmusic:${account.qqUin}:${account.embyUsername}:${account.embyPassword}`)
+    .update(`x-music:${account.qqUin}:${account.embyUsername}:${account.embyPassword}`)
     .digest('hex')
 }
 

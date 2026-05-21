@@ -101,7 +101,7 @@ async function processEmbySyncJob(): Promise<boolean> {
 async function main(): Promise<void> {
   ensureJobsTable()
 
-  console.log('miXmusic worker started')
+  console.log('XMusic worker started')
   console.log(`data dir: ${appConfig.dataDir}`)
   console.log(`poll interval: ${pollIntervalMs}ms`)
 

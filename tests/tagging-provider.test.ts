@@ -14,7 +14,7 @@ import type { IAudioMetadata } from 'music-metadata'
 
 const payload: TagTrackFileJobPayload = {
   trackFileId: 1,
-  rawPath: '/tmp/mixmusic-inbox/raw.flac',
+  rawPath: '/tmp/x-music-inbox/raw.flac',
   source: 'tx',
   songmid: '0039MnYb0qxYhV',
   quality: 'flac',

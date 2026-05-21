@@ -14,7 +14,7 @@ async function handle(request: Request, context: RouteContext): Promise<Response
   const embyPath = normalizeEmbyPath(params.path ?? [])
 
   if (isReservedManagementPath(embyPath)) {
-    return Response.json({ error: 'Reserved miXmusic path cannot be proxied as Emby API' }, { status: 404 })
+    return Response.json({ error: 'Reserved XMusic path cannot be proxied as Emby API' }, { status: 404 })
   }
   return dispatchEmbyRequest(request, embyPath)
 }

@@ -7,8 +7,8 @@ const nextConfig: NextConfig = {
     return {
       fallback: [
         {
-          source: '/:path((?!api(?:/|$)|_next(?:/|$)|public(?:/|$)|favicon\\.ico$|admin(?:/|$)|mixmusic(?:/|$)).*)',
-          destination: '/mixmusic/emby/:path*',
+          source: '/:path((?!api(?:/|$)|_next(?:/|$)|public(?:/|$)|favicon\\.ico$|admin(?:/|$)|x-music(?:/|$)).*)',
+          destination: '/x-music/emby/:path*',
         },
       ],
     }

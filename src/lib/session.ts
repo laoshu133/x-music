@@ -1,7 +1,7 @@
 import { cookies } from 'next/headers'
 import { getAccountByQQ, type AccountRecord } from '@/lib/db/accounts'
 
-const sessionCookieName = 'mixmusic_account'
+const sessionCookieName = 'x_music_account'
 
 export async function getCurrentAccount(): Promise<AccountRecord | undefined> {
   const store = await cookies()

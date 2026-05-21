@@ -1,4 +1,4 @@
-const reservedPrefixes = ['/api', '/_next', '/public', '/mixmusic']
+const reservedPrefixes = ['/api', '/_next', '/public', '/x-music']
 
 export function normalizeEmbyPath(path: string[]): string {
   const pathname = `/${path.map(segment => encodeURIComponent(decodeURIComponent(segment))).join('/')}`

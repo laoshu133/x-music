@@ -63,7 +63,7 @@ export const createUpstreamTeeResponse = async (
   await mkdir(appConfig.inboxDir, { recursive: true })
 
   const upstreamHeaders = new Headers({
-    'user-agent': 'Mozilla/5.0 miXmusic/1.0',
+    'user-agent': 'Mozilla/5.0 XMusic/1.0',
     accept: '*/*',
   })
 

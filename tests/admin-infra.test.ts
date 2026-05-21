@@ -7,6 +7,7 @@ import { deleteSetting, getEffectiveSettings, getSetting, setSetting, updateEffe
 import { getAccountByQQ } from '@/lib/db/accounts'
 import { clearQQLoginCookie, saveQQLoginCookie } from '@/lib/db/qq-session'
 import { dispatchEmbyRequest } from '@/lib/emby/dispatch'
+import { ensureUpstreamEmbyUserForAccount } from '@/lib/emby/auth'
 import { handleLocalEmbyRequest } from '@/lib/emby/local-handlers'
 import { normalizeEmbyPath, stripOptionalEmbyPrefix } from '@/lib/emby/paths'
 import { proxyToUpstreamEmby } from '@/lib/emby/upstream-proxy'
@@ -30,7 +31,7 @@ test('QQ login creates a per-account Emby gateway account', () => {
     const saved = saveQQLoginCookie('uin=o123456; qm_keyst=test-key')
     const account = getAccountByQQ('123456')
     assert.equal(saved.uin, '123456')
-    assert.equal(account?.embyUsername, '123456')
+    assert.equal(account?.embyUsername, 'QQ123456')
     assert.equal(typeof account?.embyPassword, 'string')
     assert.ok(account?.embyPassword && account.embyPassword.length >= 16)
     assert.equal(saved.emby.generatedPassword, account?.embyPassword)
@@ -44,6 +45,105 @@ test('QQ login creates a per-account Emby gateway account', () => {
   }
 })
 
+test('upstream emby account creation uses QQ-prefixed username and restricts access to music library', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999019')
+    saveQQLoginCookie('uin=o999019; qm_keyst=test-key')
+    const account = getAccountByQQ('999019')
+    assert.ok(account)
+
+    const requests: Array<{ url: URL; init?: RequestInit; body?: Record<string, unknown> }> = []
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = new URL(String(url))
+      const body = typeof init?.body === 'string' ? JSON.parse(init.body) as Record<string, unknown> : undefined
+      requests.push({ url: requestUrl, init, body })
+
+      if (requestUrl.pathname.endsWith('/Users')) return Response.json([])
+      if (requestUrl.pathname.endsWith('/Users/New')) return Response.json({ Id: 'emby-user-999019', Name: body?.Name })
+      if (requestUrl.pathname.endsWith('/Library/VirtualFolders')) {
+        return Response.json([
+          { ItemId: 'music-folder-id', Name: '音乐', CollectionType: 'music' },
+          { ItemId: 'movie-folder-id', Name: '电影', CollectionType: 'movies' },
+        ])
+      }
+      if (requestUrl.pathname.endsWith('/Users/emby-user-999019/Policy')) return new Response(null, { status: 204 })
+
+      return Response.json({ error: 'unexpected request' }, { status: 500 })
+    }) as typeof fetch
+
+    const updated = await ensureUpstreamEmbyUserForAccount(account)
+    assert.equal(updated.embyUserId, 'emby-user-999019')
+    assert.equal(getAccountByQQ('999019')?.embyUserId, 'emby-user-999019')
+
+    const createUser = requests.find(request => request.url.pathname.endsWith('/Users/New'))
+    assert.equal(createUser?.body?.Name, 'QQ999019')
+
+    const policy = requests.find(request => request.url.pathname.endsWith('/Users/emby-user-999019/Policy'))?.body
+    assert.ok(policy)
+    assert.equal(policy.EnableAllFolders, false)
+    assert.deepEqual(policy.EnabledFolders, ['music-folder-id'])
+    assert.equal(policy.EnableAllChannels, false)
+    assert.deepEqual(policy.EnabledChannels, [])
+    assert.equal(policy.EnableRemoteControlOfOtherUsers, false)
+    assert.equal(policy.EnableSharedDeviceControl, false)
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999019')
+    clearQQLoginCookie()
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('upstream emby account binding normalizes existing username and reapplies restricted policy', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999020')
+    saveQQLoginCookie('uin=o999020; qm_keyst=test-key')
+    db.prepare('UPDATE accounts SET emby_user_id = ?, emby_username = ? WHERE qq_uin = ?')
+      .run('emby-user-999020', 'QQ999020', '999020')
+    const account = getAccountByQQ('999020')
+    assert.ok(account)
+
+    const requests: Array<{ url: URL; init?: RequestInit; body?: Record<string, unknown> }> = []
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = new URL(String(url))
+      const body = typeof init?.body === 'string' ? JSON.parse(init.body) as Record<string, unknown> : undefined
+      requests.push({ url: requestUrl, init, body })
+
+      if (requestUrl.pathname.endsWith('/Users/emby-user-999020') && init?.method !== 'POST') {
+        return Response.json({ Id: 'emby-user-999020', Name: '999020' })
+      }
+      if (requestUrl.pathname.endsWith('/Users/emby-user-999020') && init?.method === 'POST') {
+        return new Response(null, { status: 204 })
+      }
+      if (requestUrl.pathname.endsWith('/Library/VirtualFolders')) {
+        return Response.json({ Items: [{ Id: 'music-folder-id', Name: 'Music', CollectionType: 'music' }] })
+      }
+      if (requestUrl.pathname.endsWith('/Users/emby-user-999020/Policy')) return new Response(null, { status: 204 })
+
+      return Response.json({ error: 'unexpected request' }, { status: 500 })
+    }) as typeof fetch
+
+    const updated = await ensureUpstreamEmbyUserForAccount(account)
+    assert.equal(updated.embyUserId, 'emby-user-999020')
+
+    const rename = requests.find(request => request.url.pathname.endsWith('/Users/emby-user-999020') && request.init?.method === 'POST')
+    assert.equal(rename?.body?.Name, 'QQ999020')
+
+    const policy = requests.find(request => request.url.pathname.endsWith('/Users/emby-user-999020/Policy'))?.body
+    assert.ok(policy)
+    assert.equal(policy.EnableAllFolders, false)
+    assert.deepEqual(policy.EnabledFolders, ['music-folder-id'])
+    assert.equal(policy.EnableAllChannels, false)
+    assert.equal(policy.EnableRemoteControlOfOtherUsers, false)
+    assert.equal(policy.EnableSharedDeviceControl, false)
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999020')
+    clearQQLoginCookie()
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('emby path helpers normalize optional emby prefix', () => {
   assert.equal(stripOptionalEmbyPrefix('/emby/Items'), '/Items')
   assert.equal(stripOptionalEmbyPrefix('/Items'), '/Items')
@@ -54,7 +154,7 @@ test('local emby public info supports original emby routes', async () => {
   const response = await handleLocalEmbyRequest(new Request('http://local/System/Info/Public'), '/System/Info/Public')
   assert.equal(response?.status, 200)
   const payload = await response!.json()
-  assert.equal(payload.ServerName, 'miXmusic')
+  assert.equal(payload.ServerName, 'XMusic')
 })
 
 test('emby dispatch adds cors headers for external players', async () => {
@@ -119,7 +219,7 @@ test('local emby authenticate by name succeeds and rejects bad credentials', asy
     assert.equal(ok?.status, 200)
     const payload = await ok!.json()
     assert.equal(payload.User.Name, account.embyUsername)
-    assert.equal(payload.ServerId, 'mixmusic')
+    assert.equal(payload.ServerId, 'x-music')
     assert.equal(typeof payload.AccessToken, 'string')
     assert.ok(payload.AccessToken.length > 20)
 
@@ -192,7 +292,7 @@ test('local emby music library item list reads upstream without virtual parent i
     }) as typeof fetch
 
     const items = await dispatchEmbyRequest(
-      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio&ParentId=mixmusic-music&SearchTerm=&Limit=500&StartIndex=0`, {
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio&ParentId=x-music-music&SearchTerm=&Limit=500&StartIndex=0`, {
         headers: {
           'X-Emby-Authorization': `MediaBrowser Client="ampcast", Version="0.9.28", Device="PC", Token="${authPayload.AccessToken}"`,
         },
@@ -268,7 +368,7 @@ test('local emby search merges upstream Emby items with QQ virtual songs', async
     }) as typeof fetch
 
     const response = await dispatchEmbyRequest(
-      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio&ParentId=mixmusic-music&SearchTerm=song&Limit=50&StartIndex=0`, {
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio&ParentId=x-music-music&SearchTerm=song&Limit=50&StartIndex=0`, {
         headers: {
           'X-Emby-Authorization': `MediaBrowser Client="ampcast", Version="0.9.28", Device="PC", Token="${authPayload.AccessToken}"`,
         },
@@ -341,7 +441,7 @@ test('local emby search pages QQ songs with safe upstream page size', async () =
     }) as typeof fetch
 
     const response = await dispatchEmbyRequest(
-      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio&ParentId=mixmusic-music&SearchTerm=song&Limit=250&StartIndex=0`, {
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio&ParentId=x-music-music&SearchTerm=song&Limit=250&StartIndex=0`, {
         headers: {
           'X-Emby-Authorization': `MediaBrowser Client="ampcast", Version="0.9.28", Device="PC", Token="${authPayload.AccessToken}"`,
         },
@@ -400,7 +500,7 @@ test('local emby playlist search merges upstream and QQ playlists', async () => 
     }) as typeof fetch
 
     const response = await dispatchEmbyRequest(
-      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Playlist&ParentId=mixmusic-music&SearchTerm=playlist&Limit=10&StartIndex=0`, {
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Playlist&ParentId=x-music-music&SearchTerm=playlist&Limit=10&StartIndex=0`, {
         headers: {
           'X-Emby-Authorization': `MediaBrowser Client="ampcast", Version="0.9.28", Device="PC", Token="${authPayload.AccessToken}"`,
         },
@@ -462,7 +562,7 @@ test('local emby playlist search pages QQ playlists with safe upstream page size
     }) as typeof fetch
 
     const response = await dispatchEmbyRequest(
-      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Playlist&ParentId=mixmusic-music&SearchTerm=playlist&Limit=120&StartIndex=0`, {
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Playlist&ParentId=x-music-music&SearchTerm=playlist&Limit=120&StartIndex=0`, {
         headers: {
           'X-Emby-Authorization': `MediaBrowser Client="ampcast", Version="0.9.28", Device="PC", Token="${authPayload.AccessToken}"`,
         },
@@ -527,7 +627,7 @@ test('local emby favorites merge QQ songs and virtual albums', async () => {
     }) as typeof fetch
 
     const songs = await dispatchEmbyRequest(
-      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio&ParentId=mixmusic-music&Filters=IsFavorite&Limit=500&StartIndex=0`, {
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio&ParentId=x-music-music&Filters=IsFavorite&Limit=500&StartIndex=0`, {
         headers: { 'X-Emby-Authorization': authHeader },
       }),
       stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/Items`),
@@ -539,7 +639,7 @@ test('local emby favorites merge QQ songs and virtual albums', async () => {
     assert.equal(songsPayload.Items[0].UserData.IsFavorite, true)
 
     const albums = await dispatchEmbyRequest(
-      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=MusicAlbum&ParentId=mixmusic-music&Filters=IsFavorite&Limit=500&StartIndex=0`, {
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=MusicAlbum&ParentId=x-music-music&Filters=IsFavorite&Limit=500&StartIndex=0`, {
         headers: { 'X-Emby-Authorization': authHeader },
       }),
       stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/Items`),
@@ -622,7 +722,7 @@ test('local emby favorite songs pages through QQ results beyond 200', async () =
     }) as typeof fetch
 
     const songs = await dispatchEmbyRequest(
-      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio&ParentId=mixmusic-music&Filters=IsFavorite&Limit=500&StartIndex=0`, {
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio&ParentId=x-music-music&Filters=IsFavorite&Limit=500&StartIndex=0`, {
         headers: { 'X-Emby-Authorization': authHeader },
       }),
       stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/Items`),
@@ -684,7 +784,7 @@ test('local emby genres include QQ favorite album bucket when upstream has no ge
     }) as typeof fetch
 
     const genres = await dispatchEmbyRequest(
-      new Request(`http://local/emby/Genres?UserId=${authPayload.User.Id}&ParentId=mixmusic-music&IncludeItemTypes=MusicAlbum&Limit=500&StartIndex=0`, {
+      new Request(`http://local/emby/Genres?UserId=${authPayload.User.Id}&ParentId=x-music-music&IncludeItemTypes=MusicAlbum&Limit=500&StartIndex=0`, {
         headers: { 'X-Emby-Authorization': authHeader },
       }),
       stripOptionalEmbyPrefix('/emby/Genres'),
@@ -878,7 +978,7 @@ test('local emby played lists merge local QQ play history', async () => {
     globalThis.fetch = (async () => Response.json({ Items: [], TotalRecordCount: 0 })) as typeof fetch
 
     const mostPlayed = await dispatchEmbyRequest(
-      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio&ParentId=mixmusic-music&Filters=IsPlayed&SortBy=PlayCount%2CDatePlayed&SortOrder=Descending&Limit=500&StartIndex=0`, {
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio&ParentId=x-music-music&Filters=IsPlayed&SortBy=PlayCount%2CDatePlayed&SortOrder=Descending&Limit=500&StartIndex=0`, {
         headers: { 'X-Emby-Authorization': authHeader },
       }),
       stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/Items`),
@@ -892,7 +992,7 @@ test('local emby played lists merge local QQ play history', async () => {
     assert.equal(mostPlayedSong.UserData.LastPlayedDate, '2026-05-22T10:00:00.000Z')
 
     const recentlyPlayed = await dispatchEmbyRequest(
-      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio&ParentId=mixmusic-music&SortBy=DatePlayed&SortOrder=Descending&Filters=IsPlayed&Limit=200&StartIndex=0`, {
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio&ParentId=x-music-music&SortBy=DatePlayed&SortOrder=Descending&Filters=IsPlayed&Limit=200&StartIndex=0`, {
         headers: { 'X-Emby-Authorization': authHeader },
       }),
       stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/Items`),
@@ -973,7 +1073,7 @@ test('local emby virtual song item details and audio HEAD stay local', async () 
     )
     assert.equal(head.status, 200)
     assert.equal(head.headers.get('content-type'), 'audio/mpeg')
-    assert.equal(head.headers.get('x-mixmusic-source'), 'upstream')
+    assert.equal(head.headers.get('x-x-music-source'), 'upstream')
     assert.deepEqual(upstreamRequests, [])
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999009')
@@ -1280,8 +1380,8 @@ test('local emby library exploration endpoints proxy upstream and fall back to e
       `/emby/Artists`,
       `/emby/AlbumArtists`,
       `/emby/Albums`,
-      `/emby/Genres?UserId=${authPayload.User.Id}&ParentId=mixmusic-music&IncludeItemTypes=MusicAlbum&SortBy=SortName&Recursive=true&Limit=500&StartIndex=0&EnableImages=false&EnableUserData=false&EnableTotalRecordCount=false`,
-      `/emby/Years?UserId=${authPayload.User.Id}&ParentId=mixmusic-music&IncludeItemTypes=MusicAlbum&SortBy=SortName&Recursive=true&Limit=500&StartIndex=0&EnableImages=false&EnableUserData=false&EnableTotalRecordCount=false`,
+      `/emby/Genres?UserId=${authPayload.User.Id}&ParentId=x-music-music&IncludeItemTypes=MusicAlbum&SortBy=SortName&Recursive=true&Limit=500&StartIndex=0&EnableImages=false&EnableUserData=false&EnableTotalRecordCount=false`,
+      `/emby/Years?UserId=${authPayload.User.Id}&ParentId=x-music-music&IncludeItemTypes=MusicAlbum&SortBy=SortName&Recursive=true&Limit=500&StartIndex=0&EnableImages=false&EnableUserData=false&EnableTotalRecordCount=false`,
     ]) {
       const embyPath = path.split('?')[0] ?? path
       const response = await dispatchEmbyRequest(
@@ -1300,12 +1400,12 @@ test('local emby library exploration endpoints proxy upstream and fall back to e
     globalThis.fetch = (async () => Response.json({ error: 'upstream failed' }, { status: 500 })) as typeof fetch
 
     const fallbackQueries = [
-      'IncludeItemTypes=Audio&Fields=AudioInfo%2CChildCount%2CDateCreated%2CGenres%2CMediaSources%2CParentIndexNumber%2CPath%2CProductionYear%2CPremiereDate%2COverview%2CPresentationUniqueKey%2CProviderIds%2CUserDataPlayCount%2CUserDataLastPlayedDate&EnableUserData=true&Recursive=true&ImageTypeLimit=1&EnableImageTypes=Primary&EnableTotalRecordCount=true&ParentId=mixmusic-music&Filters=IsPlayed&SortBy=PlayCount%2CDatePlayed&SortOrder=Descending&Limit=500&StartIndex=0',
-      'IncludeItemTypes=Audio&Fields=AudioInfo%2CChildCount%2CDateCreated%2CGenres%2CMediaSources%2CParentIndexNumber%2CPath%2CProductionYear%2CPremiereDate%2COverview%2CPresentationUniqueKey%2CProviderIds%2CUserDataPlayCount%2CUserDataLastPlayedDate&EnableUserData=true&Recursive=true&ImageTypeLimit=1&EnableImageTypes=Primary&EnableTotalRecordCount=true&ParentId=mixmusic-music&Filters=IsFavorite&SortBy=AlbumArtist%2CAlbum%2CParentIndexNumber%2CIndexNumber%2CSortName&SortOrder=Ascending&Limit=500&StartIndex=0',
-      'IncludeItemTypes=MusicAlbum&Fields=AudioInfo%2CChildCount%2CDateCreated%2CGenres%2CMediaSources%2CParentIndexNumber%2CPath%2CProductionYear%2CPremiereDate%2COverview%2CPresentationUniqueKey%2CProviderIds%2CUserDataPlayCount%2CUserDataLastPlayedDate&EnableUserData=true&Recursive=true&ImageTypeLimit=1&EnableImageTypes=Primary&EnableTotalRecordCount=true&ParentId=mixmusic-music&SortBy=DateCreated%2CSortName&SortOrder=Descending%2CAscending&Limit=500&StartIndex=0',
-      'IncludeItemTypes=Audio&Fields=AudioInfo%2CChildCount%2CDateCreated%2CGenres%2CMediaSources%2CParentIndexNumber%2CPath%2CProductionYear%2CPremiereDate%2COverview%2CPresentationUniqueKey%2CProviderIds%2CUserDataPlayCount%2CUserDataLastPlayedDate&EnableUserData=true&Recursive=true&ImageTypeLimit=1&EnableImageTypes=Primary&EnableTotalRecordCount=true&ParentId=mixmusic-music&SortBy=DatePlayed&SortOrder=Descending&Filters=IsPlayed&Limit=200&StartIndex=0',
-      'IncludeItemTypes=Audio&Fields=AudioInfo%2CChildCount%2CDateCreated%2CGenres%2CMediaSources%2CParentIndexNumber%2CPath%2CProductionYear%2CPremiereDate%2COverview%2CPresentationUniqueKey%2CProviderIds%2CUserDataPlayCount%2CUserDataLastPlayedDate&EnableUserData=true&Recursive=true&ImageTypeLimit=1&EnableImageTypes=Primary&EnableTotalRecordCount=true&ParentId=mixmusic-music&SortBy=Random&Limit=100&StartIndex=0',
-      'IncludeItemTypes=MusicAlbum&Fields=AudioInfo%2CChildCount%2CDateCreated%2CGenres%2CMediaSources%2CParentIndexNumber%2CPath%2CProductionYear%2CPremiereDate%2COverview%2CPresentationUniqueKey%2CProviderIds%2CUserDataPlayCount%2CUserDataLastPlayedDate&EnableUserData=true&Recursive=true&ImageTypeLimit=1&EnableImageTypes=Primary&EnableTotalRecordCount=true&ParentId=mixmusic-music&SortBy=Random&Limit=100&StartIndex=0',
+      'IncludeItemTypes=Audio&Fields=AudioInfo%2CChildCount%2CDateCreated%2CGenres%2CMediaSources%2CParentIndexNumber%2CPath%2CProductionYear%2CPremiereDate%2COverview%2CPresentationUniqueKey%2CProviderIds%2CUserDataPlayCount%2CUserDataLastPlayedDate&EnableUserData=true&Recursive=true&ImageTypeLimit=1&EnableImageTypes=Primary&EnableTotalRecordCount=true&ParentId=x-music-music&Filters=IsPlayed&SortBy=PlayCount%2CDatePlayed&SortOrder=Descending&Limit=500&StartIndex=0',
+      'IncludeItemTypes=Audio&Fields=AudioInfo%2CChildCount%2CDateCreated%2CGenres%2CMediaSources%2CParentIndexNumber%2CPath%2CProductionYear%2CPremiereDate%2COverview%2CPresentationUniqueKey%2CProviderIds%2CUserDataPlayCount%2CUserDataLastPlayedDate&EnableUserData=true&Recursive=true&ImageTypeLimit=1&EnableImageTypes=Primary&EnableTotalRecordCount=true&ParentId=x-music-music&Filters=IsFavorite&SortBy=AlbumArtist%2CAlbum%2CParentIndexNumber%2CIndexNumber%2CSortName&SortOrder=Ascending&Limit=500&StartIndex=0',
+      'IncludeItemTypes=MusicAlbum&Fields=AudioInfo%2CChildCount%2CDateCreated%2CGenres%2CMediaSources%2CParentIndexNumber%2CPath%2CProductionYear%2CPremiereDate%2COverview%2CPresentationUniqueKey%2CProviderIds%2CUserDataPlayCount%2CUserDataLastPlayedDate&EnableUserData=true&Recursive=true&ImageTypeLimit=1&EnableImageTypes=Primary&EnableTotalRecordCount=true&ParentId=x-music-music&SortBy=DateCreated%2CSortName&SortOrder=Descending%2CAscending&Limit=500&StartIndex=0',
+      'IncludeItemTypes=Audio&Fields=AudioInfo%2CChildCount%2CDateCreated%2CGenres%2CMediaSources%2CParentIndexNumber%2CPath%2CProductionYear%2CPremiereDate%2COverview%2CPresentationUniqueKey%2CProviderIds%2CUserDataPlayCount%2CUserDataLastPlayedDate&EnableUserData=true&Recursive=true&ImageTypeLimit=1&EnableImageTypes=Primary&EnableTotalRecordCount=true&ParentId=x-music-music&SortBy=DatePlayed&SortOrder=Descending&Filters=IsPlayed&Limit=200&StartIndex=0',
+      'IncludeItemTypes=Audio&Fields=AudioInfo%2CChildCount%2CDateCreated%2CGenres%2CMediaSources%2CParentIndexNumber%2CPath%2CProductionYear%2CPremiereDate%2COverview%2CPresentationUniqueKey%2CProviderIds%2CUserDataPlayCount%2CUserDataLastPlayedDate&EnableUserData=true&Recursive=true&ImageTypeLimit=1&EnableImageTypes=Primary&EnableTotalRecordCount=true&ParentId=x-music-music&SortBy=Random&Limit=100&StartIndex=0',
+      'IncludeItemTypes=MusicAlbum&Fields=AudioInfo%2CChildCount%2CDateCreated%2CGenres%2CMediaSources%2CParentIndexNumber%2CPath%2CProductionYear%2CPremiereDate%2COverview%2CPresentationUniqueKey%2CProviderIds%2CUserDataPlayCount%2CUserDataLastPlayedDate&EnableUserData=true&Recursive=true&ImageTypeLimit=1&EnableImageTypes=Primary&EnableTotalRecordCount=true&ParentId=x-music-music&SortBy=Random&Limit=100&StartIndex=0',
     ]
     for (const query of fallbackQueries) {
       const response = await dispatchEmbyRequest(
@@ -1323,7 +1423,7 @@ test('local emby library exploration endpoints proxy upstream and fall back to e
     }
 
     const playlists = await dispatchEmbyRequest(
-      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Playlist&Fields=AudioInfo%2CChildCount%2CDateCreated%2CGenres%2CMediaSources%2CParentIndexNumber%2CPath%2CProductionYear%2CPremiereDate%2COverview%2CPresentationUniqueKey%2CProviderIds%2CUserDataPlayCount%2CUserDataLastPlayedDate&EnableUserData=true&Recursive=true&ImageTypeLimit=1&EnableImageTypes=Primary&EnableTotalRecordCount=true&ParentId=mixmusic-music&SortBy=SortName&SortOrder=Ascending&Limit=500&StartIndex=0`, { headers: { 'X-Emby-Authorization': authHeader } }),
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Playlist&Fields=AudioInfo%2CChildCount%2CDateCreated%2CGenres%2CMediaSources%2CParentIndexNumber%2CPath%2CProductionYear%2CPremiereDate%2COverview%2CPresentationUniqueKey%2CProviderIds%2CUserDataPlayCount%2CUserDataLastPlayedDate&EnableUserData=true&Recursive=true&ImageTypeLimit=1&EnableImageTypes=Primary&EnableTotalRecordCount=true&ParentId=x-music-music&SortBy=SortName&SortOrder=Ascending&Limit=500&StartIndex=0`, { headers: { 'X-Emby-Authorization': authHeader } }),
       stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/Items`),
     )
     assert.equal(playlists.status, 200)
@@ -1332,8 +1432,8 @@ test('local emby library exploration endpoints proxy upstream and fall back to e
     assert.deepEqual(playlistsPayload.Items.map((item: { Name: string }) => item.Name).sort(), ['QQ 每日推荐', 'QQ 猜你喜欢'])
 
     const image = await dispatchEmbyRequest(
-      new Request('http://local/emby/Items/mixmusic-music/Images/Primary', { headers: { 'X-Emby-Authorization': authHeader } }),
-      stripOptionalEmbyPrefix('/emby/Items/mixmusic-music/Images/Primary'),
+      new Request('http://local/emby/Items/x-music-music/Images/Primary', { headers: { 'X-Emby-Authorization': authHeader } }),
+      stripOptionalEmbyPrefix('/emby/Items/x-music-music/Images/Primary'),
     )
     assert.equal(image.status, 204)
   } finally {

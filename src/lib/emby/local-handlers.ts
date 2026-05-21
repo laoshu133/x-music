@@ -33,7 +33,8 @@ import { stat } from 'node:fs/promises'
 import path from 'node:path'
 import { createLocalAccessToken, readEmbyAccessToken } from './tokens'
 
-const LOCAL_SERVER_ID = 'mixmusic'
+const LOCAL_SERVER_ID = 'x-music'
+const MUSIC_LIBRARY_ID = 'x-music-music'
 const MAX_EMBY_LIST_LIMIT = 1000
 const QQ_SONG_PAGE_SIZE = 100
 const QQ_PLAYLIST_PAGE_SIZE = 50
@@ -42,9 +43,9 @@ export async function handleLocalEmbyRequest(request: Request, embyPath: string)
   if (request.method === 'GET' && embyPath === '/System/Info/Public') {
     return Response.json({
       LocalAddress: '',
-      ServerName: 'miXmusic',
+      ServerName: 'XMusic',
       Version: '0.1.0',
-      ProductName: 'miXmusic Emby Gateway',
+      ProductName: 'XMusic Emby Gateway',
       Id: LOCAL_SERVER_ID,
       StartupWizardCompleted: true,
     })
@@ -72,8 +73,8 @@ export async function handleLocalEmbyRequest(request: Request, embyPath: string)
     return handleUserViewsRequest(embyPath)
   }
 
-  if (request.method === 'GET' && embyPath === '/mixmusic/health') {
-    return Response.json({ ok: true, service: 'mixmusic-emby-gateway' })
+  if (request.method === 'GET' && embyPath === '/x-music/health') {
+    return Response.json({ ok: true, service: 'x-music-emby-gateway' })
   }
 
   if (request.method === 'POST' && isPlaybackReportRequest(embyPath)) {
@@ -142,7 +143,7 @@ async function handleAuthenticateByName(request: Request): Promise<Response> {
         IsHidden: false,
         IsDisabled: false,
         EnableRemoteControlOfOtherUsers: false,
-        EnableSharedDeviceControl: true,
+        EnableSharedDeviceControl: false,
         EnableRemoteAccess: true,
       },
     },
@@ -212,9 +213,9 @@ function handleUserViewsRequest(path: string): Response {
 
   return Response.json({
     Items: [{
-      Name: 'miXmusic',
+      Name: 'XMusic',
       ServerId: LOCAL_SERVER_ID,
-      Id: 'mixmusic-music',
+      Id: MUSIC_LIBRARY_ID,
       Type: 'CollectionFolder',
       CollectionType: 'music',
       IsFolder: true,
@@ -277,7 +278,7 @@ function emptyImageResponse(): Response {
 async function handleImageRequest(request: Request, embyPath: string): Promise<Response> {
   const itemId = extractImageItemId(embyPath)
   if (!itemId) return emptyImageResponse()
-  if (itemId === 'mixmusic-music') return emptyImageResponse()
+  if (isMusicLibraryId(itemId)) return emptyImageResponse()
 
   const decoded = decodeVirtualId(itemId)
   if (!decoded) return proxyToUpstreamEmby(request, embyPath)
@@ -363,7 +364,7 @@ async function handleItemsRequest(request: Request, embyPath: string): Promise<R
     return pagedItemsResponse(merged, startIndex, limit)
   }
 
-  if (parentId === 'mixmusic-music' && requestedTypes.has('musicalbum')) {
+  if (isMusicLibraryId(parentId) && requestedTypes.has('musicalbum')) {
     const upstream = await tryReadItemsResponse(request, embyPath)
     const upstreamItems = filterItemsByTypes(upstream?.Items ?? [], requestedTypes)
     const favorites = await listQQFavoriteSongs(request, startIndex + limit)
@@ -384,7 +385,7 @@ async function handleItemsRequest(request: Request, embyPath: string): Promise<R
     return pagedItemsResponse(merged, startIndex, limit)
   }
 
-  if (parentId === 'mixmusic-music') {
+  if (isMusicLibraryId(parentId)) {
     const upstream = await tryReadItemsResponse(request, embyPath)
     return upstream ? Response.json(upstream) : emptyItemsResponse()
   }
@@ -854,7 +855,7 @@ function favoriteSongsToAlbumItems(songs: MusicInfo[]) {
     const artists = dedupeStrings(albumSongs.flatMap(song => splitArtists(song.singer)))
     return {
       Name: first.albumName || 'Unknown Album',
-      ServerId: 'mixmusic',
+      ServerId: LOCAL_SERVER_ID,
       Id: albumVirtualId(albumId),
       Type: 'MusicAlbum',
       MediaType: 'Audio',
@@ -887,7 +888,7 @@ function favoriteSongsToGenreItems(songs: MusicInfo[]) {
     .sort((a, b) => a[0].localeCompare(b[0]))
     .map(([name, count]) => ({
       Name: name,
-      ServerId: 'mixmusic',
+      ServerId: LOCAL_SERVER_ID,
       Id: genreVirtualId(name),
       Type: 'Genre',
       IsFolder: true,
@@ -937,7 +938,7 @@ function playlistToEmbyItem(playlist: QQPlaylistInfo) {
       : playlistVirtualId(playlist.id)
   return {
     Name: playlist.name,
-    ServerId: 'mixmusic',
+    ServerId: LOCAL_SERVER_ID,
     Id: id,
     Type: 'Playlist',
     MediaType: 'Audio',
@@ -972,7 +973,7 @@ function imageResponseHeaders(headers: Headers): Headers {
 function songToEmbyItem(song: MusicInfo, playlistId?: string, isFavorite = false) {
   return {
     Name: song.name,
-    ServerId: 'mixmusic',
+    ServerId: LOCAL_SERVER_ID,
     Id: songVirtualId(song, playlistId),
     Type: 'Audio',
     MediaType: 'Audio',
@@ -1094,11 +1095,16 @@ async function tryReadItemsResponse(request: Request, embyPath: string): Promise
 function upstreamSearch(request: Request): string {
   const url = new URL(request.url)
   for (const key of ['ParentId', 'parentId']) {
-    if (url.searchParams.get(key) === 'mixmusic-music') {
+    const value = url.searchParams.get(key)
+    if (value && isMusicLibraryId(value)) {
       url.searchParams.delete(key)
     }
   }
   return url.search
+}
+
+function isMusicLibraryId(value: string): boolean {
+  return value === MUSIC_LIBRARY_ID
 }
 
 function parseIncludeTypes(includeTypes: string): Set<string> {

@@ -1,6 +1,6 @@
 services:
   web:
-    image: mixmusic-app:latest
+    image: x-music-app:latest
     build:
       context: .
       dockerfile: Dockerfile
@@ -12,13 +12,14 @@ services:
     environment:
       MUSIC_DATA_DIR: /app/data
       DATABASE_URL: file:/app/data/app.sqlite
+      PORT: 8098
     ports:
-      - "3000:3000"
+      - "8098:8098"
     volumes:
       - ./data:/app/data
 
   worker:
-    image: mixmusic-app:latest
+    image: x-music-app:latest
     build:
       context: .
       dockerfile: Dockerfile

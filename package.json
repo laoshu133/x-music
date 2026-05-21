@@ -1,13 +1,13 @@
 {
-  "name": "mixmusic",
+  "name": "x-music",
   "version": "1.0.0",
   "description": "",
   "private": true,
   "main": "index.js",
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -p 8098",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -p 8098",
     "worker": "tsx --tsconfig tsconfig.json src/worker/index.ts",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",

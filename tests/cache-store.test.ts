@@ -14,7 +14,7 @@ test('cache store returns only ready files that exist on disk', () => {
   }
 
   const track = ensureTrack(musicInfo)
-  upsertTrackFileStatus(track.id, 'flac', 'ready', { finalPath: `/tmp/mixmusic-missing-${songmid}.flac` })
+  upsertTrackFileStatus(track.id, 'flac', 'ready', { finalPath: `/tmp/x-music-missing-${songmid}.flac` })
   assert.equal(getReadyTrackFile('tx', songmid, 'flac'), undefined)
 
   upsertTrackFileStatus(track.id, 'flac', 'failed', { error: 'upstream failed' })
@@ -24,7 +24,7 @@ test('cache store returns only ready files that exist on disk', () => {
 
 test('cache store can serve cached raw files before tagging finishes', () => {
   const songmid = `PLAYABLE_${Date.now()}`
-  const rawPath = `/tmp/mixmusic-playable-${songmid}.mp3`
+  const rawPath = `/tmp/x-music-playable-${songmid}.mp3`
   fs.writeFileSync(rawPath, 'fake audio')
   try {
     const musicInfo: MusicInfo = {
@@ -47,7 +47,7 @@ test('cache store can serve cached raw files before tagging finishes', () => {
 
 test('cache store can serve cached files even if tagging failed', () => {
   const songmid = `FAILED_PLAYABLE_${Date.now()}`
-  const rawPath = `/tmp/mixmusic-failed-playable-${songmid}.mp3`
+  const rawPath = `/tmp/x-music-failed-playable-${songmid}.mp3`
   fs.writeFileSync(rawPath, 'fake audio')
   try {
     const musicInfo: MusicInfo = {

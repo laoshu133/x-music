@@ -8,7 +8,7 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN mkdir -p public
-RUN DATABASE_URL=file:/tmp/mixmusic-build.sqlite MUSIC_DATA_DIR=/tmp/mixmusic-build-data npm run build
+RUN DATABASE_URL=file:/tmp/x-music-build.sqlite MUSIC_DATA_DIR=/tmp/x-music-build-data npm run build
 
 FROM node:24-alpine AS runner
 WORKDIR /app
@@ -22,5 +22,6 @@ COPY --from=builder /app/public ./public
 COPY --from=builder /app/src ./src
 COPY --from=builder /app/next.config.ts ./next.config.ts
 COPY --from=builder /app/tsconfig.json ./tsconfig.json
-EXPOSE 3000
+ENV PORT=8098
+EXPOSE 8098
 CMD ["node", ".next/standalone/server.js"]

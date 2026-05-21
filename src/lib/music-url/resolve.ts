@@ -104,7 +104,7 @@ const resolveLxApiConfig = async (scriptUrl: string): Promise<LxApiConfig> => {
     method: 'GET',
     headers: {
       accept: 'application/javascript, text/plain, */*',
-      'user-agent': 'miXmusic/1.0',
+      'user-agent': 'XMusic/1.0',
     },
     cache: 'no-store',
   })
@@ -159,13 +159,13 @@ const parseLxScriptConfig = (script: string): LxApiConfig | undefined => {
     headers: {
       accept: 'application/json, text/plain, */*',
       'content-type': 'application/json',
-      'user-agent': 'miXmusic/1.0',
+      'user-agent': 'XMusic/1.0',
       ...(apiKey ? { 'x-api-key': apiKey } : {}),
     },
     body: JSON.stringify({
-      source: '__MIXMUSIC_SOURCE__',
-      musicId: '__MIXMUSIC_MUSIC_ID__',
-      quality: '__MIXMUSIC_QUALITY__',
+      source: '__X_MUSIC_SOURCE__',
+      musicId: '__X_MUSIC_MUSIC_ID__',
+      quality: '__X_MUSIC_QUALITY__',
     }),
   }
 }
@@ -296,16 +296,16 @@ const captureHandlerRequest = (source: LxRequestSource): CapturedRequest | undef
         source: 'tx',
         action: 'musicUrl',
         info: {
-          type: '__MIXMUSIC_QUALITY__',
-          quality: '__MIXMUSIC_QUALITY__',
+          type: '__X_MUSIC_QUALITY__',
+          quality: '__X_MUSIC_QUALITY__',
           musicInfo: {
             source: 'tx',
-            songmid: '__MIXMUSIC_MUSIC_ID__',
-            musicId: '__MIXMUSIC_MUSIC_ID__',
-            id: '__MIXMUSIC_MUSIC_ID__',
-            mid: '__MIXMUSIC_MUSIC_ID__',
-            name: '__MIXMUSIC_NAME__',
-            singer: '__MIXMUSIC_SINGER__',
+            songmid: '__X_MUSIC_MUSIC_ID__',
+            musicId: '__X_MUSIC_MUSIC_ID__',
+            id: '__X_MUSIC_MUSIC_ID__',
+            mid: '__X_MUSIC_MUSIC_ID__',
+            name: '__X_MUSIC_NAME__',
+            singer: '__X_MUSIC_SINGER__',
           },
         },
       },
@@ -373,7 +373,7 @@ const normalizeMethod = (method: string | undefined): string => {
 const normalizeHeaders = (headers: unknown): Record<string, string> => {
   const normalized: Record<string, string> = {
     accept: 'application/json, text/plain, */*',
-    'user-agent': 'miXmusic/1.0',
+    'user-agent': 'XMusic/1.0',
   }
 
   if (!headers || typeof headers !== 'object') return normalized
@@ -419,11 +419,11 @@ const fillCapturedHeaders = (
 
 const fillCapturedTemplate = (value: string, musicInfo: MusicInfo, quality: MusicQuality): string => {
   return value
-    .replaceAll('__MIXMUSIC_SOURCE__', musicInfo.source)
-    .replaceAll('__MIXMUSIC_MUSIC_ID__', musicInfo.songmid)
-    .replaceAll('__MIXMUSIC_QUALITY__', quality)
-    .replaceAll('__MIXMUSIC_NAME__', musicInfo.name)
-    .replaceAll('__MIXMUSIC_SINGER__', musicInfo.singer)
+    .replaceAll('__X_MUSIC_SOURCE__', musicInfo.source)
+    .replaceAll('__X_MUSIC_MUSIC_ID__', musicInfo.songmid)
+    .replaceAll('__X_MUSIC_QUALITY__', quality)
+    .replaceAll('__X_MUSIC_NAME__', musicInfo.name)
+    .replaceAll('__X_MUSIC_SINGER__', musicInfo.singer)
 }
 
 const requestMusicUrlFromApi = async (
@@ -463,7 +463,7 @@ const requestLegacyScriptEndpoint = async (
     method: 'GET',
     headers: {
       accept: 'application/json, text/plain, */*',
-      'user-agent': 'miXmusic/1.0',
+      'user-agent': 'XMusic/1.0',
     },
     cache: 'no-store',
   })

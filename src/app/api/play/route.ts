@@ -124,7 +124,7 @@ function syncQQPlayHistoryFromResolvedUrlBestEffort(input: {
 
 const playbackErrorMessage = (error: unknown): string => {
   if (error instanceof MusicUrlConfigError) {
-    return `${error.message}. Set LX_MUSIC_SOURCE_SCRIPT to the LX source script URL; miXmusic will simulate the source request handler and call the captured API shape directly.`
+    return `${error.message}. Set LX_MUSIC_SOURCE_SCRIPT to the LX source script URL; XMusic will simulate the source request handler and call the captured API shape directly.`
   }
 
   if (error instanceof MusicUrlResolveError) {
