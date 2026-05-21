@@ -1,4 +1,5 @@
 import { dispatchEmbyRequest } from '@/lib/emby/dispatch'
+import { embyCorsPreflight } from '@/lib/emby/cors'
 import { isReservedManagementPath, normalizeEmbyPath } from '@/lib/emby/paths'
 
 export const runtime = 'nodejs'
@@ -36,4 +37,8 @@ export async function PATCH(request: Request, context: RouteContext): Promise<Re
 
 export async function DELETE(request: Request, context: RouteContext): Promise<Response> {
   return handle(request, context)
+}
+
+export async function OPTIONS(): Promise<Response> {
+  return embyCorsPreflight()
 }

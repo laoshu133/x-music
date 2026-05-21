@@ -18,6 +18,7 @@ import { proxyToUpstreamEmby } from './upstream-proxy'
 import { getAccountByEmbyUsername, getAccountByEmbyUserId, listAccounts, type AccountRecord } from '@/lib/db/accounts'
 import { ensureUpstreamEmbyUserForAccount } from './auth'
 import crypto from 'node:crypto'
+import { createLocalAccessToken, readEmbyAccessToken } from './tokens'
 
 const LOCAL_SERVER_ID = 'mixmusic'
 
@@ -41,13 +42,31 @@ export async function handleLocalEmbyRequest(request: Request, embyPath: string)
     return handlePublicUsers()
   }
 
+  if (request.method === 'GET' && embyPath === '/System/Endpoint') {
+    return Response.json({ IsLocal: true, IsInNetwork: true })
+  }
+
   if (request.method === 'GET' && isUserRequest(embyPath)) {
     if (!isAuthorizedLocalRequest(request)) return unauthorizedResponse()
     return handleUserRequest(embyPath)
   }
 
+  if (request.method === 'GET' && isUserViewsRequest(embyPath)) {
+    if (!isAuthorizedLocalRequest(request)) return unauthorizedResponse()
+    return handleUserViewsRequest(embyPath)
+  }
+
   if (request.method === 'GET' && embyPath === '/mixmusic/health') {
     return Response.json({ ok: true, service: 'mixmusic-emby-gateway' })
+  }
+
+  if (request.method === 'GET' && isLocalEmptyCollectionRequest(embyPath)) {
+    if (!isAuthorizedLocalRequest(request)) return unauthorizedResponse()
+    return emptyItemsResponse()
+  }
+
+  if (request.method === 'GET' && isImageRequest(embyPath)) {
+    return emptyImageResponse()
   }
 
   if (request.method === 'GET' && isItemsRequest(embyPath)) {
@@ -108,11 +127,7 @@ async function handleAuthenticateByName(request: Request): Promise<Response> {
 }
 
 function authorizedLocalAccount(request: Request): AccountRecord | undefined {
-  const url = new URL(request.url)
-  const token = request.headers.get('X-Emby-Token')
-    ?? request.headers.get('X-MediaBrowser-Token')
-    ?? url.searchParams.get('api_key')
-    ?? url.searchParams.get('ApiKey')
+  const token = readEmbyAccessToken(request)
   if (!token) return undefined
   return listAccounts().find(account => token === createLocalAccessToken(account))
 }
@@ -125,13 +140,6 @@ function unauthorizedResponse(): Response {
   return Response.json({ error: 'Unauthorized' }, { status: 401 })
 }
 
-function createLocalAccessToken(account: AccountRecord): string {
-  return crypto
-    .createHash('sha256')
-    .update(`${LOCAL_SERVER_ID}:${account.qqUin}:${account.embyUsername}:${account.embyPassword}`)
-    .digest('hex')
-}
-
 function localUserId(account: AccountRecord): string {
   return account.embyUserId ?? crypto.createHash('sha1').update(`${LOCAL_SERVER_ID}:${account.qqUin}:${account.embyUsername}`).digest('hex')
 }
@@ -142,7 +150,7 @@ function handlePublicUsers(): Response {
 
 function handleUserRequest(path: string): Response | undefined {
   const requestedUserId = decodeURIComponent(path.split('/')[2] ?? '')
-  const account = requestedUserId ? getAccountByEmbyUserId(requestedUserId) : undefined
+  const account = requestedUserId ? findAccountByLocalOrUpstreamUserId(requestedUserId) : undefined
   if (!account) {
     return Response.json({ error: 'User not found' }, { status: 404 })
   }
@@ -165,6 +173,39 @@ function isUserRequest(path: string): boolean {
   return /^\/Users\/[^/]+$/i.test(path)
 }
 
+function isUserViewsRequest(path: string): boolean {
+  return /^\/Users\/[^/]+\/Views$/i.test(path)
+}
+
+function handleUserViewsRequest(path: string): Response {
+  const requestedUserId = decodeURIComponent(path.split('/')[2] ?? '')
+  const account = findAccountByLocalOrUpstreamUserId(requestedUserId)
+  if (!account) {
+    return Response.json({ error: 'User not found' }, { status: 404 })
+  }
+
+  return Response.json({
+    Items: [{
+      Name: 'miXmusic',
+      ServerId: LOCAL_SERVER_ID,
+      Id: 'mixmusic-music',
+      Type: 'CollectionFolder',
+      CollectionType: 'music',
+      IsFolder: true,
+      UserData: {
+        PlaybackPositionTicks: 0,
+        PlayCount: 0,
+        IsFavorite: false,
+      },
+    }],
+    TotalRecordCount: 1,
+  })
+}
+
+function findAccountByLocalOrUpstreamUserId(userId: string): AccountRecord | undefined {
+  return getAccountByEmbyUserId(userId) ?? listAccounts().find(account => localUserId(account) === userId)
+}
+
 function isItemsRequest(path: string): boolean {
   return /^\/Users\/[^/]+\/Items$/i.test(path) || path === '/Items'
 }
@@ -177,10 +218,33 @@ function isAudioRequest(path: string): boolean {
   return /^\/Audio\/[^/]+\/(?:universal|stream)$/i.test(path)
 }
 
+function isLocalEmptyCollectionRequest(path: string): boolean {
+  return /^\/Users\/[^/]+\/(?:Albums|Artists|AlbumArtists|Genres|FavoriteItems|Items\/Latest|Items\/Resume)$/i.test(path)
+    || /^\/(?:Albums|Artists|AlbumArtists|Genres|MusicGenres|Years|Studios|Persons)$/i.test(path)
+}
+
+function isImageRequest(path: string): boolean {
+  return /^\/Items\/[^/]+\/Images\/[^/]+$/i.test(path)
+    || /^\/Users\/[^/]+\/Images\/[^/]+$/i.test(path)
+}
+
+function emptyItemsResponse(): Response {
+  return Response.json({ Items: [], TotalRecordCount: 0 })
+}
+
+function emptyImageResponse(): Response {
+  return new Response(null, { status: 204 })
+}
+
 async function handleItemsRequest(request: Request, embyPath: string): Promise<Response | undefined> {
   const url = new URL(request.url)
   const searchTerm = url.searchParams.get('SearchTerm') ?? url.searchParams.get('searchTerm') ?? url.searchParams.get('search')
   const includeTypes = url.searchParams.get('IncludeItemTypes') ?? url.searchParams.get('includeItemTypes') ?? ''
+  const parentId = url.searchParams.get('ParentId') ?? url.searchParams.get('parentId') ?? ''
+
+  if (!searchTerm?.trim() && parentId === 'mixmusic-music') {
+    return emptyItemsResponse()
+  }
 
   if (searchTerm?.trim()) {
     const upstream = await tryReadItemsResponse(request, embyPath)

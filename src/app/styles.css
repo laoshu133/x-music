@@ -509,7 +509,7 @@ a {
 
 .info-card strong,
 .info-card a,
-.connection-list dd {
+.connection-list dd span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -534,6 +534,14 @@ a {
 .connection-list div {
   display: grid;
   gap: 4px;
+  min-width: 0;
+}
+
+.connection-list dd {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
   min-width: 0;
 }
 

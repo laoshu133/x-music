@@ -109,6 +109,7 @@ Relevant environment variables:
 - `EMBY_UPSTREAM_URL`: required upstream Emby server used by the gateway fallback.
 - `EMBY_API_KEY`: required API key used for upstream Emby admin/fallback requests.
 - `EMBY_PROXY_TIMEOUT_MS`: upstream Emby proxy timeout, default `30000`.
+- `AMPCAST_URL`: ampcast web entry used by the player page, default `https://ampcast.app/`. In HTTP-only test environments, point it at a local/self-hosted ampcast URL using the same protocol as miXmusic.
 - `WORKER_POLL_INTERVAL_MS`: idle polling interval, default `5000`.
 - `WORKER_MAX_ATTEMPTS`: max attempts before a job is marked failed, default `3`.
 - `TAGGING_WRITE_TAGS`: write supported file tags, default `true`.

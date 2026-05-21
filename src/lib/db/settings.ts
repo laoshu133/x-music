@@ -23,6 +23,9 @@ export interface EffectiveAppSettings {
   gateway: {
     accountMode: 'per-account'
   }
+  player: {
+    ampcastUrl: string
+  }
 }
 
 const now = () => new Date().toISOString()
@@ -75,6 +78,9 @@ export function getEffectiveSettings(): EffectiveAppSettings {
     },
     gateway: {
       accountMode: 'per-account',
+    },
+    player: {
+      ampcastUrl: appConfig.ampcastUrl,
     },
   }
 }

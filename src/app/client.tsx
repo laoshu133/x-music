@@ -68,6 +68,9 @@ interface AdminConfig {
   gateway: {
     accountMode?: string
   }
+  player: {
+    ampcastUrl: string
+  }
   qq: { enabled: boolean; syncFavorites: boolean; syncPlayHistory: boolean }
 }
 
@@ -140,14 +143,15 @@ export default function MusicClient() {
     qqSyncPlayHistory: true,
   })
 
-  const embyUrl = useMemo(() => browserOrigin ? `${browserOrigin}/mixmusic/emby` : '', [browserOrigin])
+  const embyUrl = browserOrigin
   const ampcastUrl = useMemo(() => {
-    if (!embyUrl) return 'https://ampcast.app/'
-    const url = new URL('https://ampcast.app/')
+    const baseUrl = adminConfig.data?.player.ampcastUrl ?? 'https://ampcast.app/'
+    if (!embyUrl) return baseUrl
+    const url = new URL(baseUrl)
     url.searchParams.set('emby', embyUrl)
     if (account.data?.emby?.username) url.searchParams.set('user', account.data.emby.username)
     return url.toString()
-  }, [account.data?.emby?.username, embyUrl])
+  }, [account.data?.emby?.username, adminConfig.data?.player.ampcastUrl, embyUrl])
 
   const run = async <T,>(setter: (state: ApiState<T>) => void, task: () => Promise<T>) => {
     setter({ loading: true, error: '', data: null })
@@ -555,8 +559,14 @@ function ConfigPanel({
       <section>
         <h3>Emby 配置</h3>
         <dl className="connection-list">
-          <div><dt>Host</dt><dd>{embyHost || '-'}</dd></div>
-          <div><dt>UserName</dt><dd>{embyConfig.data?.username ?? '-'}</dd></div>
+          <div>
+            <dt>Host</dt>
+            <dd><span>{embyHost || '-'}</span><CopyButton value={embyHost} label="复制 Host" iconOnly /></dd>
+          </div>
+          <div>
+            <dt>UserName</dt>
+            <dd><span>{embyConfig.data?.username ?? '-'}</span><CopyButton value={embyConfig.data?.username ?? ''} label="复制 UserName" iconOnly /></dd>
+          </div>
         </dl>
         <Status state={embyConfig} />
         <label>
@@ -652,9 +662,9 @@ function CopyButton({ value, label, iconOnly = false }: { value: string; label: 
       className={iconOnly ? 'icon-button' : 'secondary-button'}
       aria-label={label}
       title={label}
-      onClick={async () => {
+      onClick={() => {
         if (!value) return
-        await navigator.clipboard.writeText(value)
+        copyText(value)
         setCopied(true)
         window.setTimeout(() => setCopied(false), 1200)
       }}
@@ -664,6 +674,20 @@ function CopyButton({ value, label, iconOnly = false }: { value: string; label: 
       {iconOnly ? null : label}
     </button>
   )
+}
+
+function copyText(value: string): void {
+  const textarea = document.createElement('textarea')
+  textarea.value = value
+  textarea.setAttribute('readonly', 'true')
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-9999px'
+  textarea.style.top = '0'
+  document.body.appendChild(textarea)
+  textarea.select()
+  textarea.setSelectionRange(0, textarea.value.length)
+  document.execCommand('copy')
+  document.body.removeChild(textarea)
 }
 
 function IconButton({ label, children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { label: string }) {

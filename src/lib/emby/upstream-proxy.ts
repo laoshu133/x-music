@@ -1,8 +1,8 @@
-import crypto from 'node:crypto'
 import { getEffectiveSettings } from '@/lib/db/settings'
 import { markRequestSource } from '@/lib/request-log'
 import { listAccounts } from '@/lib/db/accounts'
 import { embyAuthorizationHeader, getEmbyAccessToken } from './auth'
+import { createLocalAccessToken, readEmbyAccessToken } from './tokens'
 
 const hopByHopHeaders = new Set([
   'connection',
@@ -58,20 +58,9 @@ export async function proxyToUpstreamEmby(request: Request, embyPath: string): P
 }
 
 function findAccountForRequest(request: Request) {
-  const incomingUrl = new URL(request.url)
-  const token = request.headers.get('X-Emby-Token')
-    ?? request.headers.get('X-MediaBrowser-Token')
-    ?? incomingUrl.searchParams.get('api_key')
-    ?? incomingUrl.searchParams.get('ApiKey')
+  const token = readEmbyAccessToken(request)
   if (!token) return undefined
-  return listAccounts().find(account => token === localAccessToken(account))
-}
-
-function localAccessToken(account: { qqUin: string; embyUsername: string; embyPassword: string }): string {
-  return crypto
-    .createHash('sha256')
-    .update(`mixmusic:${account.qqUin}:${account.embyUsername}:${account.embyPassword}`)
-    .digest('hex')
+  return listAccounts().find(account => token === createLocalAccessToken(account))
 }
 
 function applyToken(url: URL, headers: Headers, token: string | undefined): void {
