@@ -15,6 +15,11 @@ import { loadVirtualPlaylist, loadVirtualSong, rememberVirtualPlaylist, remember
 import { getRemoteMapping, upsertRemoteMapping } from '@/lib/db/remote-mappings'
 import { fetchEmbyJson, searchEmbyAudioByName, searchEmbyPlaylistByName } from './upstream-api'
 import { proxyToUpstreamEmby } from './upstream-proxy'
+import { getAccountByEmbyUsername, getAccountByEmbyUserId, listAccounts, type AccountRecord } from '@/lib/db/accounts'
+import { ensureUpstreamEmbyUserForAccount } from './auth'
+import crypto from 'node:crypto'
+
+const LOCAL_SERVER_ID = 'mixmusic'
 
 export async function handleLocalEmbyRequest(request: Request, embyPath: string): Promise<Response | undefined> {
   if (request.method === 'GET' && embyPath === '/System/Info/Public') {
@@ -23,9 +28,22 @@ export async function handleLocalEmbyRequest(request: Request, embyPath: string)
       ServerName: 'miXmusic',
       Version: '0.1.0',
       ProductName: 'miXmusic Emby Gateway',
-      Id: 'mixmusic',
+      Id: LOCAL_SERVER_ID,
       StartupWizardCompleted: true,
     })
+  }
+
+  if (request.method === 'POST' && embyPath === '/Users/AuthenticateByName') {
+    return handleAuthenticateByName(request)
+  }
+
+  if (request.method === 'GET' && embyPath === '/Users/Public') {
+    return handlePublicUsers()
+  }
+
+  if (request.method === 'GET' && isUserRequest(embyPath)) {
+    if (!isAuthorizedLocalRequest(request)) return unauthorizedResponse()
+    return handleUserRequest(embyPath)
   }
 
   if (request.method === 'GET' && embyPath === '/mixmusic/health') {
@@ -33,18 +51,118 @@ export async function handleLocalEmbyRequest(request: Request, embyPath: string)
   }
 
   if (request.method === 'GET' && isItemsRequest(embyPath)) {
+    if (!isAuthorizedLocalRequest(request)) return unauthorizedResponse()
     return handleItemsRequest(request, embyPath)
   }
 
   if (request.method === 'GET' && isPlaylistItemsRequest(embyPath)) {
+    if (!isAuthorizedLocalRequest(request)) return unauthorizedResponse()
     return handlePlaylistItemsRequest(request, embyPath)
   }
 
   if (request.method === 'GET' && isAudioRequest(embyPath)) {
+    if (!isAuthorizedLocalRequest(request)) return unauthorizedResponse()
     return handleAudioRequest(request, embyPath)
   }
 
   return undefined
+}
+
+async function handleAuthenticateByName(request: Request): Promise<Response> {
+  const body = await request.json().catch(() => undefined) as { Username?: unknown; Pw?: unknown; Password?: unknown } | undefined
+  const username = typeof body?.Username === 'string' ? body.Username.trim() : ''
+  const password = typeof body?.Pw === 'string'
+    ? body.Pw
+    : typeof body?.Password === 'string'
+      ? body.Password
+      : ''
+  const account = getAccountByEmbyUsername(username)
+  if (!account || password !== account.embyPassword) {
+    return Response.json({ error: 'Invalid username or password' }, { status: 401 })
+  }
+
+  const upstreamAccount = await ensureUpstreamEmbyUserForAccount(account).catch(() => account)
+  const accessToken = createLocalAccessToken(upstreamAccount)
+  return Response.json({
+    User: {
+      Name: upstreamAccount.embyUsername,
+      ServerId: LOCAL_SERVER_ID,
+      Id: localUserId(upstreamAccount),
+      HasPassword: true,
+      HasConfiguredPassword: true,
+      HasConfiguredEasyPassword: false,
+      EnableAutoLogin: false,
+      Policy: {
+        IsAdministrator: false,
+        IsHidden: false,
+        IsDisabled: false,
+        EnableRemoteControlOfOtherUsers: false,
+        EnableSharedDeviceControl: true,
+        EnableRemoteAccess: true,
+      },
+    },
+    SessionInfo: {},
+    AccessToken: accessToken,
+    ServerId: LOCAL_SERVER_ID,
+  })
+}
+
+function authorizedLocalAccount(request: Request): AccountRecord | undefined {
+  const url = new URL(request.url)
+  const token = request.headers.get('X-Emby-Token')
+    ?? request.headers.get('X-MediaBrowser-Token')
+    ?? url.searchParams.get('api_key')
+    ?? url.searchParams.get('ApiKey')
+  if (!token) return undefined
+  return listAccounts().find(account => token === createLocalAccessToken(account))
+}
+
+function isAuthorizedLocalRequest(request: Request): boolean {
+  return Boolean(authorizedLocalAccount(request))
+}
+
+function unauthorizedResponse(): Response {
+  return Response.json({ error: 'Unauthorized' }, { status: 401 })
+}
+
+function createLocalAccessToken(account: AccountRecord): string {
+  return crypto
+    .createHash('sha256')
+    .update(`${LOCAL_SERVER_ID}:${account.qqUin}:${account.embyUsername}:${account.embyPassword}`)
+    .digest('hex')
+}
+
+function localUserId(account: AccountRecord): string {
+  return account.embyUserId ?? crypto.createHash('sha1').update(`${LOCAL_SERVER_ID}:${account.qqUin}:${account.embyUsername}`).digest('hex')
+}
+
+function handlePublicUsers(): Response {
+  return Response.json(listAccounts().map(localUser))
+}
+
+function handleUserRequest(path: string): Response | undefined {
+  const requestedUserId = decodeURIComponent(path.split('/')[2] ?? '')
+  const account = requestedUserId ? getAccountByEmbyUserId(requestedUserId) : undefined
+  if (!account) {
+    return Response.json({ error: 'User not found' }, { status: 404 })
+  }
+  return Response.json(localUser(account))
+}
+
+function localUser(account: AccountRecord) {
+  return {
+    Name: account.embyUsername,
+    ServerId: LOCAL_SERVER_ID,
+    Id: localUserId(account),
+    HasPassword: true,
+    HasConfiguredPassword: true,
+    HasConfiguredEasyPassword: false,
+    EnableAutoLogin: false,
+  }
+}
+
+function isUserRequest(path: string): boolean {
+  return /^\/Users\/[^/]+$/i.test(path)
 }
 
 function isItemsRequest(path: string): boolean {

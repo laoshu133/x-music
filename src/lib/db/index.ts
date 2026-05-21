@@ -21,6 +21,8 @@ for (const statement of [
   'ALTER TABLE track_files ADD COLUMN lyrics_path TEXT',
   'ALTER TABLE track_files ADD COLUMN cover_path TEXT',
   'ALTER TABLE track_files ADD COLUMN tagged_at TEXT',
+  'ALTER TABLE accounts ADD COLUMN emby_user_id TEXT',
+  'ALTER TABLE accounts ADD COLUMN emby_access_token TEXT',
 ]) {
   try {
     db.exec(statement)

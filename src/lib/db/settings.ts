@@ -2,16 +2,6 @@ import { appConfig } from '@/lib/config'
 import { db } from './index'
 
 export type AppSettingKey =
-  | 'lx.sourceScriptUrl'
-  | 'emby.baseUrl'
-  | 'emby.apiKey'
-  | 'emby.username'
-  | 'emby.password'
-  | 'emby.accessToken'
-  | 'emby.userId'
-  | 'emby.serverId'
-  | 'emby.proxyTimeoutMs'
-  | 'gateway.password'
   | 'qq.enabled'
   | 'qq.syncFavorites'
   | 'qq.syncPlayHistory'
@@ -21,13 +11,8 @@ export interface EffectiveAppSettings {
     sourceScriptUrl?: string
   }
   emby: {
-    baseUrl?: string
-    apiKey?: string
-    username?: string
-    password?: string
-    accessToken?: string
-    userId?: string
-    serverId?: string
+    baseUrl: string
+    apiKey: string
     proxyTimeoutMs: number
   }
   qq: {
@@ -36,7 +21,7 @@ export interface EffectiveAppSettings {
     syncPlayHistory: boolean
   }
   gateway: {
-    password?: string
+    accountMode: 'per-account'
   }
 }
 
@@ -73,25 +58,15 @@ function booleanSetting(key: AppSettingKey, fallback: boolean): boolean {
   return typeof value === 'boolean' ? value : fallback
 }
 
-function numberSetting(key: AppSettingKey, fallback: number): number {
-  const value = getSetting<unknown>(key)
-  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback
-}
-
 export function getEffectiveSettings(): EffectiveAppSettings {
   return {
     lx: {
-      sourceScriptUrl: stringSetting('lx.sourceScriptUrl', appConfig.lxMusicSourceScript),
+      sourceScriptUrl: appConfig.lxMusicSourceScript,
     },
     emby: {
-      baseUrl: stringSetting('emby.baseUrl', appConfig.embyUpstreamUrl),
-      apiKey: stringSetting('emby.apiKey', appConfig.embyApiKey),
-      username: stringSetting('emby.username'),
-      password: stringSetting('emby.password'),
-      accessToken: stringSetting('emby.accessToken'),
-      userId: stringSetting('emby.userId'),
-      serverId: stringSetting('emby.serverId'),
-      proxyTimeoutMs: numberSetting('emby.proxyTimeoutMs', appConfig.embyProxyTimeoutMs),
+      baseUrl: appConfig.embyUpstreamUrl,
+      apiKey: appConfig.embyApiKey,
+      proxyTimeoutMs: appConfig.embyProxyTimeoutMs,
     },
     qq: {
       enabled: booleanSetting('qq.enabled', true),
@@ -99,51 +74,18 @@ export function getEffectiveSettings(): EffectiveAppSettings {
       syncPlayHistory: booleanSetting('qq.syncPlayHistory', true),
     },
     gateway: {
-      password: stringSetting('gateway.password'),
+      accountMode: 'per-account',
     },
   }
 }
 
 export function updateEffectiveSettings(input: Partial<{
-  lxSourceScriptUrl: string
-  embyBaseUrl: string
-  embyDsn: string
-  embyApiKey: string
-  embyProxyTimeoutMs: number
-  gatewayPassword: string
   qqEnabled: boolean
   qqSyncFavorites: boolean
   qqSyncPlayHistory: boolean
 }>): EffectiveAppSettings {
-  if ('lxSourceScriptUrl' in input) setNullableString('lx.sourceScriptUrl', input.lxSourceScriptUrl)
-  if ('embyBaseUrl' in input) setNullableString('emby.baseUrl', input.embyBaseUrl)
-  if ('embyDsn' in input) applyEmbyDsn(input.embyDsn)
-  if ('embyApiKey' in input) setNullableString('emby.apiKey', input.embyApiKey)
-  if ('embyProxyTimeoutMs' in input && input.embyProxyTimeoutMs !== undefined) {
-    setSetting('emby.proxyTimeoutMs', Math.max(1000, Math.floor(input.embyProxyTimeoutMs)))
-  }
-  if ('gatewayPassword' in input) setNullableString('gateway.password', input.gatewayPassword)
   if ('qqEnabled' in input && typeof input.qqEnabled === 'boolean') setSetting('qq.enabled', input.qqEnabled)
   if ('qqSyncFavorites' in input && typeof input.qqSyncFavorites === 'boolean') setSetting('qq.syncFavorites', input.qqSyncFavorites)
   if ('qqSyncPlayHistory' in input && typeof input.qqSyncPlayHistory === 'boolean') setSetting('qq.syncPlayHistory', input.qqSyncPlayHistory)
   return getEffectiveSettings()
-}
-
-function applyEmbyDsn(value: string | undefined): void {
-  const normalized = value?.trim()
-  if (!normalized) return
-  const parsed = new URL(normalized)
-  const baseUrl = `${parsed.protocol}//${parsed.host}${parsed.pathname === '/' ? '' : parsed.pathname.replace(/\/+$/, '')}`
-  setSetting('emby.baseUrl', baseUrl)
-  if (parsed.username) setSetting('emby.username', decodeURIComponent(parsed.username))
-  if (parsed.password) setSetting('emby.password', decodeURIComponent(parsed.password))
-}
-
-function setNullableString(key: AppSettingKey, value: string | undefined): void {
-  const normalized = value?.trim()
-  if (normalized) {
-    setSetting(key, normalized)
-  } else {
-    deleteSetting(key)
-  }
 }

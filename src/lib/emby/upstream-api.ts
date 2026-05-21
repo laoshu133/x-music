@@ -1,6 +1,6 @@
 import { getEffectiveSettings } from '@/lib/db/settings'
 import type { MusicInfo } from '@/lib/types'
-import { embyAuthorizationHeader, getEmbyAccessToken, refreshEmbyAccessToken } from './auth'
+import { embyAuthorizationHeader, getEmbyAccessToken } from './auth'
 
 export async function refreshEmbyLibrary(): Promise<unknown> {
   return embyFetch('/Library/Refresh', { method: 'POST' })
@@ -87,26 +87,12 @@ async function embyFetch<T = unknown>(path: string, init: RequestInit = {}): Pro
   if (token && !headers.has('X-Emby-Token')) headers.set('X-Emby-Token', token)
   if (token && !headers.has('X-Emby-Authorization')) headers.set('X-Emby-Authorization', embyAuthorizationHeader(token))
 
-  let response = await fetch(url, {
+  const response = await fetch(url, {
     ...init,
     headers,
     cache: 'no-store',
     signal: AbortSignal.timeout(settings.emby.proxyTimeoutMs),
   })
-  if (response.status === 401 && !settings.emby.apiKey && settings.emby.username && settings.emby.password) {
-    token = await refreshEmbyAccessToken()
-    if (token) {
-      url.searchParams.set('api_key', token)
-      headers.set('X-Emby-Token', token)
-      headers.set('X-Emby-Authorization', embyAuthorizationHeader(token))
-      response = await fetch(url, {
-        ...init,
-        headers,
-        cache: 'no-store',
-        signal: AbortSignal.timeout(settings.emby.proxyTimeoutMs),
-      })
-    }
-  }
   const text = await response.text().catch(() => '')
   if (!response.ok) {
     throw new Error(`Emby request ${path} failed with ${response.status}: ${text.slice(0, 300)}`)

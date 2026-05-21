@@ -1,6 +1,9 @@
 import { NextResponse } from 'next/server'
 import { buildQQLoginState, checkQQLoginQr, qqMusicErrorResponse, summarizeQQLoginState } from '@/lib/qq'
+import { getAccountByQQ } from '@/lib/db/accounts'
 import { saveQQLoginCookie } from '@/lib/db/qq-session'
+import { ensureUpstreamEmbyUserForAccount } from '@/lib/emby/auth'
+import { setCurrentAccount } from '@/lib/session'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -31,10 +34,15 @@ export async function POST(request: Request) {
     if (!result.isOk) return NextResponse.json(result)
 
     if (body.persist !== false) {
+      const saved = saveQQLoginCookie(result.session.cookie)
+      await setCurrentAccount(saved.uin)
+      const account = getAccountByQQ(saved.uin)
+      const upstreamAccount = account ? await ensureUpstreamEmbyUserForAccount(account).catch(() => undefined) : undefined
       return NextResponse.json({
         ...result,
         account: {
-          ...saveQQLoginCookie(result.session.cookie),
+          ...saved,
+          emby: upstreamAccount ? { ...saved.emby, userId: upstreamAccount.embyUserId } : saved.emby,
           persisted: true,
         },
       })

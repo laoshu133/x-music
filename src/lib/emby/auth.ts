@@ -1,12 +1,5 @@
-import { deleteSetting, getEffectiveSettings, setSetting } from '@/lib/db/settings'
-
-interface EmbyAuthResponse {
-  AccessToken?: string
-  ServerId?: string
-  User?: {
-    Id?: string
-  }
-}
+import { getEffectiveSettings } from '@/lib/db/settings'
+import { updateAccountEmbyAuth, type AccountRecord } from '@/lib/db/accounts'
 
 export function embyAuthorizationHeader(token?: string): string {
   const parts = [
@@ -19,60 +12,65 @@ export function embyAuthorizationHeader(token?: string): string {
   return parts.join(', ')
 }
 
-export async function getEmbyAccessToken(): Promise<string | undefined> {
+export async function getEmbyAccessToken(account?: AccountRecord): Promise<string | undefined> {
   const settings = getEffectiveSettings()
-  if (settings.emby.apiKey) return settings.emby.apiKey
-  if (settings.emby.accessToken) return settings.emby.accessToken
-  if (!settings.emby.baseUrl || !settings.emby.username || !settings.emby.password) return undefined
-
-  const auth = await loginToEmby(settings.emby.baseUrl, settings.emby.username, settings.emby.password, settings.emby.proxyTimeoutMs)
-  if (!auth.AccessToken) throw new Error('Emby authentication did not return AccessToken')
-  setSetting('emby.accessToken', auth.AccessToken)
-  if (auth.User?.Id) setSetting('emby.userId', auth.User.Id)
-  if (auth.ServerId) setSetting('emby.serverId', auth.ServerId)
-  return auth.AccessToken
+  if (account?.embyAccessToken) return account.embyAccessToken
+  return settings.emby.apiKey
 }
 
-export async function refreshEmbyAccessToken(): Promise<string | undefined> {
-  deleteSetting('emby.accessToken')
-  deleteSetting('emby.userId')
-  deleteSetting('emby.serverId')
-  return getEmbyAccessToken()
+export async function ensureUpstreamEmbyUserForAccount(account: AccountRecord): Promise<AccountRecord> {
+  const settings = getEffectiveSettings()
+  if (!settings.emby.baseUrl || !settings.emby.apiKey) return account
+
+  const existing = await findUpstreamUserByName(account.embyUsername)
+  const userId = existing?.Id ?? await createUpstreamUser(account.embyUsername)
+  updateAccountEmbyAuth({ qqUin: account.qqUin, embyUserId: userId })
+  return {
+    ...account,
+    embyUserId: userId,
+  }
 }
 
-async function loginToEmby(baseUrl: string, username: string, password: string, timeoutMs: number): Promise<EmbyAuthResponse> {
-  const attempts = [
-    '/Users/AuthenticateByName',
-    '/emby/Users/AuthenticateByName',
-  ]
-  let lastError: unknown
+async function findUpstreamUserByName(username: string): Promise<{ Id?: string; Name?: string } | undefined> {
+  const users = await adminEmbyFetch<Array<{ Id?: string; Name?: string }>>('/Users')
+  return users.find(user => user.Name === username)
+}
 
-  for (const path of attempts) {
-    try {
-      const url = new URL(baseUrl)
-      url.pathname = joinPaths(url.pathname, path)
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'X-Emby-Authorization': embyAuthorizationHeader(),
-        },
-        body: JSON.stringify({ Username: username, Pw: password }),
-        cache: 'no-store',
-        signal: AbortSignal.timeout(timeoutMs),
-      })
-      const text = await response.text().catch(() => '')
-      if (!response.ok) {
-        lastError = new Error(`Emby login ${path} failed with ${response.status}: ${text.slice(0, 300)}`)
-        continue
-      }
-      return JSON.parse(text) as EmbyAuthResponse
-    } catch (error) {
-      lastError = error
-    }
+async function createUpstreamUser(username: string): Promise<string | undefined> {
+  const created = await adminEmbyFetch<{ Id?: string; Name?: string }>('/Users/New', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ Name: username }),
+  })
+  return created.Id
+}
+
+async function adminEmbyFetch<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
+  const settings = getEffectiveSettings()
+  if (!settings.emby.baseUrl || !settings.emby.apiKey) {
+    throw new Error('Upstream Emby base URL and API key are required')
   }
 
-  throw lastError instanceof Error ? lastError : new Error(String(lastError))
+  const url = new URL(settings.emby.baseUrl)
+  url.pathname = joinPaths(url.pathname, path)
+  url.searchParams.set('api_key', settings.emby.apiKey)
+
+  const headers = new Headers(init.headers)
+  headers.set('X-Emby-Token', settings.emby.apiKey)
+  headers.set('X-Emby-Authorization', embyAuthorizationHeader(settings.emby.apiKey))
+
+  const response = await fetch(url, {
+    ...init,
+    headers,
+    cache: 'no-store',
+    signal: AbortSignal.timeout(settings.emby.proxyTimeoutMs),
+  })
+  const text = await response.text().catch(() => '')
+  if (!response.ok) {
+    throw new Error(`Emby admin request ${path} failed with ${response.status}: ${text.slice(0, 300)}`)
+  }
+  if (!text) return undefined as T
+  return JSON.parse(text) as T
 }
 
 function joinPaths(basePath: string, childPath: string): string {

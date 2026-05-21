@@ -1,4 +1,5 @@
 import { db } from '@/lib/db'
+import { upsertAccountFromQQCookie } from '@/lib/db/accounts'
 import { buildQQLoginState, summarizeQQLoginState, type QQLoginState } from '@/lib/qq/account'
 
 interface QQSessionRow {
@@ -24,6 +25,7 @@ export function getStoredQQLoginState(): QQLoginState | undefined {
 
 export function saveQQLoginCookie(cookieText: string) {
   const state = buildQQLoginState(cookieText, 'stored')
+  const result = upsertAccountFromQQCookie(cookieText)
   db.prepare(`
     INSERT INTO qq_session (id, cookie, uin, encrypted_uin, qqmusic_key, updated_at)
     VALUES (1, @cookie, @uin, @encryptedUin, @qqmusicKey, CURRENT_TIMESTAMP)
@@ -40,7 +42,16 @@ export function saveQQLoginCookie(cookieText: string) {
     qqmusicKey: state.qqmusicKey ?? null,
   })
 
-  return summarizeQQLoginState(state)
+  return {
+    ...summarizeQQLoginState(state),
+    emby: {
+      username: result.account.embyUsername,
+      hasPassword: Boolean(result.account.embyPassword),
+      userId: result.account.embyUserId,
+      hasAccessToken: Boolean(result.account.embyAccessToken),
+      generatedPassword: result.generatedPassword,
+    },
+  }
 }
 
 export function clearQQLoginCookie(): void {

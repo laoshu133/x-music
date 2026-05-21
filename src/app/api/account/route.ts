@@ -1,12 +1,16 @@
 import { NextResponse } from 'next/server'
 import { getQQLoginState, qqMusicErrorResponse, summarizeQQLoginState } from '@/lib/qq'
-import { clearQQLoginCookie } from '@/lib/db/qq-session'
+import { summarizeAccount } from '@/lib/db/accounts'
+import { clearCurrentAccount, getCurrentAccount } from '@/lib/session'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 export async function GET() {
   try {
+    const account = await getCurrentAccount()
+    if (account) return NextResponse.json(summarizeAccount(account))
+
     const state = getQQLoginState()
     if (!state) {
       return NextResponse.json({
@@ -22,6 +26,6 @@ export async function GET() {
 }
 
 export async function DELETE() {
-  clearQQLoginCookie()
+  await clearCurrentAccount()
   return NextResponse.json({ loggedIn: false })
 }

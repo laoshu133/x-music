@@ -11,7 +11,7 @@
     "worker": "tsx --tsconfig tsconfig.json src/worker/index.ts",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "test": "npm run typecheck && node --test --import tsx tests/*.test.ts"
+    "test": "npm run typecheck && node --test --import tsx --import ./tests/setup-env.mjs tests/*.test.ts"
   },
   "keywords": [],
   "author": "",

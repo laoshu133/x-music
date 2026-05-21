@@ -1,6 +1,5 @@
 import { dispatchEmbyRequest } from '@/lib/emby/dispatch'
 import { isReservedManagementPath, normalizeEmbyPath } from '@/lib/emby/paths'
-import { withRequestLog } from '@/lib/request-log'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -13,12 +12,10 @@ async function handle(request: Request, context: RouteContext): Promise<Response
   const params = await context.params
   const embyPath = normalizeEmbyPath(params.path ?? [])
 
-  return withRequestLog(request, async () => {
-    if (isReservedManagementPath(embyPath)) {
-      return Response.json({ error: 'Reserved miXmusic path cannot be proxied as Emby API' }, { status: 404 })
-    }
-    return dispatchEmbyRequest(request, embyPath)
-  }, { path: embyPath })
+  if (isReservedManagementPath(embyPath)) {
+    return Response.json({ error: 'Reserved miXmusic path cannot be proxied as Emby API' }, { status: 404 })
+  }
+  return dispatchEmbyRequest(request, embyPath)
 }
 
 export async function GET(request: Request, context: RouteContext): Promise<Response> {

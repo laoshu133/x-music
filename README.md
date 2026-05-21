@@ -44,10 +44,10 @@ data/
 - The worker tags and organizes cached files with the built-in provider.
 - First release targets QQ Music only.
 - `/admin` is the management UI for QQ login, LX source configuration,
-  upstream Emby configuration, playback tests, and request log inspection.
+  upstream Emby configuration, playback tests, and runtime status inspection.
 - Unmatched Emby-style routes are routed through the miXmusic Emby gateway.
   Implemented routes are handled locally; everything else is forwarded to the
-  configured upstream Emby server and recorded in `request_logs`.
+  configured upstream Emby server.
 
 ## Cache Flow
 
@@ -106,8 +106,8 @@ The `jobs` table is created lazily and supports `queued`, `running`, `completed`
 Relevant environment variables:
 
 - `LX_MUSIC_SOURCE_SCRIPT`: required LX Music custom source script URL for playback.
-- `EMBY_UPSTREAM_URL`: optional upstream Emby server used by the gateway fallback.
-- `EMBY_API_KEY`: optional API key appended to upstream Emby fallback requests.
+- `EMBY_UPSTREAM_URL`: required upstream Emby server used by the gateway fallback.
+- `EMBY_API_KEY`: required API key used for upstream Emby admin/fallback requests.
 - `EMBY_PROXY_TIMEOUT_MS`: upstream Emby proxy timeout, default `30000`.
 - `WORKER_POLL_INTERVAL_MS`: idle polling interval, default `5000`.
 - `WORKER_MAX_ATTEMPTS`: max attempts before a job is marked failed, default `3`.

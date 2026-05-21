@@ -2,53 +2,40 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { db } from '@/lib/db'
 import { deleteSetting, getEffectiveSettings, getSetting, setSetting, updateEffectiveSettings } from '@/lib/db/settings'
-import { listRequestLogs, recordRequestLog } from '@/lib/db/request-logs'
+import { getAccountByQQ } from '@/lib/db/accounts'
+import { clearQQLoginCookie, saveQQLoginCookie } from '@/lib/db/qq-session'
+import { handleLocalEmbyRequest } from '@/lib/emby/local-handlers'
 import { normalizeEmbyPath, stripOptionalEmbyPrefix } from '@/lib/emby/paths'
 import { decodeVirtualId, encodeVirtualId } from '@/lib/emby/virtual-ids'
 
 test('settings store persists typed values and merges effective defaults', () => {
-  deleteSetting('emby.baseUrl')
-  assert.equal(getSetting('emby.baseUrl'), undefined)
+  deleteSetting('qq.enabled')
+  assert.equal(getSetting('qq.enabled'), undefined)
 
-  setSetting('emby.baseUrl', 'http://127.0.0.1:8096')
-  assert.equal(getSetting('emby.baseUrl'), 'http://127.0.0.1:8096')
-  assert.equal(getEffectiveSettings().emby.baseUrl, 'http://127.0.0.1:8096')
+  setSetting('qq.enabled', false)
+  assert.equal(getSetting('qq.enabled'), false)
+  assert.equal(getEffectiveSettings().qq.enabled, false)
 
-  deleteSetting('emby.baseUrl')
+  deleteSetting('qq.enabled')
 })
 
-test('request logs are listed newest first with filters', () => {
-  const marker = `/test-log-${Date.now()}`
-  db.prepare('DELETE FROM request_logs WHERE path = ?').run(marker)
-
+test('QQ login creates a per-account Emby gateway account', () => {
+  db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('123456')
   try {
-    recordRequestLog({
-      path: marker,
-      method: 'GET',
-      status: 200,
-      durationMs: 12.4,
-      source: 'local',
-      startedAt: new Date().toISOString(),
-    })
-    recordRequestLog({
-      path: marker,
-      method: 'POST',
-      status: 502,
-      durationMs: 4,
-      source: 'upstream',
-      error: 'bad upstream',
-      startedAt: new Date().toISOString(),
-    })
+    const saved = saveQQLoginCookie('uin=o123456; qm_keyst=test-key')
+    const account = getAccountByQQ('123456')
+    assert.equal(saved.uin, '123456')
+    assert.equal(account?.embyUsername, '123456')
+    assert.equal(typeof account?.embyPassword, 'string')
+    assert.ok(account?.embyPassword && account.embyPassword.length >= 16)
+    assert.equal(saved.emby.generatedPassword, account?.embyPassword)
 
-    const all = listRequestLogs({ path: marker, limit: 10 })
-    assert.equal(all.length, 2)
-    assert.equal(all[0].status, 502)
-
-    const upstream = listRequestLogs({ path: marker, source: 'upstream', limit: 10 })
-    assert.equal(upstream.length, 1)
-    assert.equal(upstream[0].error, 'bad upstream')
+    const savedAgain = saveQQLoginCookie('uin=o123456; qm_keyst=next-key')
+    assert.equal(savedAgain.emby.generatedPassword, undefined)
+    assert.equal(getAccountByQQ('123456')?.embyPassword, account?.embyPassword)
   } finally {
-    db.prepare('DELETE FROM request_logs WHERE path = ?').run(marker)
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('123456')
+    clearQQLoginCookie()
   }
 })
 
@@ -58,20 +45,43 @@ test('emby path helpers normalize optional emby prefix', () => {
   assert.equal(normalizeEmbyPath(['emby', 'System', 'Info', 'Public']), '/System/Info/Public')
 })
 
-test('emby dsn updates base url and credentials', () => {
-  const before = getEffectiveSettings().emby
-  updateEffectiveSettings({ embyDsn: 'https://tv:000@tom.07340.com:8097/' })
+test('runtime config updates do not accept upstream Emby or LX fields', () => {
+  updateEffectiveSettings({ qqEnabled: false })
   const settings = getEffectiveSettings().emby
-  assert.equal(settings.baseUrl, 'https://tom.07340.com:8097')
-  assert.equal(settings.username, 'tv')
-  assert.equal(settings.password, '000')
+  assert.equal(settings.baseUrl, process.env.EMBY_UPSTREAM_URL)
+  assert.equal(settings.apiKey, process.env.EMBY_API_KEY)
+  assert.equal(getEffectiveSettings().qq.enabled, false)
 
-  if (before.baseUrl) setSetting('emby.baseUrl', before.baseUrl)
-  else deleteSetting('emby.baseUrl')
-  if (before.username) setSetting('emby.username', before.username)
-  else deleteSetting('emby.username')
-  if (before.password) setSetting('emby.password', before.password)
-  else deleteSetting('emby.password')
+  deleteSetting('qq.enabled')
+})
+
+test('local emby authenticate by name succeeds and rejects bad credentials', async () => {
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999001')
+    saveQQLoginCookie('uin=o999001; qm_keyst=test-key')
+    const account = getAccountByQQ('999001')
+    assert.ok(account)
+
+    const ok = await handleLocalEmbyRequest(new Request('http://local/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), '/Users/AuthenticateByName')
+    assert.equal(ok?.status, 200)
+    const payload = await ok!.json()
+    assert.equal(payload.User.Name, account.embyUsername)
+    assert.equal(payload.ServerId, 'mixmusic')
+    assert.equal(typeof payload.AccessToken, 'string')
+    assert.ok(payload.AccessToken.length > 20)
+
+    const bad = await handleLocalEmbyRequest(new Request('http://local/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: 'local-user', Pw: 'bad-pass' }),
+    }), '/Users/AuthenticateByName')
+    assert.equal(bad?.status, 401)
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999001')
+    clearQQLoginCookie()
+  }
 })
 
 test('virtual emby ids round-trip structured ids', () => {
