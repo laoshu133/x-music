@@ -1,18 +1,20 @@
-import { ensureTrack, getPlayableTrackFile, insertPlayEvent, upsertTrackFileStatus } from '@/lib/cache/store'
+import { ensureTrack, getPlayableTrackFile, insertPlayEvent, listPlayHistory, upsertTrackFileStatus } from '@/lib/cache/store'
 import { createUpstreamTeeResponse, streamLocalFile } from '@/lib/cache/stream'
 import { qualityFallbacks, resolveMusicUrlWithFallback } from '@/lib/music-url/resolve'
 import {
   getQQPlaylistDetail,
   getQQFavoriteSongs,
+  getQQLoginState,
   getQQRecommendations,
   getQQUserPlaylists,
   searchQQMusic,
   searchQQPlaylists,
+  syncQQPlayHistoryBestEffort,
 } from '@/lib/qq'
-import type { MusicInfo, MusicQuality, QQPlaylistInfo } from '@/lib/types'
+import type { MusicInfo, MusicQuality, PlayHistoryRecord, QQPlaylistInfo } from '@/lib/types'
 import { enqueueEmbyTrackSync } from './sync'
 import { markRequestSource } from '@/lib/request-log'
-import { albumVirtualId, decodeVirtualId, encodeVirtualId, playlistVirtualId, songVirtualId, type VirtualId } from './virtual-ids'
+import { albumVirtualId, decodeVirtualId, encodeVirtualId, genreVirtualId, playlistVirtualId, songVirtualId, type VirtualId } from './virtual-ids'
 import {
   loadVirtualAlbumSongs,
   loadVirtualPlaylist,
@@ -32,6 +34,9 @@ import path from 'node:path'
 import { createLocalAccessToken, readEmbyAccessToken } from './tokens'
 
 const LOCAL_SERVER_ID = 'mixmusic'
+const MAX_EMBY_LIST_LIMIT = 1000
+const QQ_SONG_PAGE_SIZE = 100
+const QQ_PLAYLIST_PAGE_SIZE = 50
 
 export async function handleLocalEmbyRequest(request: Request, embyPath: string): Promise<Response | undefined> {
   if (request.method === 'GET' && embyPath === '/System/Info/Public') {
@@ -252,6 +257,10 @@ function isLocalEmptyCollectionRequest(path: string): boolean {
     || /^\/(?:Albums|Artists|AlbumArtists|Genres|MusicGenres|Years|Studios|Persons)$/i.test(path)
 }
 
+function isGenresCollectionPath(path: string): boolean {
+  return /^\/Users\/[^/]+\/Genres$/i.test(path) || /^\/(?:Genres|MusicGenres)$/i.test(path)
+}
+
 function isImageRequest(path: string): boolean {
   return /^\/Items\/[^/]+\/Images\/[^/]+$/i.test(path)
     || /^\/Users\/[^/]+\/Images\/[^/]+$/i.test(path)
@@ -302,6 +311,8 @@ async function handleItemsRequest(request: Request, embyPath: string): Promise<R
 
   const requestedTypes = parseIncludeTypes(includeTypes)
   const filters = parseFilters(url.searchParams.get('Filters') ?? url.searchParams.get('filters') ?? '')
+  const limit = numberParam(url, 'Limit', 500)
+  const startIndex = startIndexParam(url)
 
   if (searchTerm?.trim()) {
     const upstream = await tryReadItemsResponse(request, embyPath)
@@ -309,8 +320,8 @@ async function handleItemsRequest(request: Request, embyPath: string): Promise<R
     const virtualItems: any[] = []
 
     if (shouldIncludeType(requestedTypes, 'audio')) {
-      const result = await searchQQMusic(searchTerm.trim(), 1, numberParam(url, 'Limit', 50))
-      virtualItems.push(...dedupeSongs(result.list)
+      const songs = await searchQQMusicWindow(searchTerm.trim(), startIndex + limit)
+      virtualItems.push(...dedupeSongs(songs)
         .filter(song => !hasEquivalentEmbySong(upstreamItems, song))
         .map(song => {
           rememberVirtualSong(song)
@@ -319,20 +330,29 @@ async function handleItemsRequest(request: Request, embyPath: string): Promise<R
     }
 
     if (shouldIncludeType(requestedTypes, 'playlist')) {
-      const result = await searchQQPlaylists(searchTerm.trim(), 1, numberParam(url, 'Limit', 50))
-      virtualItems.push(...result.list
+      const playlists = await searchQQPlaylistsWindow(searchTerm.trim(), startIndex + limit)
+      virtualItems.push(...playlists
         .filter(playlist => !hasEquivalentEmbyPlaylist(upstreamItems, playlist.name))
         .map(playlistToEmbyItem))
     }
 
     const merged = [...upstreamItems, ...virtualItems]
-    return Response.json({ Items: merged, TotalRecordCount: merged.length })
+    return pagedItemsResponse(merged, startIndex, limit)
+  }
+
+  if (filters.has('isplayed') && shouldIncludeType(requestedTypes, 'audio')) {
+    const upstream = await tryReadItemsResponse(request, embyPath)
+    const upstreamItems = filterItemsByTypes(upstream?.Items ?? [], requestedTypes)
+    const localItems = localPlayHistoryToEmbyItems(limit + startIndex)
+      .filter(item => !hasEquivalentEmbyItem(upstreamItems, item))
+    const merged = sortPlayedItems([...upstreamItems, ...localItems], url.searchParams.get('SortBy') ?? url.searchParams.get('sortBy') ?? '')
+    return pagedItemsResponse(merged, startIndex, limit)
   }
 
   if (filters.has('isfavorite') && shouldIncludeType(requestedTypes, 'audio')) {
     const upstream = await tryReadItemsResponse(request, embyPath)
     const upstreamItems = filterItemsByTypes(upstream?.Items ?? [], requestedTypes)
-    const favorites = await listQQFavoriteSongs(request, numberParam(url, 'Limit', 500))
+    const favorites = await listQQFavoriteSongs(request, startIndex + limit)
     const virtualItems = favorites
       .filter(song => !hasEquivalentEmbySong(upstreamItems, song))
       .map(song => {
@@ -340,28 +360,28 @@ async function handleItemsRequest(request: Request, embyPath: string): Promise<R
         return songToEmbyItem(song, undefined, true)
       })
     const merged = [...upstreamItems, ...virtualItems]
-    return Response.json({ Items: merged, TotalRecordCount: merged.length })
+    return pagedItemsResponse(merged, startIndex, limit)
   }
 
   if (parentId === 'mixmusic-music' && requestedTypes.has('musicalbum')) {
     const upstream = await tryReadItemsResponse(request, embyPath)
     const upstreamItems = filterItemsByTypes(upstream?.Items ?? [], requestedTypes)
-    const favorites = await listQQFavoriteSongs(request, numberParam(url, 'Limit', 500))
+    const favorites = await listQQFavoriteSongs(request, startIndex + limit)
     const virtualAlbums = favoriteSongsToAlbumItems(favorites)
       .filter(album => !hasEquivalentEmbyAlbum(upstreamItems, album.Name))
     const merged = [...upstreamItems, ...virtualAlbums]
-    return Response.json({ Items: merged, TotalRecordCount: merged.length })
+    return pagedItemsResponse(merged, startIndex, limit)
   }
 
   if (requestedTypes.has('playlist')) {
     const upstream = await tryReadItemsResponse(request, embyPath)
-    const playlists = await listVirtualPlaylists(request)
+    const playlists = await listVirtualPlaylists(request, startIndex + limit)
     const upstreamItems = upstream?.Items ?? []
     const virtualItems = playlists
       .filter(playlist => !hasEquivalentEmbyPlaylist(upstreamItems, playlist.name))
       .map(playlistToEmbyItem)
     const merged = [...upstreamItems, ...virtualItems]
-    return Response.json({ Items: merged, TotalRecordCount: merged.length })
+    return pagedItemsResponse(merged, startIndex, limit)
   }
 
   if (parentId === 'mixmusic-music') {
@@ -374,7 +394,26 @@ async function handleItemsRequest(request: Request, embyPath: string): Promise<R
 
 async function handleCollectionRequest(request: Request, embyPath: string): Promise<Response> {
   const upstream = await tryReadItemsResponse(request, embyPath)
-  return upstream ? Response.json(upstream) : emptyItemsResponse()
+  if (!isGenresCollectionPath(embyPath)) {
+    return upstream ? Response.json(upstream) : emptyItemsResponse()
+  }
+
+  const url = new URL(request.url)
+  const includeTypes = parseIncludeTypes(url.searchParams.get('IncludeItemTypes') ?? url.searchParams.get('includeItemTypes') ?? '')
+  if (!shouldIncludeType(includeTypes, 'musicalbum')) {
+    return upstream ? Response.json(upstream) : emptyItemsResponse()
+  }
+
+  const limit = numberParam(url, 'Limit', 500)
+  const startIndex = startIndexParam(url)
+  const favorites = await listQQFavoriteSongs(request, startIndex + limit)
+  const qqGenres = favoriteSongsToGenreItems(favorites)
+  const upstreamItems = upstream?.Items ?? []
+  const merged = [
+    ...upstreamItems,
+    ...qqGenres.filter(genre => !upstreamItems.some(item => normalizeText(String(item?.Name ?? '')) === normalizeText(genre.Name))),
+  ]
+  return pagedItemsResponse(merged, startIndex, limit)
 }
 
 async function handlePlaybackReportRequest(request: Request, embyPath: string): Promise<Response | undefined> {
@@ -440,17 +479,18 @@ async function handleVirtualPlaylistItemsRequest(request: Request, decoded: Virt
   if (!shouldIncludePlaylistTracks(includeTypes)) {
     return emptyItemsResponse()
   }
+  const limit = numberParam(url, 'Limit', 500)
+  const startIndex = startIndexParam(url)
 
   let songs: MusicInfo[] = []
   if (decoded.kind === 'qq-playlist') {
-    const detail = await getQQPlaylistDetail(decoded.id).catch(() => undefined)
-    songs = detail?.list ?? []
+    songs = await getQQPlaylistSongsWindow(decoded.id, startIndex + limit)
   } else if (decoded.kind === 'qq-album') {
     songs = loadVirtualAlbumSongs(decoded.id)
   } else if (decoded.kind === 'qq-guess') {
-    songs = (await getQQRecommendations({ limit: numberParam(url, 'Limit', 50) }).catch(() => ({ list: [] }))).list
+    songs = await getQQRecommendationsWindow(request, startIndex + limit)
   } else if (decoded.kind === 'qq-daily') {
-    songs = (await getQQRecommendations({ limit: numberParam(url, 'Limit', 50) }).catch(() => ({ list: [] }))).list
+    songs = await getQQRecommendationsWindow(request, startIndex + limit)
   } else {
     return undefined
   }
@@ -462,7 +502,7 @@ async function handleVirtualPlaylistItemsRequest(request: Request, decoded: Virt
     rememberVirtualSong(song, playlistId)
     return songToEmbyItem(song, playlistId)
   })
-  return Response.json({ Items: items, TotalRecordCount: items.length })
+  return pagedItemsResponse(items, startIndex, limit)
 }
 
 async function handleAudioRequest(request: Request, embyPath: string): Promise<Response | undefined> {
@@ -504,6 +544,7 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
   if (playableFile && localPath) {
     const track = ensureTrack(musicInfo)
     insertPlayEvent(track.id, playableFile.quality)
+    syncQQPlayHistoryFromStoredUrlBestEffort(request, musicInfo, playableFile.quality)
     enqueueEmbyTrackSync({
       source: musicInfo.source,
       songmid: musicInfo.songmid,
@@ -517,6 +558,12 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
   upsertTrackFileStatus(track.id, preferredQuality, 'resolving_url')
   const resolved = await resolveMusicUrlWithFallback(musicInfo, preferredQuality)
   insertPlayEvent(track.id, resolved.quality)
+  syncQQPlayHistoryBestEffort({
+    cookie: qqCookieForRequest(request),
+    musicInfo,
+    quality: resolved.quality,
+    playUrl: resolved.url,
+  })
   enqueueEmbyTrackSync({
     source: musicInfo.source,
     songmid: musicInfo.songmid,
@@ -530,6 +577,37 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
     })
   })
   return markRequestSource(response, 'upstream')
+}
+
+function syncQQPlayHistoryFromStoredUrlBestEffort(request: Request, musicInfo: MusicInfo, quality: MusicQuality): void {
+  const cookie = qqCookieForRequest(request)
+  try {
+    if (!getQQLoginState({ cookie })) return
+  } catch (error) {
+    console.warn(
+      `QQ play history sync skipped for ${musicInfo.songmid}: ${error instanceof Error ? error.message : String(error)}`,
+    )
+    return
+  }
+
+  void resolveMusicUrlWithFallback(musicInfo, quality).then((resolved) => {
+    syncQQPlayHistoryBestEffort({
+      cookie,
+      musicInfo,
+      quality: resolved.quality,
+      playUrl: resolved.url,
+    })
+  }).catch((error: unknown) => {
+    console.warn(
+      `QQ play history URL resolve failed for ${musicInfo.songmid}: ${error instanceof Error ? error.message : String(error)}`,
+    )
+  })
+}
+
+function qqCookieForRequest(request: Request): string | undefined {
+  return authorizedLocalAccount(request)?.qqCookie
+    ?? request.headers.get('x-qq-music-cookie')
+    ?? undefined
 }
 
 async function virtualAudioHeadHeaders(musicInfo: MusicInfo): Promise<Headers> {
@@ -570,15 +648,11 @@ function audioContentTypeFromPath(filePath: string): string {
   return 'audio/mpeg'
 }
 
-async function listVirtualPlaylists(request: Request): Promise<QQPlaylistInfo[]> {
+async function listVirtualPlaylists(request: Request, limit: number): Promise<QQPlaylistInfo[]> {
   const result: QQPlaylistInfo[] = []
 
   try {
-    const userPlaylists = await getQQUserPlaylists({
-      cookie: request.headers.get('x-qq-music-cookie') ?? undefined,
-      limit: 100,
-    })
-    result.push(...userPlaylists.list)
+    result.push(...await listQQUserPlaylistsWindow(request, limit))
   } catch {
     // User playlists require a valid QQ login; dynamic recommendation playlists still remain available.
   }
@@ -608,12 +682,157 @@ async function listVirtualPlaylists(request: Request): Promise<QQPlaylistInfo[]>
   return [...deduped.values()]
 }
 
+async function listQQUserPlaylistsWindow(request: Request, limit: number): Promise<QQPlaylistInfo[]> {
+  const playlists: QQPlaylistInfo[] = []
+  let offset = 0
+  const pageSize = Math.min(QQ_PLAYLIST_PAGE_SIZE, Math.max(limit, 1))
+
+  for (;;) {
+    const result = await getQQUserPlaylists({
+      cookie: qqCookieForRequest(request),
+      offset,
+      limit: pageSize,
+    })
+    playlists.push(...result.list)
+    if (result.list.length === 0 || playlists.length >= limit || offset + result.list.length >= result.total) break
+    offset += pageSize
+  }
+
+  return playlists.slice(0, limit)
+}
+
 async function listQQFavoriteSongs(request: Request, limit: number): Promise<MusicInfo[]> {
-  const cookie = authorizedLocalAccount(request)?.qqCookie
-    ?? request.headers.get('x-qq-music-cookie')
-    ?? undefined
-  const result = await getQQFavoriteSongs({ cookie, limit }).catch(() => undefined)
-  return dedupeSongs(result?.list ?? [])
+  const cookie = qqCookieForRequest(request)
+  const pageSize = Math.min(QQ_SONG_PAGE_SIZE, Math.max(limit, 1))
+  const songs: MusicInfo[] = []
+  let page = 1
+  let allPage = 1
+
+  do {
+    const result = await getQQFavoriteSongs({ cookie, page, limit: pageSize }).catch(() => undefined)
+    if (!result) break
+
+    songs.push(...result.list)
+    allPage = result.allPage ?? Math.ceil(result.total / result.limit)
+    if (result.list.length === 0 || songs.length >= limit || songs.length >= result.total) break
+    page += 1
+  } while (page <= allPage)
+
+  return dedupeSongs(songs).slice(0, limit)
+}
+
+async function searchQQMusicWindow(query: string, limit: number): Promise<MusicInfo[]> {
+  const songs: MusicInfo[] = []
+  const pageSize = Math.min(QQ_SONG_PAGE_SIZE, Math.max(limit, 1))
+  let page = 1
+  let allPage = 1
+
+  do {
+    const result = await searchQQMusic(query, page, pageSize).catch(() => undefined)
+    if (!result) break
+    songs.push(...result.list)
+    allPage = result.allPage ?? Math.ceil(result.total / result.limit)
+    if (result.list.length === 0 || songs.length >= limit || songs.length >= result.total) break
+    page += 1
+  } while (page <= allPage)
+
+  return dedupeSongs(songs).slice(0, limit)
+}
+
+async function searchQQPlaylistsWindow(query: string, limit: number): Promise<QQPlaylistInfo[]> {
+  const playlists: QQPlaylistInfo[] = []
+  const pageSize = Math.min(QQ_PLAYLIST_PAGE_SIZE, Math.max(limit, 1))
+  let page = 1
+  let allPage = 1
+
+  do {
+    const result = await searchQQPlaylists(query, page, pageSize).catch(() => undefined)
+    if (!result) break
+    playlists.push(...result.list)
+    allPage = result.allPage ?? Math.ceil(result.total / result.limit)
+    if (result.list.length === 0 || playlists.length >= limit || playlists.length >= result.total) break
+    page += 1
+  } while (page <= allPage)
+
+  return dedupePlaylists(playlists).slice(0, limit)
+}
+
+async function getQQPlaylistSongsWindow(id: string, limit: number): Promise<MusicInfo[]> {
+  const detail = await getQQPlaylistDetail(id).catch(() => undefined)
+  return dedupeSongs(detail?.list ?? []).slice(0, limit)
+}
+
+async function getQQRecommendationsWindow(request: Request, limit: number): Promise<MusicInfo[]> {
+  const songs: MusicInfo[] = []
+  let remaining = limit
+
+  while (remaining > 0) {
+    const pageLimit = Math.min(QQ_SONG_PAGE_SIZE, remaining)
+    const result = await getQQRecommendations({
+      cookie: qqCookieForRequest(request),
+      limit: pageLimit,
+    }).catch(() => undefined)
+    const nextSongs = result?.list ?? []
+    songs.push(...nextSongs)
+    if (nextSongs.length < pageLimit) break
+    const uniqueCount = dedupeSongs(songs).length
+    if (uniqueCount >= limit) break
+    if (uniqueCount === songs.length - nextSongs.length) break
+    remaining = limit - uniqueCount
+  }
+
+  return dedupeSongs(songs).slice(0, limit)
+}
+
+function localPlayHistoryToEmbyItems(limit: number): any[] {
+  const grouped = new Map<string, { song: PlayHistoryRecord; playCount: number; lastPlayedAt: string }>()
+  for (const event of listPlayHistory(limit)) {
+    const key = `${event.source}:${event.songmid}`
+    const existing = grouped.get(key)
+    if (existing) {
+      existing.playCount += 1
+      if (event.playedAt > existing.lastPlayedAt) existing.lastPlayedAt = event.playedAt
+      continue
+    }
+    grouped.set(key, {
+      song: event,
+      playCount: 1,
+      lastPlayedAt: event.playedAt,
+    })
+  }
+
+  return [...grouped.values()].map(({ song, playCount, lastPlayedAt }) => {
+    rememberVirtualSong(song)
+    const item = songToEmbyItem(song)
+    item.UserData.PlayCount = playCount
+    item.UserData.LastPlayedDate = lastPlayedAt
+    return item
+  })
+}
+
+function sortPlayedItems(items: any[], sortBy: string): any[] {
+  const sortKeys = sortBy.split(',').map(item => item.trim().toLowerCase()).filter(Boolean)
+  const result = [...items]
+  if (sortKeys.includes('playcount')) {
+    result.sort((a, b) => playCountOf(b) - playCountOf(a) || lastPlayedTimeOf(b) - lastPlayedTimeOf(a))
+    return result
+  }
+  if (sortKeys.includes('dateplayed')) {
+    result.sort((a, b) => lastPlayedTimeOf(b) - lastPlayedTimeOf(a) || playCountOf(b) - playCountOf(a))
+  }
+  return result
+}
+
+function playCountOf(item: any): number {
+  const value = item?.UserData?.PlayCount
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
+function lastPlayedTimeOf(item: any): number {
+  const value = item?.UserData?.LastPlayedDate ?? item?.UserData?.LastPlayedDateTicks ?? item?.DatePlayed
+  if (typeof value !== 'string') return 0
+  const time = Date.parse(value)
+  return Number.isFinite(time) ? time : 0
 }
 
 function favoriteSongsToAlbumItems(songs: MusicInfo[]) {
@@ -653,6 +872,61 @@ function favoriteSongsToAlbumItems(songs: MusicInfo[]) {
       },
     }
   })
+}
+
+function favoriteSongsToGenreItems(songs: MusicInfo[]) {
+  const genreCounts = new Map<string, number>()
+  for (const song of songs) {
+    const genres = songGenres(song)
+    for (const genre of genres.length > 0 ? genres : ['QQ Music']) {
+      genreCounts.set(genre, (genreCounts.get(genre) ?? 0) + 1)
+    }
+  }
+
+  return [...genreCounts.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([name, count]) => ({
+      Name: name,
+      ServerId: 'mixmusic',
+      Id: genreVirtualId(name),
+      Type: 'Genre',
+      IsFolder: true,
+      ChildCount: count,
+      RecursiveItemCount: count,
+      UserData: {
+        PlaybackPositionTicks: 0,
+        PlayCount: 0,
+        IsFavorite: false,
+      },
+    }))
+}
+
+function songGenres(song: MusicInfo): string[] {
+  const raw = song.raw
+  if (!raw || typeof raw !== 'object') return []
+  const record = raw as Record<string, unknown>
+  const values = [
+    record.genre,
+    record.genres,
+    record.genreName,
+    record.genre_name,
+  ]
+  return dedupeStrings(values.flatMap(readGenreValues))
+}
+
+function readGenreValues(value: unknown): string[] {
+  if (typeof value === 'string') {
+    return value.split(/[、,，/;；]+/).map(item => item.trim()).filter(Boolean)
+  }
+  if (!Array.isArray(value)) return []
+  return value.flatMap(item => {
+    if (typeof item === 'string') return [item]
+    if (item && typeof item === 'object') {
+      const record = item as Record<string, unknown>
+      return typeof record.name === 'string' ? [record.name] : []
+    }
+    return []
+  }).map(item => item.trim()).filter(Boolean)
 }
 
 function playlistToEmbyItem(playlist: QQPlaylistInfo) {
@@ -712,6 +986,7 @@ function songToEmbyItem(song: MusicInfo, playlistId?: string, isFavorite = false
     UserData: {
       PlaybackPositionTicks: 0,
       PlayCount: 0,
+      LastPlayedDate: undefined as string | undefined,
       IsFavorite: isFavorite,
     },
   }
@@ -750,6 +1025,18 @@ function dedupeSongs(songs: MusicInfo[]): MusicInfo[] {
   return result
 }
 
+function dedupePlaylists(playlists: QQPlaylistInfo[]): QQPlaylistInfo[] {
+  const seen = new Set<string>()
+  const result: QQPlaylistInfo[] = []
+  for (const playlist of playlists) {
+    const key = playlist.id || normalizeText(playlist.name)
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    result.push(playlist)
+  }
+  return result
+}
+
 function splitArtists(value?: string): string[] {
   return value
     ?.split(/[、,，/;；]+/)
@@ -780,7 +1067,20 @@ function intervalToTicks(interval?: string): number | undefined {
 function numberParam(url: URL, key: string, fallback: number): number {
   const value = url.searchParams.get(key) ?? url.searchParams.get(key.toLowerCase())
   const parsed = Number(value)
-  return Number.isFinite(parsed) && parsed > 0 ? Math.min(Math.trunc(parsed), 200) : fallback
+  return Number.isFinite(parsed) && parsed > 0 ? Math.min(Math.trunc(parsed), MAX_EMBY_LIST_LIMIT) : fallback
+}
+
+function startIndexParam(url: URL): number {
+  const value = url.searchParams.get('StartIndex') ?? url.searchParams.get('startIndex')
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : 0
+}
+
+function pagedItemsResponse(items: any[], startIndex: number, limit: number): Response {
+  return Response.json({
+    Items: items.slice(startIndex, startIndex + limit),
+    TotalRecordCount: items.length,
+  })
 }
 
 async function tryReadItemsResponse(request: Request, embyPath: string): Promise<{ Items?: any[] } | undefined> {
@@ -843,6 +1143,16 @@ function hasEquivalentEmbyPlaylist(items: any[], name: string): boolean {
 function hasEquivalentEmbyAlbum(items: any[], name: string): boolean {
   const normalized = normalizeText(name)
   return items.some(item => String(item?.Type ?? '').toLowerCase() === 'musicalbum' && normalizeText(String(item?.Name ?? '')) === normalized)
+}
+
+function hasEquivalentEmbyItem(items: any[], item: any): boolean {
+  const id = String(item?.Id ?? '')
+  const name = normalizeText(String(item?.Name ?? ''))
+  const type = String(item?.Type ?? '').toLowerCase()
+  return items.some(existing => {
+    if (id && String(existing?.Id ?? '') === id) return true
+    return type === String(existing?.Type ?? '').toLowerCase() && name === normalizeText(String(existing?.Name ?? ''))
+  })
 }
 
 function normalizeText(value: string): string {

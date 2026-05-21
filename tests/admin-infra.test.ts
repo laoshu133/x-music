@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { db } from '@/lib/db'
 import { deleteSetting, getEffectiveSettings, getSetting, setSetting, updateEffectiveSettings } from '@/lib/db/settings'
 import { getAccountByQQ } from '@/lib/db/accounts'
@@ -287,6 +289,78 @@ test('local emby search merges upstream Emby items with QQ virtual songs', async
   }
 })
 
+test('local emby search pages QQ songs with safe upstream page size', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999016')
+    saveQQLoginCookie('uin=o999016; qm_keyst=test-key')
+    const account = getAccountByQQ('999016')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+
+    const qqPageSizes: number[] = []
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'u.y.qq.com') {
+        const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {}
+        const page = Number(body.req?.param?.page_num ?? 1)
+        const pageSize = Number(body.req?.param?.num_per_page ?? 0)
+        qqPageSizes.push(pageSize)
+        return Response.json({
+          code: 0,
+          req: {
+            code: 0,
+            data: {
+              body: {
+                item_song: Array.from({ length: pageSize }, (_, index) => {
+                  const id = (page - 1) * pageSize + index + 1
+                  return {
+                    id,
+                    mid: `qq-search-page-${id}`,
+                    title: `QQ Search ${id}`,
+                    interval: 188,
+                    singer: [{ name: 'QQ Artist', mid: 'qq-artist-1' }],
+                    album: { name: 'QQ Album', mid: 'qq-album-1' },
+                    file: { media_mid: `qq-media-${id}`, size_320mp3: 1024 },
+                  }
+                }),
+              },
+              meta: { estimate_sum: 250 },
+            },
+          },
+        })
+      }
+
+      return Response.json({ Items: [], TotalRecordCount: 0 })
+    }) as typeof fetch
+
+    const response = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio&ParentId=mixmusic-music&SearchTerm=song&Limit=250&StartIndex=0`, {
+        headers: {
+          'X-Emby-Authorization': `MediaBrowser Client="ampcast", Version="0.9.28", Device="PC", Token="${authPayload.AccessToken}"`,
+        },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/Items`),
+    )
+
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.Items.length, 250)
+    assert.deepEqual(qqPageSizes, [100, 100, 100])
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999016')
+    clearQQLoginCookie()
+    db.prepare("DELETE FROM app_settings WHERE key LIKE 'virtual.song.qq-search-page-%'").run()
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('local emby playlist search merges upstream and QQ playlists', async () => {
   const originalFetch = globalThis.fetch
   try {
@@ -340,6 +414,68 @@ test('local emby playlist search merges upstream and QQ playlists', async () => 
     assert.deepEqual(payload.Items.map((item: { Name: string }) => item.Name), ['Emby Playlist', 'QQ Playlist'])
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999006')
+    clearQQLoginCookie()
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('local emby playlist search pages QQ playlists with safe upstream page size', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999017')
+    saveQQLoginCookie('uin=o999017; qm_keyst=test-key')
+    const account = getAccountByQQ('999017')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+
+    const qqPageSizes: string[] = []
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'c.y.qq.com') {
+        const pageNo = Number(requestUrl.searchParams.get('page_no') ?? 0)
+        const pageSize = Number(requestUrl.searchParams.get('num_per_page') ?? 0)
+        qqPageSizes.push(`${pageNo}:${pageSize}`)
+        return Response.json({
+          code: 0,
+          data: {
+            list: Array.from({ length: pageSize }, (_, index) => {
+              const id = pageNo * pageSize + index + 1
+              return {
+                dissid: `qq-playlist-page-${id}`,
+                dissname: `QQ Playlist ${id}`,
+                creator: { name: 'QQ User' },
+                song_count: 12,
+              }
+            }),
+            sum: 120,
+          },
+        })
+      }
+
+      return Response.json({ Items: [], TotalRecordCount: 0 })
+    }) as typeof fetch
+
+    const response = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Playlist&ParentId=mixmusic-music&SearchTerm=playlist&Limit=120&StartIndex=0`, {
+        headers: {
+          'X-Emby-Authorization': `MediaBrowser Client="ampcast", Version="0.9.28", Device="PC", Token="${authPayload.AccessToken}"`,
+        },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/Items`),
+    )
+
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.Items.length, 120)
+    assert.deepEqual(qqPageSizes, ['0:50', '1:50', '2:50'])
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999017')
     clearQQLoginCookie()
     globalThis.fetch = originalFetch
   }
@@ -433,6 +569,139 @@ test('local emby favorites merge QQ songs and virtual albums', async () => {
   }
 })
 
+test('local emby favorite songs pages through QQ results beyond 200', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999012')
+    saveQQLoginCookie('uin=o999012; euin=encrypted999012; qm_keyst=test-key')
+    const account = getAccountByQQ('999012')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const authHeader = `MediaBrowser Client="ampcast", Version="0.9.28", Device="PC", Token="${authPayload.AccessToken}"`
+
+    const favoriteRequests: URL[] = []
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'u.y.qq.com') {
+        favoriteRequests.push(requestUrl)
+        const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {}
+        const begin = Number(body.req?.param?.song_begin ?? 0)
+        const count = Number(body.req?.param?.song_num ?? 0)
+        const total = 450
+        const pageLength = Math.max(0, Math.min(count, total - begin))
+        return Response.json({
+          code: 0,
+          req: {
+            code: 0,
+            data: {
+              songlist: Array.from({ length: pageLength }, (_, index) => {
+                const id = begin + index + 1
+                return {
+                  id,
+                  mid: `qq-favorite-page-${id}`,
+                  title: `QQ Favorite ${id}`,
+                  interval: 188,
+                  singer: [{ name: 'QQ Artist', mid: 'qq-artist-1' }],
+                  album: { name: 'QQ Favorite Album', mid: 'qq-album-1' },
+                  file: { media_mid: `qq-media-${id}`, size_320mp3: 1024 },
+                }
+              }),
+              total_song_num: total,
+            },
+          },
+        })
+      }
+
+      return Response.json({ Items: [], TotalRecordCount: 0 })
+    }) as typeof fetch
+
+    const songs = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio&ParentId=mixmusic-music&Filters=IsFavorite&Limit=500&StartIndex=0`, {
+        headers: { 'X-Emby-Authorization': authHeader },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/Items`),
+    )
+    assert.equal(songs.status, 200)
+    const payload = await songs.json()
+    assert.equal(payload.TotalRecordCount, 450)
+    assert.equal(payload.Items.length, 450)
+    assert.equal(payload.Items[449].Name, 'QQ Favorite 450')
+    assert.equal(favoriteRequests.length, 5)
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999012')
+    clearQQLoginCookie()
+    db.prepare("DELETE FROM app_settings WHERE key LIKE 'virtual.song.qq-favorite-page-%'").run()
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('local emby genres include QQ favorite album bucket when upstream has no genres', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999015')
+    saveQQLoginCookie('uin=o999015; euin=encrypted999015; qm_keyst=test-key')
+    const account = getAccountByQQ('999015')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const authHeader = `MediaBrowser Client="ampcast", Version="0.9.28", Device="PC", Token="${authPayload.AccessToken}"`
+
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'u.y.qq.com') {
+        return Response.json({
+          code: 0,
+          req: {
+            code: 0,
+            data: {
+              songlist: [{
+                id: 123,
+                mid: 'qq-genre-song-1',
+                title: 'QQ Genre Song',
+                interval: 188,
+                singer: [{ name: 'QQ Artist', mid: 'qq-artist-1' }],
+                album: { name: 'QQ Favorite Album', mid: 'qq-album-1' },
+                file: { media_mid: 'qq-media-1', size_320mp3: 1024 },
+              }],
+              total_song_num: 1,
+            },
+          },
+        })
+      }
+
+      return Response.json({ Items: [], TotalRecordCount: 0 })
+    }) as typeof fetch
+
+    const genres = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Genres?UserId=${authPayload.User.Id}&ParentId=mixmusic-music&IncludeItemTypes=MusicAlbum&Limit=500&StartIndex=0`, {
+        headers: { 'X-Emby-Authorization': authHeader },
+      }),
+      stripOptionalEmbyPrefix('/emby/Genres'),
+    )
+    assert.equal(genres.status, 200)
+    const payload = await genres.json()
+    assert.equal(payload.TotalRecordCount, 1)
+    assert.equal(payload.Items[0].Name, 'QQ Music')
+    assert.equal(payload.Items[0].Type, 'Genre')
+    assert.equal(decodeVirtualId(payload.Items[0].Id)?.kind, 'qq-genre')
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999015')
+    clearQQLoginCookie()
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('local emby query parent id expands QQ virtual playlist items', async () => {
   const originalFetch = globalThis.fetch
   try {
@@ -496,6 +765,147 @@ test('local emby query parent id expands QQ virtual playlist items', async () =>
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999008')
     clearQQLoginCookie()
     db.prepare('DELETE FROM app_settings WHERE key = ?').run('virtual.song.qq-daily-song-1')
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('local emby recommendation playlists cap QQ recommendation limit', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999018')
+    saveQQLoginCookie('uin=o999018; qm_keyst=test-key')
+    const account = getAccountByQQ('999018')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const dailyId = encodeVirtualId({ kind: 'qq-daily' })
+
+    const recommendationLimits: number[] = []
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'u.y.qq.com') {
+        const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {}
+        if (body.req?.module === 'music.radioProxy.MbTrackRadioSvr') {
+          const pageSize = Number(body.req.param.num ?? 0)
+          recommendationLimits.push(pageSize)
+          return Response.json({
+            code: 0,
+            req: {
+              code: 0,
+              data: {
+                Tracks: Array.from({ length: pageSize }, (_, index) => {
+                  const id = recommendationLimits.length * 1000 + index
+                  return {
+                    id,
+                    mid: `qq-rec-song-${id}`,
+                    title: `QQ Rec ${id}`,
+                    interval: 188,
+                    singer: [{ name: 'QQ Artist', mid: 'qq-artist-1' }],
+                    album: { name: 'QQ Album', mid: 'qq-album-1' },
+                    file: { media_mid: `qq-media-${id}`, size_320mp3: 1024 },
+                  }
+                }),
+              },
+            },
+          })
+        }
+      }
+
+      return Response.json({ Items: [], TotalRecordCount: 0 })
+    }) as typeof fetch
+
+    const response = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio%2CMusicVideo&ParentId=${encodeURIComponent(dailyId)}&Limit=250&StartIndex=0`, {
+        headers: {
+          'X-Emby-Authorization': `MediaBrowser Client="ampcast", Version="0.9.28", Device="PC", Token="${authPayload.AccessToken}"`,
+        },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/Items`),
+    )
+
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.Items.length, 250)
+    assert.deepEqual(recommendationLimits, [100, 100, 50])
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999018')
+    clearQQLoginCookie()
+    db.prepare("DELETE FROM app_settings WHERE key LIKE 'virtual.song.qq-rec-song-%'").run()
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('local emby played lists merge local QQ play history', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999013')
+    saveQQLoginCookie('uin=o999013; qm_keyst=test-key')
+    const account = getAccountByQQ('999013')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const authHeader = `MediaBrowser Client="ampcast", Version="0.9.28", Device="PC", Token="${authPayload.AccessToken}"`
+
+    const song = {
+      source: 'tx' as const,
+      songmid: 'qq-played-song-1',
+      name: 'QQ Played Song',
+      singer: 'QQ Artist',
+      albumName: 'QQ Album',
+      albumId: 'qq-album',
+      interval: '03:08',
+      img: 'https://example.com/cover.jpg',
+    }
+    db.prepare(`
+      INSERT INTO tracks (source, songmid, name, singer, album_name, album_id, interval, image_url, raw_json, updated_at)
+      VALUES ('tx', @songmid, @name, @singer, @albumName, @albumId, @interval, @img, @raw, CURRENT_TIMESTAMP)
+      ON CONFLICT(source, songmid) DO UPDATE SET name = excluded.name, updated_at = CURRENT_TIMESTAMP
+    `).run({ ...song, raw: JSON.stringify(song) })
+    const track = db.prepare("SELECT id FROM tracks WHERE source = 'tx' AND songmid = ?").get(song.songmid) as { id: number }
+    db.prepare('INSERT INTO play_events (track_id, quality, played_at) VALUES (?, ?, ?)').run(track.id, '320k', '2026-05-21T10:00:00.000Z')
+    db.prepare('INSERT INTO play_events (track_id, quality, played_at) VALUES (?, ?, ?)').run(track.id, '320k', '2026-05-22T10:00:00.000Z')
+
+    globalThis.fetch = (async () => Response.json({ Items: [], TotalRecordCount: 0 })) as typeof fetch
+
+    const mostPlayed = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio&ParentId=mixmusic-music&Filters=IsPlayed&SortBy=PlayCount%2CDatePlayed&SortOrder=Descending&Limit=500&StartIndex=0`, {
+        headers: { 'X-Emby-Authorization': authHeader },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/Items`),
+    )
+    assert.equal(mostPlayed.status, 200)
+    const mostPlayedPayload = await mostPlayed.json()
+    assert.ok(mostPlayedPayload.TotalRecordCount >= 1)
+    const mostPlayedSong = mostPlayedPayload.Items.find((item: { Name: string }) => item.Name === 'QQ Played Song')
+    assert.ok(mostPlayedSong)
+    assert.equal(mostPlayedSong.UserData.PlayCount, 2)
+    assert.equal(mostPlayedSong.UserData.LastPlayedDate, '2026-05-22T10:00:00.000Z')
+
+    const recentlyPlayed = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio&ParentId=mixmusic-music&SortBy=DatePlayed&SortOrder=Descending&Filters=IsPlayed&Limit=200&StartIndex=0`, {
+        headers: { 'X-Emby-Authorization': authHeader },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/Items`),
+    )
+    assert.equal(recentlyPlayed.status, 200)
+    const recentlyPlayedPayload = await recentlyPlayed.json()
+    assert.ok(recentlyPlayedPayload.TotalRecordCount >= 1)
+    assert.ok(recentlyPlayedPayload.Items.some((item: { Name: string }) => item.Name === 'QQ Played Song'))
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999013')
+    clearQQLoginCookie()
+    db.prepare("DELETE FROM app_settings WHERE key = 'virtual.song.qq-played-song-1'").run()
+    db.prepare("DELETE FROM tracks WHERE songmid = ? AND source = 'tx'").run('qq-played-song-1')
     globalThis.fetch = originalFetch
   }
 })
@@ -569,6 +979,107 @@ test('local emby virtual song item details and audio HEAD stay local', async () 
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999009')
     clearQQLoginCookie()
     db.prepare('DELETE FROM app_settings WHERE key = ?').run('virtual.song.qq-play-song-1')
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('local emby virtual audio GET records playback and syncs QQ history', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999014')
+    saveQQLoginCookie('uin=o999014; qm_keyst=test-key')
+    const account = getAccountByQQ('999014')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const songId = encodeVirtualId({ kind: 'qq-song', songmid: 'qq-stream-song-1' })
+    const authHeader = `MediaBrowser Client="ampcast", Version="0.9.28", Device="PC", Token="${authPayload.AccessToken}"`
+
+    db.prepare(`
+      INSERT INTO app_settings (key, value_json, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP
+    `).run('virtual.song.qq-stream-song-1', JSON.stringify({
+      song: {
+        source: 'tx',
+        songmid: 'qq-stream-song-1',
+        name: 'QQ Stream Song',
+        singer: 'QQ Artist',
+        albumName: 'QQ Album',
+        albumId: 'qq-album',
+        interval: '03:08',
+        types: [{ type: '320k', size: '1 MB' }],
+        raw: { songId: 123, songType: 0, strMediaMid: 'qq-media-1' },
+      },
+    }))
+    const localAudioPath = join(process.cwd(), 'data/test-qq-stream-song.mp3')
+    mkdirSync(join(process.cwd(), 'data'), { recursive: true })
+    writeFileSync(localAudioPath, 'audio-bytes')
+    db.prepare(`
+      INSERT INTO tracks (source, songmid, name, singer, album_name, album_id, interval, image_url, raw_json, updated_at)
+      VALUES ('tx', 'qq-stream-song-1', 'QQ Stream Song', 'QQ Artist', 'QQ Album', 'qq-album', '03:08', NULL, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(source, songmid) DO UPDATE SET name = excluded.name, updated_at = CURRENT_TIMESTAMP
+    `).run(JSON.stringify({
+      source: 'tx',
+      songmid: 'qq-stream-song-1',
+      name: 'QQ Stream Song',
+      singer: 'QQ Artist',
+      albumName: 'QQ Album',
+      albumId: 'qq-album',
+      interval: '03:08',
+      raw: { songId: 123, songType: 0, strMediaMid: 'qq-media-1' },
+    }))
+    const track = db.prepare("SELECT id FROM tracks WHERE source = 'tx' AND songmid = 'qq-stream-song-1'").get() as { id: number }
+    db.prepare(`
+      INSERT INTO track_files (track_id, quality, status, raw_path, final_path, updated_at)
+      VALUES (?, '320k', 'ready', ?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(track_id, quality) DO UPDATE SET status = excluded.status, raw_path = excluded.raw_path, final_path = excluded.final_path, updated_at = CURRENT_TIMESTAMP
+    `).run(track.id, localAudioPath, localAudioPath)
+
+    const requestUrls: string[] = []
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      requestUrls.push(String(url))
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'script.example') return new Response('https://cdn.example/audio.mp3')
+      if (requestUrl.hostname === 'stat6.y.qq.com') return new Response('{}')
+      return new Response('https://cdn.example/audio.mp3')
+    }) as typeof fetch
+
+    const response = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Audio/${encodeURIComponent(songId)}/universal?api_key=${authPayload.AccessToken}`, {
+        headers: { 'X-Emby-Authorization': authHeader },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Audio/${encodeURIComponent(songId)}/universal`),
+    )
+    assert.equal(response.status, 200)
+    const reader = response.body?.getReader()
+    assert.ok(reader)
+    const firstChunk = await reader.read()
+    assert.equal(new TextDecoder().decode(firstChunk.value), 'audio-bytes')
+    await reader.cancel()
+
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    const playEvents = db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM play_events pe
+      INNER JOIN tracks t ON t.id = pe.track_id
+      WHERE t.source = 'tx' AND t.songmid = 'qq-stream-song-1'
+    `).get() as { count: number }
+    assert.equal(playEvents.count, 1)
+    assert.ok(requestUrls.some(url => new URL(url).hostname === 'stat6.y.qq.com'))
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999014')
+    clearQQLoginCookie()
+    db.prepare('DELETE FROM app_settings WHERE key = ?').run('virtual.song.qq-stream-song-1')
+    db.prepare("DELETE FROM tracks WHERE songmid = ? AND source = 'tx'").run('qq-stream-song-1')
+    db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track' AND json_extract(payload_json, '$.songmid') = ?").run('qq-stream-song-1')
+    rmSync(join(process.cwd(), 'data/test-qq-stream-song.mp3'), { force: true })
     globalThis.fetch = originalFetch
   }
 })
@@ -788,20 +1299,27 @@ test('local emby library exploration endpoints proxy upstream and fall back to e
 
     globalThis.fetch = (async () => Response.json({ error: 'upstream failed' }, { status: 500 })) as typeof fetch
 
-    for (const query of [
+    const fallbackQueries = [
       'IncludeItemTypes=Audio&Fields=AudioInfo%2CChildCount%2CDateCreated%2CGenres%2CMediaSources%2CParentIndexNumber%2CPath%2CProductionYear%2CPremiereDate%2COverview%2CPresentationUniqueKey%2CProviderIds%2CUserDataPlayCount%2CUserDataLastPlayedDate&EnableUserData=true&Recursive=true&ImageTypeLimit=1&EnableImageTypes=Primary&EnableTotalRecordCount=true&ParentId=mixmusic-music&Filters=IsPlayed&SortBy=PlayCount%2CDatePlayed&SortOrder=Descending&Limit=500&StartIndex=0',
       'IncludeItemTypes=Audio&Fields=AudioInfo%2CChildCount%2CDateCreated%2CGenres%2CMediaSources%2CParentIndexNumber%2CPath%2CProductionYear%2CPremiereDate%2COverview%2CPresentationUniqueKey%2CProviderIds%2CUserDataPlayCount%2CUserDataLastPlayedDate&EnableUserData=true&Recursive=true&ImageTypeLimit=1&EnableImageTypes=Primary&EnableTotalRecordCount=true&ParentId=mixmusic-music&Filters=IsFavorite&SortBy=AlbumArtist%2CAlbum%2CParentIndexNumber%2CIndexNumber%2CSortName&SortOrder=Ascending&Limit=500&StartIndex=0',
       'IncludeItemTypes=MusicAlbum&Fields=AudioInfo%2CChildCount%2CDateCreated%2CGenres%2CMediaSources%2CParentIndexNumber%2CPath%2CProductionYear%2CPremiereDate%2COverview%2CPresentationUniqueKey%2CProviderIds%2CUserDataPlayCount%2CUserDataLastPlayedDate&EnableUserData=true&Recursive=true&ImageTypeLimit=1&EnableImageTypes=Primary&EnableTotalRecordCount=true&ParentId=mixmusic-music&SortBy=DateCreated%2CSortName&SortOrder=Descending%2CAscending&Limit=500&StartIndex=0',
       'IncludeItemTypes=Audio&Fields=AudioInfo%2CChildCount%2CDateCreated%2CGenres%2CMediaSources%2CParentIndexNumber%2CPath%2CProductionYear%2CPremiereDate%2COverview%2CPresentationUniqueKey%2CProviderIds%2CUserDataPlayCount%2CUserDataLastPlayedDate&EnableUserData=true&Recursive=true&ImageTypeLimit=1&EnableImageTypes=Primary&EnableTotalRecordCount=true&ParentId=mixmusic-music&SortBy=DatePlayed&SortOrder=Descending&Filters=IsPlayed&Limit=200&StartIndex=0',
       'IncludeItemTypes=Audio&Fields=AudioInfo%2CChildCount%2CDateCreated%2CGenres%2CMediaSources%2CParentIndexNumber%2CPath%2CProductionYear%2CPremiereDate%2COverview%2CPresentationUniqueKey%2CProviderIds%2CUserDataPlayCount%2CUserDataLastPlayedDate&EnableUserData=true&Recursive=true&ImageTypeLimit=1&EnableImageTypes=Primary&EnableTotalRecordCount=true&ParentId=mixmusic-music&SortBy=Random&Limit=100&StartIndex=0',
       'IncludeItemTypes=MusicAlbum&Fields=AudioInfo%2CChildCount%2CDateCreated%2CGenres%2CMediaSources%2CParentIndexNumber%2CPath%2CProductionYear%2CPremiereDate%2COverview%2CPresentationUniqueKey%2CProviderIds%2CUserDataPlayCount%2CUserDataLastPlayedDate&EnableUserData=true&Recursive=true&ImageTypeLimit=1&EnableImageTypes=Primary&EnableTotalRecordCount=true&ParentId=mixmusic-music&SortBy=Random&Limit=100&StartIndex=0',
-    ]) {
+    ]
+    for (const query of fallbackQueries) {
       const response = await dispatchEmbyRequest(
         new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?${query}`, { headers: { 'X-Emby-Authorization': authHeader } }),
         stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/Items`),
       )
       assert.equal(response.status, 200)
-      assert.deepEqual(await response.json(), { Items: [], TotalRecordCount: 0 })
+      const payload = await response.json()
+      if (query.includes('Filters=IsPlayed')) {
+        assert.ok(Array.isArray(payload.Items))
+        assert.equal(typeof payload.TotalRecordCount, 'number')
+      } else {
+        assert.deepEqual(payload, { Items: [], TotalRecordCount: 0 })
+      }
     }
 
     const playlists = await dispatchEmbyRequest(

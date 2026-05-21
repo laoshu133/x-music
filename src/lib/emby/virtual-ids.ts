@@ -4,6 +4,7 @@ export type VirtualId =
   | { kind: 'qq-song'; songmid: string; playlistId?: string }
   | { kind: 'qq-playlist'; id: string }
   | { kind: 'qq-album'; id: string }
+  | { kind: 'qq-genre'; id: string }
   | { kind: 'qq-daily' }
   | { kind: 'qq-guess' }
 
@@ -19,6 +20,7 @@ export function decodeVirtualId(id: string): VirtualId | undefined {
     if (parsed.kind === 'qq-song' && parsed.songmid) return parsed
     if (parsed.kind === 'qq-playlist' && parsed.id) return parsed
     if (parsed.kind === 'qq-album' && parsed.id) return parsed
+    if (parsed.kind === 'qq-genre' && parsed.id) return parsed
     if (parsed.kind === 'qq-daily' || parsed.kind === 'qq-guess') return parsed
   } catch {
     return undefined
@@ -36,4 +38,8 @@ export function playlistVirtualId(id: string): string {
 
 export function albumVirtualId(id: string): string {
   return encodeVirtualId({ kind: 'qq-album', id })
+}
+
+export function genreVirtualId(id: string): string {
+  return encodeVirtualId({ kind: 'qq-genre', id })
 }
