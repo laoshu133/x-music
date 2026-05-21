@@ -1,5 +1,7 @@
 import { db } from '@/lib/db'
 import { claimNextJob, completeJob, failJob, requeueJob } from '@/lib/jobs'
+import { enqueueEmbyTrackSync } from '@/lib/emby/sync'
+import { processOneEmbySyncJob } from '@/lib/emby/sync-worker'
 import { cleanupInboxFile } from '@/lib/tagging/cleanup'
 import { createTaggingProvider } from '@/lib/tagging/provider'
 import type { TagTrackFileJobPayload } from '@/lib/tagging/types'
@@ -49,7 +51,22 @@ async function drainTaggingJobs(): Promise<void> {
           }`,
         )
       })
+      enqueueEmbyTrackSync({
+        source: job.payload.source,
+        songmid: job.payload.songmid,
+        musicInfo: {
+          source: job.payload.source,
+          songmid: job.payload.songmid,
+          name: job.payload.title ?? job.payload.songmid,
+          singer: job.payload.artist ?? '',
+          albumName: job.payload.album,
+          albumId: job.payload.albumId,
+        },
+      })
       completeJob(job.id)
+      await processOneEmbySyncJob().catch((error: unknown) => {
+        console.warn('failed inline Emby sync', error)
+      })
     } catch (error) {
       if (job.attempts >= 3) {
         db.prepare(`

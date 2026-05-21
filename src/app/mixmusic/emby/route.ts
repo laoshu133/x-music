@@ -12,6 +12,10 @@ export async function GET(request: Request): Promise<Response> {
   return handle(request)
 }
 
+export async function HEAD(request: Request): Promise<Response> {
+  return handle(request)
+}
+
 export async function POST(request: Request): Promise<Response> {
   return handle(request)
 }

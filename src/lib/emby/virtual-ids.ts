@@ -3,6 +3,7 @@ import type { MusicInfo } from '@/lib/types'
 export type VirtualId =
   | { kind: 'qq-song'; songmid: string; playlistId?: string }
   | { kind: 'qq-playlist'; id: string }
+  | { kind: 'qq-album'; id: string }
   | { kind: 'qq-daily' }
   | { kind: 'qq-guess' }
 
@@ -17,6 +18,7 @@ export function decodeVirtualId(id: string): VirtualId | undefined {
     const parsed = JSON.parse(Buffer.from(id.slice(4), 'base64url').toString('utf8')) as VirtualId
     if (parsed.kind === 'qq-song' && parsed.songmid) return parsed
     if (parsed.kind === 'qq-playlist' && parsed.id) return parsed
+    if (parsed.kind === 'qq-album' && parsed.id) return parsed
     if (parsed.kind === 'qq-daily' || parsed.kind === 'qq-guess') return parsed
   } catch {
     return undefined
@@ -30,4 +32,8 @@ export function songVirtualId(song: MusicInfo, playlistId?: string): string {
 
 export function playlistVirtualId(id: string): string {
   return encodeVirtualId({ kind: 'qq-playlist', id })
+}
+
+export function albumVirtualId(id: string): string {
+  return encodeVirtualId({ kind: 'qq-album', id })
 }

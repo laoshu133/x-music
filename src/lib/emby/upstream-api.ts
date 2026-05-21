@@ -80,7 +80,7 @@ async function embyFetch<T = unknown>(path: string, init: RequestInit = {}): Pro
   if (!settings.emby.baseUrl) throw new Error('Upstream Emby is not configured')
   let token = await getEmbyAccessToken()
   const url = new URL(settings.emby.baseUrl)
-  url.pathname = joinPaths(url.pathname, path)
+  applyPathAndSearch(url, path)
   if (token && !url.searchParams.has('api_key')) url.searchParams.set('api_key', token)
 
   const headers = new Headers(init.headers)
@@ -99,6 +99,12 @@ async function embyFetch<T = unknown>(path: string, init: RequestInit = {}): Pro
   }
   if (!text) return undefined as T
   return JSON.parse(text) as T
+}
+
+function applyPathAndSearch(url: URL, path: string): void {
+  const [pathname, search = ''] = path.split('?')
+  url.pathname = joinPaths(url.pathname, pathname ?? '/')
+  url.search = search ? `?${search}` : ''
 }
 
 function joinPaths(basePath: string, childPath: string): string {

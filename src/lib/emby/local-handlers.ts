@@ -3,21 +3,32 @@ import { createUpstreamTeeResponse, streamLocalFile } from '@/lib/cache/stream'
 import { qualityFallbacks, resolveMusicUrlWithFallback } from '@/lib/music-url/resolve'
 import {
   getQQPlaylistDetail,
+  getQQFavoriteSongs,
   getQQRecommendations,
   getQQUserPlaylists,
   searchQQMusic,
+  searchQQPlaylists,
 } from '@/lib/qq'
 import type { MusicInfo, MusicQuality, QQPlaylistInfo } from '@/lib/types'
 import { enqueueEmbyTrackSync } from './sync'
 import { markRequestSource } from '@/lib/request-log'
-import { decodeVirtualId, encodeVirtualId, playlistVirtualId, songVirtualId } from './virtual-ids'
-import { loadVirtualPlaylist, loadVirtualSong, rememberVirtualPlaylist, rememberVirtualSong } from './virtual-store'
+import { albumVirtualId, decodeVirtualId, encodeVirtualId, playlistVirtualId, songVirtualId, type VirtualId } from './virtual-ids'
+import {
+  loadVirtualAlbumSongs,
+  loadVirtualPlaylist,
+  loadVirtualSong,
+  rememberVirtualAlbumSongs,
+  rememberVirtualPlaylist,
+  rememberVirtualSong,
+} from './virtual-store'
 import { getRemoteMapping, upsertRemoteMapping } from '@/lib/db/remote-mappings'
 import { fetchEmbyJson, searchEmbyAudioByName, searchEmbyPlaylistByName } from './upstream-api'
 import { proxyToUpstreamEmby } from './upstream-proxy'
 import { getAccountByEmbyUsername, getAccountByEmbyUserId, listAccounts, type AccountRecord } from '@/lib/db/accounts'
 import { ensureUpstreamEmbyUserForAccount } from './auth'
 import crypto from 'node:crypto'
+import { stat } from 'node:fs/promises'
+import path from 'node:path'
 import { createLocalAccessToken, readEmbyAccessToken } from './tokens'
 
 const LOCAL_SERVER_ID = 'mixmusic'
@@ -60,13 +71,23 @@ export async function handleLocalEmbyRequest(request: Request, embyPath: string)
     return Response.json({ ok: true, service: 'mixmusic-emby-gateway' })
   }
 
+  if (request.method === 'POST' && isPlaybackReportRequest(embyPath)) {
+    if (!isAuthorizedLocalRequest(request)) return unauthorizedResponse()
+    return handlePlaybackReportRequest(request, embyPath)
+  }
+
   if (request.method === 'GET' && isLocalEmptyCollectionRequest(embyPath)) {
     if (!isAuthorizedLocalRequest(request)) return unauthorizedResponse()
-    return emptyItemsResponse()
+    return handleCollectionRequest(request, embyPath)
   }
 
   if (request.method === 'GET' && isImageRequest(embyPath)) {
-    return emptyImageResponse()
+    return handleImageRequest(request, embyPath)
+  }
+
+  if (request.method === 'GET' && isItemRequest(embyPath)) {
+    if (!isAuthorizedLocalRequest(request)) return unauthorizedResponse()
+    return handleItemRequest(embyPath)
   }
 
   if (request.method === 'GET' && isItemsRequest(embyPath)) {
@@ -79,7 +100,7 @@ export async function handleLocalEmbyRequest(request: Request, embyPath: string)
     return handlePlaylistItemsRequest(request, embyPath)
   }
 
-  if (request.method === 'GET' && isAudioRequest(embyPath)) {
+  if ((request.method === 'GET' || request.method === 'HEAD') && isAudioRequest(embyPath)) {
     if (!isAuthorizedLocalRequest(request)) return unauthorizedResponse()
     return handleAudioRequest(request, embyPath)
   }
@@ -210,12 +231,20 @@ function isItemsRequest(path: string): boolean {
   return /^\/Users\/[^/]+\/Items$/i.test(path) || path === '/Items'
 }
 
+function isItemRequest(path: string): boolean {
+  return /^\/Users\/[^/]+\/Items\/[^/]+$/i.test(path) || /^\/Items\/[^/]+$/i.test(path)
+}
+
 function isPlaylistItemsRequest(path: string): boolean {
   return /^\/Playlists\/[^/]+\/Items$/i.test(path) || /^\/Users\/[^/]+\/Items\/[^/]+\/Items$/i.test(path)
 }
 
 function isAudioRequest(path: string): boolean {
   return /^\/Audio\/[^/]+\/(?:universal|stream)$/i.test(path)
+}
+
+function isPlaybackReportRequest(path: string): boolean {
+  return /^\/Sessions\/Playing(?:\/(?:Progress|Stopped))?$/i.test(path)
 }
 
 function isLocalEmptyCollectionRequest(path: string): boolean {
@@ -236,31 +265,95 @@ function emptyImageResponse(): Response {
   return new Response(null, { status: 204 })
 }
 
+async function handleImageRequest(request: Request, embyPath: string): Promise<Response> {
+  const itemId = extractImageItemId(embyPath)
+  if (!itemId) return emptyImageResponse()
+  if (itemId === 'mixmusic-music') return emptyImageResponse()
+
+  const decoded = decodeVirtualId(itemId)
+  if (!decoded) return proxyToUpstreamEmby(request, embyPath)
+
+  const imageUrl = virtualImageUrl(decoded)
+  if (!imageUrl) return emptyImageResponse()
+
+  const response = await fetch(imageUrl, {
+    cache: 'no-store',
+    signal: AbortSignal.timeout(10_000),
+  }).catch(() => undefined)
+  if (!response?.ok) return emptyImageResponse()
+
+  return markRequestSource(new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: imageResponseHeaders(response.headers),
+  }), 'upstream')
+}
+
 async function handleItemsRequest(request: Request, embyPath: string): Promise<Response | undefined> {
   const url = new URL(request.url)
   const searchTerm = url.searchParams.get('SearchTerm') ?? url.searchParams.get('searchTerm') ?? url.searchParams.get('search')
   const includeTypes = url.searchParams.get('IncludeItemTypes') ?? url.searchParams.get('includeItemTypes') ?? ''
   const parentId = url.searchParams.get('ParentId') ?? url.searchParams.get('parentId') ?? ''
+  const decodedParentId = decodeVirtualId(parentId)
 
-  if (!searchTerm?.trim() && parentId === 'mixmusic-music') {
-    return emptyItemsResponse()
+  if (decodedParentId) {
+    return handleVirtualPlaylistItemsRequest(request, decodedParentId, parentId)
   }
+
+  const requestedTypes = parseIncludeTypes(includeTypes)
+  const filters = parseFilters(url.searchParams.get('Filters') ?? url.searchParams.get('filters') ?? '')
 
   if (searchTerm?.trim()) {
     const upstream = await tryReadItemsResponse(request, embyPath)
-    const result = await searchQQMusic(searchTerm.trim(), 1, numberParam(url, 'Limit', 50))
-    const upstreamItems = upstream?.Items ?? []
-    const items = dedupeSongs(result.list)
-      .filter(song => !hasEquivalentEmbySong(upstreamItems, song))
-      .map(song => {
-      rememberVirtualSong(song)
-      return songToEmbyItem(song)
-    })
-    const merged = [...upstreamItems, ...items]
+    const upstreamItems = filterItemsByTypes(upstream?.Items ?? [], requestedTypes)
+    const virtualItems: any[] = []
+
+    if (shouldIncludeType(requestedTypes, 'audio')) {
+      const result = await searchQQMusic(searchTerm.trim(), 1, numberParam(url, 'Limit', 50))
+      virtualItems.push(...dedupeSongs(result.list)
+        .filter(song => !hasEquivalentEmbySong(upstreamItems, song))
+        .map(song => {
+          rememberVirtualSong(song)
+          return songToEmbyItem(song)
+        }))
+    }
+
+    if (shouldIncludeType(requestedTypes, 'playlist')) {
+      const result = await searchQQPlaylists(searchTerm.trim(), 1, numberParam(url, 'Limit', 50))
+      virtualItems.push(...result.list
+        .filter(playlist => !hasEquivalentEmbyPlaylist(upstreamItems, playlist.name))
+        .map(playlistToEmbyItem))
+    }
+
+    const merged = [...upstreamItems, ...virtualItems]
     return Response.json({ Items: merged, TotalRecordCount: merged.length })
   }
 
-  if (includeTypes.split(',').map(item => item.trim().toLowerCase()).includes('playlist')) {
+  if (filters.has('isfavorite') && shouldIncludeType(requestedTypes, 'audio')) {
+    const upstream = await tryReadItemsResponse(request, embyPath)
+    const upstreamItems = filterItemsByTypes(upstream?.Items ?? [], requestedTypes)
+    const favorites = await listQQFavoriteSongs(request, numberParam(url, 'Limit', 500))
+    const virtualItems = favorites
+      .filter(song => !hasEquivalentEmbySong(upstreamItems, song))
+      .map(song => {
+        rememberVirtualSong(song)
+        return songToEmbyItem(song, undefined, true)
+      })
+    const merged = [...upstreamItems, ...virtualItems]
+    return Response.json({ Items: merged, TotalRecordCount: merged.length })
+  }
+
+  if (parentId === 'mixmusic-music' && requestedTypes.has('musicalbum')) {
+    const upstream = await tryReadItemsResponse(request, embyPath)
+    const upstreamItems = filterItemsByTypes(upstream?.Items ?? [], requestedTypes)
+    const favorites = await listQQFavoriteSongs(request, numberParam(url, 'Limit', 500))
+    const virtualAlbums = favoriteSongsToAlbumItems(favorites)
+      .filter(album => !hasEquivalentEmbyAlbum(upstreamItems, album.Name))
+    const merged = [...upstreamItems, ...virtualAlbums]
+    return Response.json({ Items: merged, TotalRecordCount: merged.length })
+  }
+
+  if (requestedTypes.has('playlist')) {
     const upstream = await tryReadItemsResponse(request, embyPath)
     const playlists = await listVirtualPlaylists(request)
     const upstreamItems = upstream?.Items ?? []
@@ -271,7 +364,54 @@ async function handleItemsRequest(request: Request, embyPath: string): Promise<R
     return Response.json({ Items: merged, TotalRecordCount: merged.length })
   }
 
+  if (parentId === 'mixmusic-music') {
+    const upstream = await tryReadItemsResponse(request, embyPath)
+    return upstream ? Response.json(upstream) : emptyItemsResponse()
+  }
+
   return undefined
+}
+
+async function handleCollectionRequest(request: Request, embyPath: string): Promise<Response> {
+  const upstream = await tryReadItemsResponse(request, embyPath)
+  return upstream ? Response.json(upstream) : emptyItemsResponse()
+}
+
+async function handlePlaybackReportRequest(request: Request, embyPath: string): Promise<Response | undefined> {
+  const body = await request.clone().json().catch(() => undefined) as { ItemId?: unknown } | undefined
+  const itemId = typeof body?.ItemId === 'string' ? body.ItemId : ''
+  const decoded = decodeVirtualId(itemId)
+  if (!decoded || decoded.kind !== 'qq-song') return undefined
+
+  const stored = loadVirtualSong(decoded.songmid)
+  if (stored && /\/Stopped$/i.test(embyPath)) {
+    const quality = playableQualityForSong(stored.song) ?? '320k'
+    const track = ensureTrack(stored.song)
+    insertPlayEvent(track.id, quality)
+    enqueueEmbyTrackSync({
+      source: stored.song.source,
+      songmid: stored.song.songmid,
+      playlistId: decoded.playlistId ?? stored.playlistId,
+      musicInfo: stored.song,
+    })
+  }
+
+  return new Response(null, { status: 204 })
+}
+
+function handleItemRequest(embyPath: string): Response | undefined {
+  const itemId = extractItemId(embyPath)
+  if (!itemId) return undefined
+
+  const decoded = decodeVirtualId(itemId)
+  if (!decoded || decoded.kind !== 'qq-song') return undefined
+
+  const stored = loadVirtualSong(decoded.songmid)
+  if (!stored) {
+    return Response.json({ error: 'Virtual QQ song metadata is not cached. Search or open the virtual playlist again.' }, { status: 404 })
+  }
+
+  return Response.json(songToEmbyItem(stored.song, decoded.playlistId ?? stored.playlistId))
 }
 
 async function handlePlaylistItemsRequest(request: Request, embyPath: string): Promise<Response | undefined> {
@@ -281,7 +421,6 @@ async function handlePlaylistItemsRequest(request: Request, embyPath: string): P
   const decoded = decodeVirtualId(playlistId)
   if (!decoded) return undefined
 
-  let songs: MusicInfo[] = []
   if (decoded.kind === 'qq-playlist') {
     const playlist = loadVirtualPlaylist(decoded.id)
     const mapped = getRemoteMapping({ localType: 'playlist', localKey: `qq:${decoded.id}`, remote: 'emby' })?.remoteId
@@ -290,17 +429,36 @@ async function handlePlaylistItemsRequest(request: Request, embyPath: string): P
       upsertRemoteMapping({ localType: 'playlist', localKey: `qq:${decoded.id}`, remote: 'emby', remoteId: mapped, raw: playlist })
       return proxyToUpstreamEmby(request, `/Playlists/${encodeURIComponent(mapped)}/Items`)
     }
-    const detail = await getQQPlaylistDetail(decoded.id)
-    songs = detail.list
+  }
+
+  return handleVirtualPlaylistItemsRequest(request, decoded, playlistId)
+}
+
+async function handleVirtualPlaylistItemsRequest(request: Request, decoded: VirtualId, playlistId: string): Promise<Response | undefined> {
+  const url = new URL(request.url)
+  const includeTypes = parseIncludeTypes(url.searchParams.get('IncludeItemTypes') ?? url.searchParams.get('includeItemTypes') ?? '')
+  if (!shouldIncludePlaylistTracks(includeTypes)) {
+    return emptyItemsResponse()
+  }
+
+  let songs: MusicInfo[] = []
+  if (decoded.kind === 'qq-playlist') {
+    const detail = await getQQPlaylistDetail(decoded.id).catch(() => undefined)
+    songs = detail?.list ?? []
+  } else if (decoded.kind === 'qq-album') {
+    songs = loadVirtualAlbumSongs(decoded.id)
   } else if (decoded.kind === 'qq-guess') {
-    songs = (await getQQRecommendations({ limit: numberParam(new URL(request.url), 'Limit', 50) })).list
+    songs = (await getQQRecommendations({ limit: numberParam(url, 'Limit', 50) }).catch(() => ({ list: [] }))).list
   } else if (decoded.kind === 'qq-daily') {
-    songs = (await getQQRecommendations({ limit: numberParam(new URL(request.url), 'Limit', 50) })).list
+    songs = (await getQQRecommendations({ limit: numberParam(url, 'Limit', 50) }).catch(() => ({ list: [] }))).list
   } else {
     return undefined
   }
 
-  const items = dedupeSongs(songs).map(song => {
+  const searchTerm = url.searchParams.get('SearchTerm') ?? url.searchParams.get('searchTerm') ?? url.searchParams.get('search')
+  const items = dedupeSongs(songs)
+    .filter(song => matchesSongSearch(song, searchTerm))
+    .map(song => {
     rememberVirtualSong(song, playlistId)
     return songToEmbyItem(song, playlistId)
   })
@@ -318,6 +476,11 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
   }
 
   const musicInfo = stored.song
+  if (request.method === 'HEAD') {
+    const playableHeaders = await virtualAudioHeadHeaders(musicInfo)
+    return markRequestSource(new Response(null, { status: 200, headers: playableHeaders }), playableHeaders.get('content-length') ? 'local' : 'upstream')
+  }
+
   const mapped = getRemoteMapping({ localType: 'track', localKey: `${musicInfo.source}:${musicInfo.songmid}`, remote: 'emby' })?.remoteId
     ?? await searchEmbyAudioByName(musicInfo).catch(() => undefined)
   if (mapped) {
@@ -369,6 +532,44 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
   return markRequestSource(response, 'upstream')
 }
 
+async function virtualAudioHeadHeaders(musicInfo: MusicInfo): Promise<Headers> {
+  const playableFile = qualityFallbacks('flac')
+    .map((quality) => getPlayableTrackFile(musicInfo.source, musicInfo.songmid, quality))
+    .find((file) => file !== undefined)
+  const localPath = playableFile?.finalPath ?? playableFile?.rawPath
+
+  if (localPath) {
+    const fileStat = await stat(localPath).catch(() => undefined)
+    if (fileStat) {
+      return new Headers({
+        'content-type': audioContentTypeFromPath(localPath),
+        'content-length': String(fileStat.size),
+        'accept-ranges': 'bytes',
+        'cache-control': 'no-store',
+      })
+    }
+  }
+
+  return new Headers({
+    'content-type': 'audio/mpeg',
+    'accept-ranges': 'none',
+    'cache-control': 'no-store',
+  })
+}
+
+function playableQualityForSong(musicInfo: MusicInfo): MusicQuality | undefined {
+  return qualityFallbacks('flac')
+    .find((quality) => getPlayableTrackFile(musicInfo.source, musicInfo.songmid, quality) !== undefined)
+}
+
+function audioContentTypeFromPath(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase()
+  if (ext === '.flac') return 'audio/flac'
+  if (ext === '.m4a' || ext === '.mp4') return 'audio/mp4'
+  if (ext === '.ogg') return 'audio/ogg'
+  return 'audio/mpeg'
+}
+
 async function listVirtualPlaylists(request: Request): Promise<QQPlaylistInfo[]> {
   const result: QQPlaylistInfo[] = []
 
@@ -407,6 +608,53 @@ async function listVirtualPlaylists(request: Request): Promise<QQPlaylistInfo[]>
   return [...deduped.values()]
 }
 
+async function listQQFavoriteSongs(request: Request, limit: number): Promise<MusicInfo[]> {
+  const cookie = authorizedLocalAccount(request)?.qqCookie
+    ?? request.headers.get('x-qq-music-cookie')
+    ?? undefined
+  const result = await getQQFavoriteSongs({ cookie, limit }).catch(() => undefined)
+  return dedupeSongs(result?.list ?? [])
+}
+
+function favoriteSongsToAlbumItems(songs: MusicInfo[]) {
+  const albums = new Map<string, MusicInfo[]>()
+  for (const song of songs) {
+    const albumId = song.albumId?.trim()
+    const albumName = song.albumName?.trim()
+    if (!albumId && !albumName) continue
+    const key = albumId || normalizeText(albumName ?? '')
+    if (!key) continue
+    const existing = albums.get(key) ?? []
+    existing.push(song)
+    albums.set(key, existing)
+  }
+
+  return [...albums.entries()].map(([albumId, albumSongs]) => {
+    const first = albumSongs[0]!
+    rememberVirtualAlbumSongs(albumId, dedupeSongs(albumSongs))
+    const artists = dedupeStrings(albumSongs.flatMap(song => splitArtists(song.singer)))
+    return {
+      Name: first.albumName || 'Unknown Album',
+      ServerId: 'mixmusic',
+      Id: albumVirtualId(albumId),
+      Type: 'MusicAlbum',
+      MediaType: 'Audio',
+      IsFolder: true,
+      AlbumArtist: artists[0] ?? '',
+      AlbumArtists: artists,
+      ArtistItems: artists.map((name, index) => ({ Name: name, Id: `${albumId}-album-artist-${index}` })),
+      ChildCount: albumSongs.length,
+      RecursiveItemCount: albumSongs.length,
+      ImageTags: first.img ? { Primary: first.albumId || first.songmid } : {},
+      UserData: {
+        PlaybackPositionTicks: 0,
+        PlayCount: 0,
+        IsFavorite: true,
+      },
+    }
+  })
+}
+
 function playlistToEmbyItem(playlist: QQPlaylistInfo) {
   const id = playlist.id === '__daily__'
     ? encodeVirtualId({ kind: 'qq-daily' })
@@ -426,7 +674,28 @@ function playlistToEmbyItem(playlist: QQPlaylistInfo) {
   }
 }
 
-function songToEmbyItem(song: MusicInfo, playlistId?: string) {
+function virtualImageUrl(id: ReturnType<typeof decodeVirtualId>): string | undefined {
+  if (!id) return undefined
+  if (id.kind === 'qq-song') return loadVirtualSong(id.songmid)?.song.img || undefined
+  if (id.kind === 'qq-playlist') return loadVirtualPlaylist(id.id)?.img || undefined
+  if (id.kind === 'qq-album') return loadVirtualAlbumSongs(id.id)[0]?.img || undefined
+  if (id.kind === 'qq-daily') return loadVirtualPlaylist('__daily__')?.img || undefined
+  if (id.kind === 'qq-guess') return loadVirtualPlaylist('__guess__')?.img || undefined
+  return undefined
+}
+
+function imageResponseHeaders(headers: Headers): Headers {
+  const result = new Headers()
+  const contentType = headers.get('content-type')
+  const contentLength = headers.get('content-length')
+  const cacheControl = headers.get('cache-control')
+  if (contentType) result.set('content-type', contentType)
+  if (contentLength) result.set('content-length', contentLength)
+  if (cacheControl) result.set('cache-control', cacheControl)
+  return result
+}
+
+function songToEmbyItem(song: MusicInfo, playlistId?: string, isFavorite = false) {
   return {
     Name: song.name,
     ServerId: 'mixmusic',
@@ -443,7 +712,7 @@ function songToEmbyItem(song: MusicInfo, playlistId?: string) {
     UserData: {
       PlaybackPositionTicks: 0,
       PlayCount: 0,
-      IsFavorite: false,
+      IsFavorite: isFavorite,
     },
   }
 }
@@ -455,6 +724,20 @@ function extractPlaylistId(path: string): string | undefined {
   return userItemMatch?.[1] ? decodeURIComponent(userItemMatch[1]) : undefined
 }
 
+function extractItemId(path: string): string | undefined {
+  const itemMatch = path.match(/^\/Items\/([^/]+)$/i)
+  if (itemMatch?.[1]) return decodeURIComponent(itemMatch[1])
+  const userItemMatch = path.match(/^\/Users\/[^/]+\/Items\/([^/]+)$/i)
+  return userItemMatch?.[1] ? decodeURIComponent(userItemMatch[1]) : undefined
+}
+
+function extractImageItemId(path: string): string | undefined {
+  const itemMatch = path.match(/^\/Items\/([^/]+)\/Images\/[^/]+$/i)
+  if (itemMatch?.[1]) return decodeURIComponent(itemMatch[1])
+  const userMatch = path.match(/^\/Users\/([^/]+)\/Images\/[^/]+$/i)
+  return userMatch?.[1] ? decodeURIComponent(userMatch[1]) : undefined
+}
+
 function dedupeSongs(songs: MusicInfo[]): MusicInfo[] {
   const seen = new Set<string>()
   const result: MusicInfo[] = []
@@ -463,6 +746,25 @@ function dedupeSongs(songs: MusicInfo[]): MusicInfo[] {
     if (seen.has(key)) continue
     seen.add(key)
     result.push(song)
+  }
+  return result
+}
+
+function splitArtists(value?: string): string[] {
+  return value
+    ?.split(/[、,，/;；]+/)
+    .map(item => item.trim())
+    .filter(Boolean) ?? []
+}
+
+function dedupeStrings(values: string[]): string[] {
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const value of values) {
+    const key = normalizeText(value)
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    result.push(value)
   }
   return result
 }
@@ -483,11 +785,43 @@ function numberParam(url: URL, key: string, fallback: number): number {
 
 async function tryReadItemsResponse(request: Request, embyPath: string): Promise<{ Items?: any[] } | undefined> {
   try {
-    const url = new URL(request.url)
-    return await fetchEmbyJson<{ Items?: any[] }>(`${embyPath}${url.search}`)
+    return await fetchEmbyJson<{ Items?: any[] }>(`${embyPath}${upstreamSearch(request)}`)
   } catch {
     return undefined
   }
+}
+
+function upstreamSearch(request: Request): string {
+  const url = new URL(request.url)
+  for (const key of ['ParentId', 'parentId']) {
+    if (url.searchParams.get(key) === 'mixmusic-music') {
+      url.searchParams.delete(key)
+    }
+  }
+  return url.search
+}
+
+function parseIncludeTypes(includeTypes: string): Set<string> {
+  return new Set(includeTypes.split(',').map(item => item.trim().toLowerCase()).filter(Boolean))
+}
+
+function shouldIncludeType(requestedTypes: Set<string>, type: string): boolean {
+  return requestedTypes.size === 0 || requestedTypes.has(type)
+}
+
+function shouldIncludePlaylistTracks(requestedTypes: Set<string>): boolean {
+  return requestedTypes.size === 0 || requestedTypes.has('audio') || requestedTypes.has('musicvideo')
+}
+
+function filterItemsByTypes(items: any[], requestedTypes: Set<string>): any[] {
+  if (requestedTypes.size === 0) return items
+  return items.filter(item => requestedTypes.has(String(item?.Type ?? '').toLowerCase()))
+}
+
+function matchesSongSearch(song: MusicInfo, searchTerm?: string | null): boolean {
+  const normalizedSearchTerm = normalizeText(searchTerm?.trim() ?? '')
+  if (!normalizedSearchTerm) return true
+  return normalizeText(`${song.name} ${song.singer} ${song.albumName}`).includes(normalizedSearchTerm)
 }
 
 function hasEquivalentEmbySong(items: any[], song: MusicInfo): boolean {
@@ -506,6 +840,15 @@ function hasEquivalentEmbyPlaylist(items: any[], name: string): boolean {
   return items.some(item => String(item?.Type ?? '').toLowerCase() === 'playlist' && normalizeText(String(item?.Name ?? '')) === normalized)
 }
 
+function hasEquivalentEmbyAlbum(items: any[], name: string): boolean {
+  const normalized = normalizeText(name)
+  return items.some(item => String(item?.Type ?? '').toLowerCase() === 'musicalbum' && normalizeText(String(item?.Name ?? '')) === normalized)
+}
+
 function normalizeText(value: string): string {
   return value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
+}
+
+function parseFilters(filters: string): Set<string> {
+  return new Set(filters.split(',').map(item => item.trim().toLowerCase()).filter(Boolean))
 }

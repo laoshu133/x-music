@@ -5,6 +5,7 @@ import path from 'node:path'
 import { Readable } from 'node:stream'
 import { appConfig } from '@/lib/config'
 import { enqueueTagJob, fileExtensionFromContentType, upsertTrackFileStatus } from '@/lib/cache/store'
+import { enqueueEmbyTrackSync } from '@/lib/emby/sync'
 import { triggerInlineTagging } from '@/lib/tagging/inline'
 import type { MusicQuality, TrackRecord } from '@/lib/types'
 
@@ -163,6 +164,20 @@ const teeUpstreamToClientAndCache = ({
         sha256: hash.digest('hex'),
       })
       enqueueTagJob(completedFile, track)
+      enqueueEmbyTrackSync({
+        source: track.source,
+        songmid: track.songmid,
+        musicInfo: {
+          source: track.source,
+          songmid: track.songmid,
+          name: track.name,
+          singer: track.singer,
+          albumName: track.albumName,
+          albumId: track.albumId,
+          interval: track.interval,
+          img: track.imageUrl,
+        },
+      })
       triggerInlineTagging()
       resolveCompletion()
     } catch (error) {

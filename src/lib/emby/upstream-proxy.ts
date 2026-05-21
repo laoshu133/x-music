@@ -16,6 +16,11 @@ const hopByHopHeaders = new Set([
   'host',
 ])
 
+const decodedBodyHeaders = new Set([
+  'content-encoding',
+  'content-length',
+])
+
 export async function proxyToUpstreamEmby(request: Request, embyPath: string): Promise<Response> {
   const settings = getEffectiveSettings()
   if (!settings.emby.baseUrl) {
@@ -48,13 +53,21 @@ export async function proxyToUpstreamEmby(request: Request, embyPath: string): P
   } as RequestInit & { duplex?: 'half' }
   const response = await fetch(upstreamUrl, init)
 
-  const responseHeaders = new Headers(response.headers)
+  const responseHeaders = responseHeadersForDecodedBody(response.headers)
   responseHeaders.set('x-mixmusic-source', 'upstream')
   return markRequestSource(new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
     headers: responseHeaders,
   }), 'upstream')
+}
+
+function responseHeadersForDecodedBody(headers: Headers): Headers {
+  const result = new Headers(headers)
+  for (const header of decodedBodyHeaders) {
+    result.delete(header)
+  }
+  return result
 }
 
 function findAccountForRequest(request: Request) {

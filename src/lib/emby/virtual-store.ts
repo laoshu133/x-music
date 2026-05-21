@@ -28,3 +28,17 @@ export function loadVirtualPlaylist(id: string): QQPlaylistInfo | undefined {
   if (!row) return undefined
   return JSON.parse(row.value_json) as QQPlaylistInfo
 }
+
+export function rememberVirtualAlbumSongs(albumId: string, songs: MusicInfo[]): void {
+  db.prepare(`
+    INSERT INTO app_settings (key, value_json, updated_at)
+    VALUES (?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP
+  `).run(`virtual.album.${albumId}`, JSON.stringify({ songs }))
+}
+
+export function loadVirtualAlbumSongs(albumId: string): MusicInfo[] {
+  const row = db.prepare('SELECT value_json FROM app_settings WHERE key = ?').get(`virtual.album.${albumId}`) as { value_json: string } | undefined
+  if (!row) return []
+  return (JSON.parse(row.value_json) as { songs?: MusicInfo[] }).songs ?? []
+}
