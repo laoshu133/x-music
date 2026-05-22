@@ -20,6 +20,9 @@ import { enqueueEmbyTrackSync } from './sync'
 import { markRequestSource } from '@/lib/request-log'
 import { albumVirtualId, decodeVirtualId, encodeVirtualId, genreVirtualId, playlistVirtualId, songVirtualId, type VirtualId } from './virtual-ids'
 import {
+  forgetVirtualAlbum,
+  forgetVirtualPlaylist,
+  forgetVirtualSong,
   loadVirtualAlbumSongs,
   listVirtualSongs,
   loadVirtualPlaylist,
@@ -29,7 +32,7 @@ import {
   rememberVirtualSong,
 } from './virtual-store'
 import { getRemoteMapping, upsertRemoteMapping } from '@/lib/db/remote-mappings'
-import { fetchEmbyJson, searchEmbyAudioByName, searchEmbyPlaylistByName } from './upstream-api'
+import { deleteEmbyItems, fetchEmbyJson, searchEmbyAudioByName, searchEmbyPlaylistByName } from './upstream-api'
 import { proxyToUpstreamEmby } from './upstream-proxy'
 import { getAccountByEmbyUsername, getAccountByEmbyUserId, listAccounts, type AccountRecord } from '@/lib/db/accounts'
 import { ensureUpstreamEmbyUserForAccount, getDefaultUpstreamMusicLibraryId } from './auth'
@@ -82,6 +85,11 @@ export async function handleLocalEmbyRequest(request: Request, embyPath: string)
 
   if (request.method === 'GET' && pathEquals(embyPath, '/System/Endpoint')) {
     return Response.json({ IsLocal: true, IsInNetwork: true })
+  }
+
+  if (request.method === 'POST' && pathEquals(embyPath, '/Items/Delete')) {
+    if (!isAuthorizedLocalRequest(request)) return unauthorizedResponse()
+    return handleItemsDeleteRequest(request)
   }
 
   if (request.method === 'GET' && isUserRequest(embyPath)) {
@@ -264,6 +272,49 @@ function localUserId(account: AccountRecord): string {
 
 function handlePublicUsers(): Response {
   return Response.json(listAccounts().map(localUser))
+}
+
+async function handleItemsDeleteRequest(request: Request): Promise<Response> {
+  const ids = deleteRequestIds(request)
+  if (ids.length === 0) {
+    return Response.json({ error: 'Missing item ids' }, { status: 400 })
+  }
+
+  const upstreamIds: string[] = []
+  for (const id of ids) {
+    const decoded = decodeVirtualId(id)
+    if (decoded) {
+      forgetVirtualItem(decoded)
+    } else {
+      upstreamIds.push(id)
+    }
+  }
+
+  try {
+    await deleteEmbyItems(upstreamIds)
+  } catch (error) {
+    return Response.json({
+      error: error instanceof Error ? error.message : 'Failed to delete upstream Emby items',
+    }, { status: 502 })
+  }
+
+  return new Response(null, { status: 204 })
+}
+
+function deleteRequestIds(request: Request): string[] {
+  const url = new URL(request.url)
+  const raw = url.searchParams.get('Ids') ?? url.searchParams.get('ids') ?? ''
+  return raw.split(',').map(id => id.trim()).filter(Boolean)
+}
+
+function forgetVirtualItem(decoded: VirtualId): void {
+  if (decoded.kind === 'qq-song') {
+    forgetVirtualSong(decoded.songmid)
+  } else if (decoded.kind === 'qq-playlist') {
+    forgetVirtualPlaylist(decoded.id)
+  } else if (decoded.kind === 'qq-album') {
+    forgetVirtualAlbum(decoded.id)
+  }
 }
 
 function handleUserRequest(path: string): Response | undefined {

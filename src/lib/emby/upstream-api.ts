@@ -75,6 +75,12 @@ export async function createOrUpdateEmbyPlaylist(input: {
   })}`, { method: 'POST' })
 }
 
+export async function deleteEmbyItems(ids: string[]): Promise<void> {
+  for (const id of ids) {
+    await embyFetch(`/Items/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  }
+}
+
 export async function setEmbyFavorite(input: {
   userId: string
   itemId: string

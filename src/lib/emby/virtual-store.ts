@@ -15,6 +15,10 @@ export function loadVirtualSong(songmid: string): { song: MusicInfo; playlistId?
   return JSON.parse(row.value_json) as { song: MusicInfo; playlistId?: string }
 }
 
+export function forgetVirtualSong(songmid: string): void {
+  db.prepare('DELETE FROM app_settings WHERE key = ?').run(`virtual.song.${songmid}`)
+}
+
 export function listVirtualSongs(): Array<{ song: MusicInfo; playlistId?: string }> {
   const rows = db.prepare(`
     SELECT value_json
@@ -47,6 +51,10 @@ export function loadVirtualPlaylist(id: string): QQPlaylistInfo | undefined {
   return JSON.parse(row.value_json) as QQPlaylistInfo
 }
 
+export function forgetVirtualPlaylist(id: string): void {
+  db.prepare('DELETE FROM app_settings WHERE key = ?').run(`virtual.playlist.${id}`)
+}
+
 export function rememberVirtualAlbumSongs(albumId: string, songs: MusicInfo[]): void {
   db.prepare(`
     INSERT INTO app_settings (key, value_json, updated_at)
@@ -59,4 +67,8 @@ export function loadVirtualAlbumSongs(albumId: string): MusicInfo[] {
   const row = db.prepare('SELECT value_json FROM app_settings WHERE key = ?').get(`virtual.album.${albumId}`) as { value_json: string } | undefined
   if (!row) return []
   return (JSON.parse(row.value_json) as { songs?: MusicInfo[] }).songs ?? []
+}
+
+export function forgetVirtualAlbum(albumId: string): void {
+  db.prepare('DELETE FROM app_settings WHERE key = ?').run(`virtual.album.${albumId}`)
 }

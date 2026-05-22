@@ -333,6 +333,46 @@ test('emby sync job uploads ready media through WebDAV before scanning Emby', as
   }
 })
 
+test('emby sync job waits for library final path before WebDAV upload', async () => {
+  const originalFetch = globalThis.fetch
+  const originalWebdavDsn = process.env.EMBY_SOURCE_WEBDAV_DSN
+  const songmid = `SYNC_WAIT_LIBRARY_${Date.now()}`
+  const inboxPath = path.join(appConfig.inboxDir, `${songmid}.mp3`)
+  const webdavRequests: string[] = []
+
+  db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track'").run()
+  mkdirSync(appConfig.inboxDir, { recursive: true })
+  writeFileSync(inboxPath, 'fake audio')
+  process.env.EMBY_SOURCE_WEBDAV_DSN = 'https://webdav-user:webdav-pass@webdav.example/dav/music'
+  try {
+    const musicInfo = { source: 'tx' as const, songmid, name: 'Library Wait Sync', singer: 'Tester' }
+    const track = ensureTrack(musicInfo)
+    upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath: inboxPath, rawPath: inboxPath })
+    const created = createJob({
+      type: 'sync_emby_track',
+      payload: { source: 'tx', songmid, musicInfo },
+    })
+
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      webdavRequests.push(String(url))
+      return Response.json({ error: 'should not upload inbox path' }, { status: 500 })
+    }) as typeof fetch
+
+    assert.equal(await processOneEmbySyncJob({
+      maxAttempts: 1,
+      cacheWaitMs: 0,
+    }), true)
+    const job = getJob(created.id)
+    assert.equal(job?.status, 'failed')
+    assert.equal(job?.error, 'No cached file is ready for Emby sync yet')
+    assert.deepEqual(webdavRequests, [])
+  } finally {
+    rmSync(inboxPath, { force: true })
+    process.env.EMBY_SOURCE_WEBDAV_DSN = originalWebdavDsn
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('emby sync job applies favorite state after upstream item is found', async () => {
   const originalFetch = globalThis.fetch
   const originalWebdavDsn = process.env.EMBY_SOURCE_WEBDAV_DSN

@@ -867,6 +867,102 @@ test('local emby playlist search pages QQ playlists with safe upstream page size
   }
 })
 
+test('musiver items delete converts batch post to upstream delete calls', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999033')
+    saveQQLoginCookie('uin=o999033; qm_keyst=test-key')
+    markAccountUpstreamBound('999033')
+    const account = getAccountByQQ('999033')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const authHeader = `MediaBrowser Client="Musiver", Version="1.3.9", Token="${authPayload.AccessToken}"`
+
+    const upstreamDeletes: string[] = []
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = new URL(String(url))
+      if (init?.method === 'DELETE') {
+        upstreamDeletes.push(requestUrl.pathname)
+        return new Response(null, { status: 204 })
+      }
+      return Response.json({ error: 'unexpected upstream request' }, { status: 500 })
+    }) as typeof fetch
+
+    const response = await dispatchEmbyRequest(
+      new Request('http://local/emby/Items/Delete?Ids=11740781,11740782', {
+        method: 'POST',
+        headers: { authorization: authHeader },
+      }),
+      stripOptionalEmbyPrefix('/emby/Items/Delete'),
+    )
+    assert.equal(response.status, 204)
+    assert.deepEqual(upstreamDeletes, ['/Items/11740781', '/Items/11740782'])
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999033')
+    clearQQLoginCookie()
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('musiver items delete clears virtual items locally', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999034')
+    saveQQLoginCookie('uin=o999034; qm_keyst=test-key')
+    markAccountUpstreamBound('999034')
+    const account = getAccountByQQ('999034')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const authHeader = `MediaBrowser Client="Musiver", Version="1.3.9", Token="${authPayload.AccessToken}"`
+    const virtualId = encodeVirtualId({ kind: 'qq-playlist', id: 'virtual-delete-playlist' })
+
+    db.prepare(`
+      INSERT INTO app_settings (key, value_json, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP
+    `).run('virtual.playlist.virtual-delete-playlist', JSON.stringify({
+      source: 'tx',
+      id: 'virtual-delete-playlist',
+      name: 'Virtual Delete Playlist',
+    }))
+
+    const upstreamRequests: string[] = []
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      upstreamRequests.push(String(url))
+      return Response.json({ error: 'virtual delete leaked upstream' }, { status: 500 })
+    }) as typeof fetch
+
+    const response = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Items/Delete?Ids=${encodeURIComponent(virtualId)}`, {
+        method: 'POST',
+        headers: { authorization: authHeader },
+      }),
+      stripOptionalEmbyPrefix('/emby/Items/Delete'),
+    )
+    assert.equal(response.status, 204)
+    const row = db.prepare('SELECT value_json FROM app_settings WHERE key = ?').get('virtual.playlist.virtual-delete-playlist')
+    assert.equal(row, undefined)
+    assert.deepEqual(upstreamRequests, [])
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999034')
+    clearQQLoginCookie()
+    db.prepare('DELETE FROM app_settings WHERE key = ?').run('virtual.playlist.virtual-delete-playlist')
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('local emby favorites merge QQ songs and virtual albums', async () => {
   const originalFetch = globalThis.fetch
   try {

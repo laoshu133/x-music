@@ -1,5 +1,8 @@
 import { db } from '@/lib/db'
 import { deleteCachedResourcesForTrack } from '@/lib/cache/resources'
+import { appConfig } from '@/lib/config'
+import { getEffectiveSettings } from '@/lib/db/settings'
+import path from 'node:path'
 import { upsertRemoteMapping } from '@/lib/db/remote-mappings'
 import { claimNextJob, completeJob, failJob, requeueJob } from '@/lib/jobs'
 import {
@@ -59,6 +62,7 @@ export async function processOneEmbySyncJob(options: number | EmbySyncJobOptions
     const row = await waitForCachedMedia(job.payload, {
       timeoutMs: cacheWaitMs,
       pollIntervalMs: cachePollIntervalMs,
+      requireLibraryFinalPath: shouldRequireLibraryFinalPath(),
     })
     const mediaPath = row?.finalPath ?? row?.rawPath
     if (!mediaPath) {
@@ -145,15 +149,32 @@ function joinEmbyPath(root: string | undefined, relativePath: string): string {
 
 async function waitForCachedMedia(
   payload: SyncEmbyTrackJobPayload,
-  options: { timeoutMs: number; pollIntervalMs: number },
+  options: { timeoutMs: number; pollIntervalMs: number; requireLibraryFinalPath?: boolean },
 ): Promise<CachedMediaRow | undefined> {
   const deadline = Date.now() + Math.max(0, options.timeoutMs)
   for (;;) {
     const row = getCachedMedia(payload)
-    if (row?.finalPath || row?.rawPath) return row
+    if (row && isSyncableCachedMedia(row, options)) return row
     if (Date.now() >= deadline) return undefined
     await sleep(Math.max(100, Math.min(options.pollIntervalMs, deadline - Date.now())))
   }
+}
+
+function shouldRequireLibraryFinalPath(): boolean {
+  return Boolean(getEffectiveSettings().emby.sourceWebdavDsn)
+}
+
+function isSyncableCachedMedia(
+  row: CachedMediaRow,
+  options: { requireLibraryFinalPath?: boolean },
+): boolean {
+  if (!options.requireLibraryFinalPath) return Boolean(row.finalPath || row.rawPath)
+  return row.status === 'ready' && Boolean(row.finalPath && isPathInside(row.finalPath, appConfig.musicDir))
+}
+
+function isPathInside(candidate: string, directory: string): boolean {
+  const relative = path.relative(path.resolve(directory), path.resolve(candidate))
+  return Boolean(relative) && !relative.startsWith('..') && !path.isAbsolute(relative)
 }
 
 function getCachedMedia(payload: SyncEmbyTrackJobPayload): CachedMediaRow | undefined {
