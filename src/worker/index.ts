@@ -1,6 +1,8 @@
 import { appConfig } from '@/lib/config'
 import { db } from '@/lib/db'
+import { cleanupResourceCache } from '@/lib/cache/resources'
 import {
+  createJob,
   claimNextJob,
   completeJob,
   ensureJobsTable,
@@ -15,10 +17,12 @@ import { fileURLToPath } from 'node:url'
 
 const pollIntervalMs = Number(process.env.WORKER_POLL_INTERVAL_MS ?? 5000)
 const maxAttempts = Number(process.env.WORKER_MAX_ATTEMPTS ?? 3)
+const cleanupIntervalMs = Number(process.env.WORKER_CLEANUP_INTERVAL_MS ?? 24 * 60 * 60 * 1000)
 
 const taggingProvider = createTaggingProvider()
 
 let stopping = false
+let nextCleanupAt = 0
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -99,15 +103,72 @@ async function processEmbySyncJob(): Promise<boolean> {
   return processOneEmbySyncJob(maxAttempts)
 }
 
+interface CleanupResourceCacheJobPayload {
+  reason: 'scheduled'
+  scheduledAt: string
+}
+
+function ensureCleanupResourceCacheJob(): void {
+  const now = Date.now()
+  if (now < nextCleanupAt) return
+  const existing = db.prepare(`
+    SELECT id
+    FROM jobs
+    WHERE type = 'cleanup_resource_cache'
+      AND status IN ('queued', 'running')
+    LIMIT 1
+  `).get() as { id: number } | undefined
+  if (!existing) {
+    createJob<CleanupResourceCacheJobPayload>({
+      type: 'cleanup_resource_cache',
+      payload: {
+        reason: 'scheduled',
+        scheduledAt: new Date(now).toISOString(),
+      },
+    })
+  }
+  nextCleanupAt = now + cleanupIntervalMs
+}
+
+async function processCleanupResourceCacheJob(): Promise<boolean> {
+  const job = claimNextJob<CleanupResourceCacheJobPayload>({
+    type: 'cleanup_resource_cache',
+    maxAttempts,
+  })
+  if (!job) return false
+
+  try {
+    const result = await cleanupResourceCache()
+    completeJob(job.id)
+    console.log(`completed resource cache cleanup job ${job.id}: deleted ${result.deleted} files (${result.bytes} bytes)`)
+  } catch (error) {
+    if (job.attempts >= maxAttempts) {
+      failJob(job.id, error)
+      console.error(`failed resource cache cleanup job ${job.id}`, error)
+    } else {
+      requeueJob(job.id, error)
+      console.warn(`requeued resource cache cleanup job ${job.id}`, error)
+    }
+  }
+
+  return true
+}
+
 interface WorkerTickProcessors {
   processTagJob?: () => Promise<boolean>
   processEmbySyncJob?: () => Promise<boolean>
+  processCleanupResourceCacheJob?: () => Promise<boolean>
+  scheduleCleanupResourceCacheJob?: boolean
 }
 
 export async function processWorkerTick(processors: WorkerTickProcessors = {}): Promise<boolean> {
+  if (processors.scheduleCleanupResourceCacheJob !== false) ensureCleanupResourceCacheJob()
   const processedTagJob = await (processors.processTagJob ?? processTagJob)()
   const processedEmbySyncJob = await (processors.processEmbySyncJob ?? processEmbySyncJob)()
-  return processedTagJob || processedEmbySyncJob
+  const processedCleanupResourceCacheJob = await (
+    processors.processCleanupResourceCacheJob ?? processCleanupResourceCacheJob
+  )()
+  return processedTagJob || processedEmbySyncJob || processedCleanupResourceCacheJob
 }
 
 async function main(): Promise<void> {

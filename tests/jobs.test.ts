@@ -132,6 +132,7 @@ test('emby sync job waits for cached media before failing', async () => {
 test('worker tick gives emby sync a turn when tag processing did work', async () => {
   const calls: string[] = []
   const didWork = await processWorkerTick({
+    scheduleCleanupResourceCacheJob: false,
     async processTagJob() {
       calls.push('tag')
       return true
@@ -140,10 +141,14 @@ test('worker tick gives emby sync a turn when tag processing did work', async ()
       calls.push('emby')
       return true
     },
+    async processCleanupResourceCacheJob() {
+      calls.push('cleanup')
+      return false
+    },
   })
 
   assert.equal(didWork, true)
-  assert.deepEqual(calls, ['tag', 'emby'])
+  assert.deepEqual(calls, ['tag', 'emby', 'cleanup'])
 })
 
 test('emby sync job does not complete when scan cannot find item', async () => {

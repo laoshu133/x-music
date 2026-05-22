@@ -144,6 +144,53 @@ export async function deleteCachedResourceKeys(keys: string[]): Promise<void> {
   }
 }
 
+export interface CleanupResourceCacheOptions {
+  source?: string
+  now?: Date
+  metadataTtlDays?: number
+  imageTtlDays?: number
+  lyricsTtlDays?: number
+  lxScriptTtlDays?: number
+  lxScriptKeepLatest?: number
+}
+
+export interface CleanupResourceCacheResult {
+  deleted: number
+  bytes: number
+  byType: Record<string, { count: number; bytes: number }>
+}
+
+export async function cleanupResourceCache(options: CleanupResourceCacheOptions = {}): Promise<CleanupResourceCacheResult> {
+  const now = options.now ?? new Date()
+  const candidates = [
+    ...expiredResources('metadata', cutoffIso(now, options.metadataTtlDays ?? 30), options.source),
+    ...expiredResources('image', cutoffIso(now, options.imageTtlDays ?? 7), options.source),
+    ...expiredResources('lyrics', cutoffIso(now, options.lyricsTtlDays ?? 7), options.source),
+    ...expiredResources('lx-script', cutoffIso(now, options.lxScriptTtlDays ?? 30), options.source),
+    ...extraLxScriptResources(options.lxScriptKeepLatest ?? 3, options.source),
+  ]
+  const byKey = new Map<string, CachedResourceRecord>()
+  for (const record of candidates) byKey.set(record.cacheKey, record)
+
+  const result: CleanupResourceCacheResult = {
+    deleted: 0,
+    bytes: 0,
+    byType: {},
+  }
+  for (const record of byKey.values()) {
+    await rm(record.filePath, { force: true }).catch(() => undefined)
+    db.prepare('DELETE FROM resource_cache WHERE cache_key = ?').run(record.cacheKey)
+    const bytes = record.sizeBytes ?? 0
+    result.deleted += 1
+    result.bytes += bytes
+    result.byType[record.resourceType] ??= { count: 0, bytes: 0 }
+    result.byType[record.resourceType]!.count += 1
+    result.byType[record.resourceType]!.bytes += bytes
+  }
+
+  return result
+}
+
 export function cacheKeyFor(source: string, resourceType: CachedResourceType, url: string): string {
   return crypto.createHash('sha256').update(`${source}:${resourceType}:${url}`).digest('hex')
 }
@@ -285,6 +332,35 @@ function findCachedResource(cacheKey: string): CachedResourceRecord | undefined 
 
 function touchCachedResource(cacheKey: string): void {
   db.prepare('UPDATE resource_cache SET last_accessed_at = CURRENT_TIMESTAMP WHERE cache_key = ?').run(cacheKey)
+}
+
+function expiredResources(resourceType: string, cutoff: string, source?: string): CachedResourceRecord[] {
+  const sourceClause = source ? 'AND source = @source' : ''
+  const rows = db.prepare(`
+    SELECT *
+    FROM resource_cache
+    WHERE resource_type = @resourceType
+      ${sourceClause}
+      AND COALESCE(last_accessed_at, updated_at, created_at) < @cutoff
+  `).all({ resourceType, cutoff, source }) as ResourceCacheRow[]
+  return rows.map(mapResource)
+}
+
+function extraLxScriptResources(keepLatest: number, source?: string): CachedResourceRecord[] {
+  const sourceClause = source ? 'AND source = @source' : ''
+  const rows = db.prepare(`
+    SELECT *
+    FROM resource_cache
+    WHERE resource_type = 'lx-script'
+      ${sourceClause}
+    ORDER BY COALESCE(last_accessed_at, updated_at, created_at) DESC, id DESC
+    LIMIT -1 OFFSET @keepLatest
+  `).all({ keepLatest: Math.max(0, Math.trunc(keepLatest)), source }) as ResourceCacheRow[]
+  return rows.map(mapResource)
+}
+
+function cutoffIso(now: Date, ttlDays: number): string {
+  return new Date(now.getTime() - Math.max(0, ttlDays) * 24 * 60 * 60 * 1000).toISOString()
 }
 
 function extensionFromContentType(contentType: string | undefined, fallbackUrl: string): string {
