@@ -2948,6 +2948,14 @@ test('local emby virtual playback reports are consumed locally', async () => {
     }
 
     assert.deepEqual(upstreamRequests, [])
+    const syncJob = db.prepare(`
+      SELECT id
+      FROM jobs
+      WHERE type = 'sync_emby_track'
+        AND json_extract(payload_json, '$.songmid') = ?
+      LIMIT 1
+    `).get('qq-report-song-1')
+    assert.equal(syncJob, undefined)
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999010')
     clearQQLoginCookie()

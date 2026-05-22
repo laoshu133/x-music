@@ -678,16 +678,19 @@ async function handlePlaybackReportRequest(request: Request, embyPath: string): 
 
   const stored = loadVirtualSong(decoded.songmid)
   if (stored && /\/Stopped$/i.test(embyPath)) {
-    const quality = playableQualityForSong(stored.song) ?? '320k'
+    const playableQuality = playableQualityForSong(stored.song)
+    const quality = playableQuality ?? '320k'
     const track = ensureTrack(stored.song)
     insertPlayEvent(track.id, quality)
-    enqueueEmbyTrackSync({
-      source: stored.song.source,
-      songmid: stored.song.songmid,
-      playlistId: decoded.playlistId ?? stored.playlistId,
-      musicInfo: stored.song,
-      ...embySyncStateForRequest(request, stored.song),
-    })
+    if (playableQuality) {
+      enqueueEmbyTrackSync({
+        source: stored.song.source,
+        songmid: stored.song.songmid,
+        playlistId: decoded.playlistId ?? stored.playlistId,
+        musicInfo: stored.song,
+        ...embySyncStateForRequest(request, stored.song),
+      })
+    }
   }
 
   return new Response(null, { status: 204 })

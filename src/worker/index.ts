@@ -7,6 +7,7 @@ import {
   completeJob,
   ensureJobsTable,
   failJob,
+  recoverStaleRunningJobs,
   requeueJob,
 } from '@/lib/jobs'
 import { processOneEmbySyncJob } from '@/lib/emby/sync-worker'
@@ -18,6 +19,7 @@ import { fileURLToPath } from 'node:url'
 const pollIntervalMs = Number(process.env.WORKER_POLL_INTERVAL_MS ?? 5000)
 const maxAttempts = Number(process.env.WORKER_MAX_ATTEMPTS ?? 3)
 const cleanupIntervalMs = Number(process.env.WORKER_CLEANUP_INTERVAL_MS ?? 24 * 60 * 60 * 1000)
+const staleRunningJobSeconds = Number(process.env.WORKER_STALE_RUNNING_JOB_SECONDS ?? 15 * 60)
 
 const taggingProvider = createTaggingProvider()
 
@@ -173,10 +175,15 @@ export async function processWorkerTick(processors: WorkerTickProcessors = {}): 
 
 async function main(): Promise<void> {
   ensureJobsTable()
+  const recovered = recoverStaleRunningJobs({
+    olderThanSeconds: staleRunningJobSeconds,
+    maxAttempts,
+  })
 
   console.log('XMusic worker started')
   console.log(`data dir: ${appConfig.dataDir}`)
   console.log(`poll interval: ${pollIntervalMs}ms`)
+  if (recovered) console.log(`recovered ${recovered} stale running jobs`)
 
   while (!stopping) {
     const didWork = await processWorkerTick()
