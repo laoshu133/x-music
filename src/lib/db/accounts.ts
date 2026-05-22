@@ -69,6 +69,13 @@ export interface AccountTrackItem extends MusicInfo {
   syncState?: string
 }
 
+export interface AccountTrackPage {
+  page: number
+  limit: number
+  total: number
+  items: AccountTrackItem[]
+}
+
 export interface AccountDetail {
   account: AccountListItem & {
     encryptedUin?: string
@@ -81,10 +88,15 @@ export interface AccountDetail {
     source: 'qq' | 'local'
     total: number
     items: AccountTrackItem[]
+    page?: number
+    limit?: number
     error?: string
   }
-  recentPlays: AccountTrackItem[]
+  recentPlays: AccountTrackItem[] | AccountTrackPage
 }
+
+export type AccountProfile = Pick<AccountDetail, 'account' | 'qq'>
+export type AccountFavorites = AccountDetail['favorites']
 
 export function upsertAccountFromQQCookie(cookieText: string, options: { loginIp?: string } = {}): AccountUpsertResult {
   const state = buildQQLoginState(cookieText, 'stored')
@@ -172,41 +184,44 @@ export function listAccounts(): AccountRecord[] {
 
 export function listAccountSummaries(): AccountListItem[] {
   const stats = accountStatsByQQ()
-  return listAccounts().map(account => ({
-    qqUin: account.qqUin,
-    embyUsername: account.embyUsername,
-    embyUserId: account.embyUserId,
-    isAdmin: isAdminQQ(account.qqUin),
-    playCount: stats.get(account.qqUin)?.playCount ?? 0,
-    favoriteCount: stats.get(account.qqUin)?.favoriteCount ?? 0,
-    createdAt: account.createdAt,
-    updatedAt: account.updatedAt,
-    lastLoginAt: account.lastLoginAt,
-    lastLoginIp: account.lastLoginIp,
-    lastActiveAt: account.lastActiveAt,
-  }))
+  return listAccounts().map(account => {
+    const accountStats = stats.get(account.qqUin)
+    return {
+      qqUin: account.qqUin,
+      embyUsername: account.embyUsername,
+      embyUserId: account.embyUserId,
+      isAdmin: isAdminQQ(account.qqUin),
+      playCount: accountStats?.playCount ?? 0,
+      favoriteCount: accountStats?.favoriteCount ?? 0,
+      createdAt: account.createdAt,
+      updatedAt: account.updatedAt,
+      lastLoginAt: account.lastLoginAt,
+      lastLoginIp: account.lastLoginIp,
+      lastActiveAt: account.lastActiveAt,
+    }
+  })
 }
 
 export async function getAccountDetail(qqUin: string): Promise<AccountDetail | undefined> {
+  const profile = getAccountProfile(qqUin)
+  if (!profile) return undefined
+  const favorites = await getAccountFavorites(qqUin, 1, 50)
+  const recentPlays = getAccountRecentPlays(qqUin, 1, 50)
+  if (!favorites || !recentPlays) return undefined
+
+  return {
+    ...profile,
+    favorites,
+    recentPlays,
+  }
+}
+
+export function getAccountProfile(qqUin: string): AccountProfile | undefined {
   const account = getAccountByQQ(qqUin)
   if (!account) return undefined
 
   const summary = listAccountSummaries().find(item => item.qqUin === qqUin)
   if (!summary) return undefined
-
-  const localFavorites = listAccountLocalFavorites(qqUin, 50)
-  const favorites = await getQQFavoriteSongs({ cookie: account.qqCookie, limit: 50 })
-    .then(result => ({
-      source: 'qq' as const,
-      total: Math.max(result.total, localFavorites.length),
-      items: mergeAccountTrackItems(result.list.map(song => ({ ...song })), localFavorites),
-    }))
-    .catch((error: unknown) => ({
-      source: 'local' as const,
-      total: localFavorites.length,
-      items: localFavorites,
-      error: error instanceof Error ? error.message : String(error),
-    }))
 
   return {
     account: {
@@ -217,8 +232,43 @@ export async function getAccountDetail(qqUin: string): Promise<AccountDetail | u
       hasEmbyAccessToken: Boolean(account.embyAccessToken),
     },
     qq: summarizeQQLoginState(accountToQQLoginState(account)),
-    favorites,
-    recentPlays: listAccountRecentPlays(qqUin, 50),
+  }
+}
+
+export async function getAccountFavorites(qqUin: string, page = 1, limit = 50): Promise<AccountFavorites | undefined> {
+  const account = getAccountByQQ(qqUin)
+  if (!account) return undefined
+
+  const normalizedPage = normalizePage(page)
+  const normalizedLimit = normalizeLimit(limit)
+  const localFavorites = listAccountLocalFavorites(qqUin, normalizedPage, normalizedLimit)
+  return getQQFavoriteSongs({ cookie: account.qqCookie, page: normalizedPage, limit: normalizedLimit })
+    .then(result => ({
+      source: 'qq' as const,
+      total: Math.max(result.total, localFavorites.length),
+      page: normalizedPage,
+      limit: normalizedLimit,
+      items: mergeAccountTrackItems(result.list.map(song => ({ ...song })), localFavorites),
+    }))
+    .catch((error: unknown) => ({
+      source: 'local' as const,
+      total: localFavorites.length,
+      page: normalizedPage,
+      limit: normalizedLimit,
+      items: localFavorites,
+      error: error instanceof Error ? error.message : String(error),
+    }))
+}
+
+export function getAccountRecentPlays(qqUin: string, page = 1, limit = 50): AccountTrackPage | undefined {
+  if (!getAccountByQQ(qqUin)) return undefined
+  const normalizedPage = normalizePage(page)
+  const normalizedLimit = normalizeLimit(limit)
+  return {
+    page: normalizedPage,
+    limit: normalizedLimit,
+    total: countAccountRecentPlays(qqUin),
+    items: listAccountRecentPlays(qqUin, normalizedPage, normalizedLimit),
   }
 }
 
@@ -366,8 +416,9 @@ function accountStatsByQQ(): Map<string, { playCount: number; favoriteCount: num
   }]))
 }
 
-function listAccountLocalFavorites(qqUin: string, limit: number): AccountTrackItem[] {
+function listAccountLocalFavorites(qqUin: string, page: number, limit: number): AccountTrackItem[] {
   const fallbackToGlobal = shouldUseGlobalHistoryFallback(qqUin)
+  const offset = (page - 1) * limit
   const rows = db.prepare(`
     SELECT
       t.source,
@@ -399,8 +450,9 @@ function listAccountLocalFavorites(qqUin: string, limit: number): AccountTrackIt
     ) af
     INNER JOIN tracks t ON t.id = af.track_id
     ORDER BY af.updated_at DESC
-    LIMIT ?
-  `).all({ qqUin, fallbackToGlobal: fallbackToGlobal ? 1 : 0, 1: limit }) as Array<{
+    LIMIT @limit
+    OFFSET @offset
+  `).all({ qqUin, fallbackToGlobal: fallbackToGlobal ? 1 : 0, limit, offset }) as Array<{
     source: MusicInfo['source']
     songmid: string
     name: string
@@ -429,8 +481,9 @@ function listAccountLocalFavorites(qqUin: string, limit: number): AccountTrackIt
   }))
 }
 
-function listAccountRecentPlays(qqUin: string, limit: number): AccountTrackItem[] {
+function listAccountRecentPlays(qqUin: string, page: number, limit: number): AccountTrackItem[] {
   const fallbackToGlobal = shouldUseGlobalHistoryFallback(qqUin)
+  const offset = (page - 1) * limit
   const rows = db.prepare(`
     SELECT
       t.source,
@@ -449,8 +502,9 @@ function listAccountRecentPlays(qqUin: string, limit: number): AccountTrackItem[
     WHERE pe.qq_uin = @qqUin
       OR (@fallbackToGlobal = 1 AND pe.qq_uin IS NULL)
     ORDER BY pe.played_at DESC, pe.id DESC
-    LIMIT ?
-  `).all({ qqUin, fallbackToGlobal: fallbackToGlobal ? 1 : 0, 1: limit }) as Array<{
+    LIMIT @limit
+    OFFSET @offset
+  `).all({ qqUin, fallbackToGlobal: fallbackToGlobal ? 1 : 0, limit, offset }) as Array<{
     source: MusicInfo['source']
     songmid: string
     name: string
@@ -477,6 +531,25 @@ function listAccountRecentPlays(qqUin: string, limit: number): AccountTrackItem[
     quality: row.quality,
     playedAt: row.played_at,
   }))
+}
+
+function countAccountRecentPlays(qqUin: string): number {
+  const fallbackToGlobal = shouldUseGlobalHistoryFallback(qqUin)
+  const row = db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM play_events pe
+    WHERE pe.qq_uin = @qqUin
+      OR (@fallbackToGlobal = 1 AND pe.qq_uin IS NULL)
+  `).get({ qqUin, fallbackToGlobal: fallbackToGlobal ? 1 : 0 }) as { count: number }
+  return row.count
+}
+
+function normalizePage(value: number): number {
+  return Number.isFinite(value) && value > 0 ? Math.trunc(value) : 1
+}
+
+function normalizeLimit(value: number): number {
+  return Number.isFinite(value) && value > 0 ? Math.min(Math.trunc(value), 100) : 50
 }
 
 function shouldUseGlobalHistoryFallback(qqUin: string): boolean {

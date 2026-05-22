@@ -3,6 +3,7 @@ import { listLocalFavorites, setLocalFavorite, setLocalFavoriteSynced } from '@/
 import { getQQFavoriteSongs, pullRemoteFavorites, QQMusicError, qqMusicErrorResponse, setQQFavoriteSong, syncPendingFavorites } from '@/lib/qq'
 import type { MusicInfo } from '@/lib/types'
 import { getCurrentAccount } from '@/lib/session'
+import { syncMappedEmbyFavoriteBestEffort } from '@/lib/emby/favorites'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -107,6 +108,9 @@ export async function POST(request: Request) {
     let remoteSynced = false
     let remoteError: string | undefined
     let remotePayload: unknown
+    let embySynced = false
+    let embySyncAttempted = false
+    let embyError: string | undefined
     try {
       await setQQFavoriteSong({
         cookie,
@@ -122,6 +126,10 @@ export async function POST(request: Request) {
       remoteError = error instanceof Error ? error.message : String(error)
       remotePayload = error instanceof QQMusicError ? error.payload : undefined
     }
+    const embySync = await syncMappedEmbyFavoriteBestEffort(account, musicInfo, body.favorite)
+    embySyncAttempted = embySync.attempted
+    embySynced = embySync.synced
+    embyError = embySync.error
 
     return NextResponse.json({
       source: 'local',
@@ -131,6 +139,9 @@ export async function POST(request: Request) {
       remoteSynced,
       remoteError,
       remotePayload,
+      embySyncAttempted,
+      embySynced,
+      embyError,
     })
   }
 
@@ -175,6 +186,9 @@ export async function DELETE(request: Request) {
     let remoteSynced = false
     let remoteError: string | undefined
     let remotePayload: unknown
+    let embySynced = false
+    let embySyncAttempted = false
+    let embyError: string | undefined
     try {
       await setQQFavoriteSong({
         cookie,
@@ -190,6 +204,10 @@ export async function DELETE(request: Request) {
       remoteError = error instanceof Error ? error.message : String(error)
       remotePayload = error instanceof QQMusicError ? error.payload : undefined
     }
+    const embySync = await syncMappedEmbyFavoriteBestEffort(account, musicInfo, false)
+    embySyncAttempted = embySync.attempted
+    embySynced = embySync.synced
+    embyError = embySync.error
 
     return NextResponse.json({
       source: 'local',
@@ -199,6 +217,9 @@ export async function DELETE(request: Request) {
       remoteSynced,
       remoteError,
       remotePayload,
+      embySyncAttempted,
+      embySynced,
+      embyError,
     })
   }
 

@@ -1,5 +1,5 @@
 import { ensureTrack, getPlayableTrackFile, getTrack, hasActiveTrackFile, insertPlayEvent, listPlayHistory, upsertTrackFileStatus } from '@/lib/cache/store'
-import { getCachedResource, responseFromCachedResource } from '@/lib/cache/resources'
+import { cachedResourceResponse } from '@/lib/cache/resources'
 import { createUpstreamTeeResponse, streamLocalFile } from '@/lib/cache/stream'
 import { MusicUrlConfigError, MusicUrlResolveError, qualityFallbacks, resolveMusicUrlWithFallback } from '@/lib/music-url/resolve'
 import {
@@ -16,7 +16,7 @@ import {
   syncQQPlayHistoryBestEffort,
 } from '@/lib/qq'
 import { getCachedTextResource } from '@/lib/cache/resources'
-import { getFavoriteStatus, setLocalFavorite, setLocalFavoriteSynced } from '@/lib/db/favorites'
+import { getFavoriteStatusForAccount, listLocalFavoritesForAccount, setLocalFavorite, setLocalFavoriteSynced } from '@/lib/db/favorites'
 import type { MusicInfo, MusicQuality, PlayHistoryRecord, QQPlaylistInfo, TrackRecord } from '@/lib/types'
 import { enqueueEmbyTrackSync } from './sync'
 import { markRequestSource } from '@/lib/request-log'
@@ -38,6 +38,7 @@ import { deleteEmbyItems, fetchEmbyJson, searchEmbyAudioByName, searchEmbyPlayli
 import { proxyToUpstreamEmby } from './upstream-proxy'
 import { getAccountByEmbyUsername, getAccountByEmbyUserId, listAccounts, markAccountActive, markAccountLogin, type AccountRecord } from '@/lib/db/accounts'
 import { ensureUpstreamEmbyUserForAccount, getDefaultUpstreamMusicLibraryId } from './auth'
+import { syncMappedEmbyFavoriteBestEffort } from './favorites'
 import crypto from 'node:crypto'
 import { stat } from 'node:fs/promises'
 import path from 'node:path'
@@ -363,7 +364,12 @@ async function handleFavoriteItemMutationRequest(request: Request, itemId: strin
   if (!loaded) {
     if (!favorite) {
       const tracked = getTrack('tx', decoded.songmid)
-      if (tracked) setLocalFavorite(trackRecordToMusicInfo(tracked), false, authorizedLocalAccount(request)?.qqUin)
+      if (tracked) {
+        const account = authorizedLocalAccount(request)
+        const song = trackRecordToMusicInfo(tracked)
+        setLocalFavorite(song, false, account?.qqUin)
+        await syncMappedEmbyFavoriteBestEffort(account, song, false)
+      }
       return favoriteItemMutationResponse(itemId, false)
     }
     return Response.json({ error: 'Virtual song not found' }, { status: 404 })
@@ -385,6 +391,8 @@ async function handleFavoriteItemMutationRequest(request: Request, itemId: strin
       `QQ favorite ${favorite ? 'add' : 'remove'} sync deferred for ${loaded.song.songmid}: ${error instanceof Error ? error.message : String(error)}`,
     )
   }
+
+  await syncMappedEmbyFavoriteBestEffort(account, loaded.song, favorite)
 
   return favoriteItemMutationResponse(itemId, favorite)
 }
@@ -562,7 +570,7 @@ async function handleImageRequest(request: Request, embyPath: string): Promise<R
   const imageUrl = virtualImageUrl(decoded)
   if (!imageUrl) return emptyImageResponse()
 
-  const cached = await getCachedResource({
+  const cached = await cachedResourceResponse({
     source: 'tx',
     resourceType: 'image',
     url: imageUrl,
@@ -574,7 +582,10 @@ async function handleImageRequest(request: Request, embyPath: string): Promise<R
   }).catch(() => undefined)
   if (!cached) return emptyImageResponse()
 
-  return markRequestSource(responseFromCachedResource(cached), 'local')
+  cached.completion?.catch((error: unknown) => {
+    console.warn(`QQ image cache failed for ${imageUrl}: ${error instanceof Error ? error.message : String(error)}`)
+  })
+  return markRequestSource(cached.response, 'local')
 }
 
 async function handleItemsRequest(request: Request, embyPath: string): Promise<Response | undefined> {
@@ -642,7 +653,9 @@ async function handleItemsRequest(request: Request, embyPath: string): Promise<R
       listQQFavoriteSongs(request, desiredCount),
     ])
     const upstreamItems = filterItemsByTypes(upstream?.Items ?? [], requestedTypes)
-    const virtualItems = favorites.items
+    const localFavoriteState = localFavoriteStateForRequest(request)
+    const virtualFavoriteSongs = applyLocalFavoriteState(favorites.items, localFavoriteState)
+    const virtualItems = virtualFavoriteSongs
       .filter(song => !hasEquivalentEmbySong(upstreamItems, song))
       .map((song, index) => {
         rememberVirtualSong(song)
@@ -691,7 +704,8 @@ async function handleVirtualGenreItemsRequest(
 
   const page = requestPageParams(url)
   const songs = await listQQFavoriteSongs(request, Number.POSITIVE_INFINITY)
-  const filtered = songs.items.filter(song => {
+  const favoriteSongs = applyLocalFavoriteState(songs.items, localFavoriteStateForRequest(request))
+  const filtered = favoriteSongs.filter(song => {
     const genres = songGenres(song)
     const normalized = genres.length > 0 ? genres : ['QQ Music']
     return normalized.some(genre => genreIds.includes(genre))
@@ -733,7 +747,8 @@ async function handleVirtualArtistItemsRequest(
   }
 
   const favorites = await listQQFavoriteSongs(request, Number.POSITIVE_INFINITY)
-  const filtered = favorites.items.filter(song => {
+  const favoriteSongs = applyLocalFavoriteState(favorites.items, localFavoriteStateForRequest(request))
+  const filtered = favoriteSongs.filter(song => {
     const songArtists = splitArtists(song.singer).map(normalizeText)
     return songArtists.some(artist => normalizedArtists.has(artist))
   })
@@ -759,7 +774,8 @@ async function handleCollectionRequest(request: Request, embyPath: string): Prom
 
   const page = requestPageParams(url)
   const favorites = await listQQFavoriteSongs(request, Number.POSITIVE_INFINITY)
-  const qqGenres = favoriteSongsToGenreItems(favorites.items)
+  const favoriteSongs = applyLocalFavoriteState(favorites.items, localFavoriteStateForRequest(request))
+  const qqGenres = favoriteSongsToGenreItems(favoriteSongs)
   const upstreamItems = upstream?.Items ?? []
   const merged = [
     ...upstreamItems,
@@ -786,7 +802,6 @@ async function handlePlaybackReportRequest(request: Request, embyPath: string): 
         songmid: stored.song.songmid,
         playlistId: decoded.playlistId ?? stored.playlistId,
         musicInfo: stored.song,
-        ...embySyncStateForRequest(request, stored.song),
       })
     }
   }
@@ -1070,7 +1085,6 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
       songmid: musicInfo.songmid,
       playlistId: decoded.playlistId ?? stored.playlistId,
       musicInfo,
-      ...embySyncStateForRequest(request, musicInfo),
     })
     return markRequestSource(await streamLocalFile(localPath, request), 'local')
   }
@@ -1085,7 +1099,6 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
       songmid: musicInfo.songmid,
       playlistId: decoded.playlistId ?? stored.playlistId,
       musicInfo,
-      ...embySyncStateForRequest(request, musicInfo),
     })
     return markRequestSource(await streamLocalFile(waitedPath, request), 'local')
   }
@@ -1106,7 +1119,6 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
       songmid: musicInfo.songmid,
       playlistId: decoded.playlistId ?? stored.playlistId,
       musicInfo,
-      ...embySyncStateForRequest(request, musicInfo),
     })
     const { response, completion } = await createUpstreamTeeResponse(resolved.url, track, resolved.quality, request)
     completion.catch((error: unknown) => {
@@ -1175,17 +1187,6 @@ function qqCookieForRequest(request: Request): string | undefined {
   return authorizedLocalAccount(request)?.qqCookie
     ?? request.headers.get('x-qq-music-cookie')
     ?? undefined
-}
-
-function embySyncStateForRequest(request: Request, musicInfo: MusicInfo): { favorite?: boolean; embyUserId?: string } {
-  const account = authorizedLocalAccount(request)
-  if (!account?.embyUserId) return {}
-  const favorite = getFavoriteStatus(musicInfo.source, musicInfo.songmid).favorite
-  if (favorite) setLocalFavoriteSynced(musicInfo, true, account.qqUin)
-  return {
-    favorite,
-    embyUserId: account.embyUserId,
-  }
 }
 
 async function virtualAudioHeadHeaders(musicInfo: MusicInfo): Promise<Headers> {
@@ -1348,6 +1349,29 @@ async function listQQFavoriteSongs(request: Request, limit: number): Promise<Win
 
   const deduped = dedupeSongs(songs)
   return { items: sliceToFetchLimit(deduped, limit), total: total || deduped.length, totalReliable: true, rawCount: songs.length, complete }
+}
+
+function localFavoriteStateForRequest(request: Request): Map<string, ReturnType<typeof getFavoriteStatusForAccount> & { song?: MusicInfo }> {
+  const account = authorizedLocalAccount(request)
+  const local = listLocalFavoritesForAccount(account?.qqUin)
+  return new Map(local.map(record => [`${record.source}:${record.songmid}`, {
+    ...getFavoriteStatusForAccount(record.source, record.songmid, account?.qqUin),
+    song: record,
+  }]))
+}
+
+function applyLocalFavoriteState(remoteSongs: MusicInfo[], localState: Map<string, ReturnType<typeof getFavoriteStatusForAccount> & { song?: MusicInfo }>): MusicInfo[] {
+  if (localState.size === 0) return remoteSongs
+
+  const merged = new Map(remoteSongs.map(song => [`${song.source}:${song.songmid}`, song]))
+  for (const [key, state] of localState) {
+    if (state.desiredState === 'unfavorite') {
+      merged.delete(key)
+    } else if (state.desiredState === 'favorite' && state.song) {
+      merged.set(key, state.song)
+    }
+  }
+  return Array.from(merged.values())
 }
 
 async function searchQQMusicWindow(query: string, limit: number): Promise<WindowResult<MusicInfo>> {

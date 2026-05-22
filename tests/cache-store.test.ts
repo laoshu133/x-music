@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import test from 'node:test'
 import { ensureTrack, getPlayableTrackFile, getReadyTrackFile, insertPlayEvent, listPlayHistory, upsertTrackFileStatus } from '@/lib/cache/store'
-import { cleanupResourceCache } from '@/lib/cache/resources'
+import { cachedResourceResponse, cleanupResourceCache } from '@/lib/cache/resources'
 import { appConfig } from '@/lib/config'
 import { db } from '@/lib/db'
 import type { MusicInfo } from '@/lib/types'
@@ -168,5 +168,71 @@ test('resource cache cleanup removes expired resources and keeps recent lx scrip
       if (row) fs.rmSync(row.file_path, { force: true })
       db.prepare('DELETE FROM resource_cache WHERE cache_key = ?').run(key)
     }
+  }
+})
+
+test('resource response streams first miss while caching for later hits', async () => {
+  const originalFetch = globalThis.fetch
+  const url = `https://cache-stream.example/image-${Date.now()}.jpg`
+  let secondChunk: (() => void) | undefined
+  let fetches = 0
+
+  try {
+    db.prepare('DELETE FROM resource_cache WHERE url = ?').run(url)
+
+    globalThis.fetch = (async () => {
+      fetches += 1
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('first-'))
+          secondChunk = () => {
+            controller.enqueue(new TextEncoder().encode('second'))
+            controller.close()
+          }
+        },
+      }), {
+        headers: {
+          'content-type': 'image/jpeg',
+          'content-length': '12',
+        },
+      })
+    }) as typeof fetch
+
+    const streamed = await cachedResourceResponse({
+      source: 'test',
+      resourceType: 'image',
+      url,
+      timeoutMs: 10_000,
+    })
+    assert.ok(streamed)
+    assert.equal(streamed.response.headers.get('x-x-music-cache'), 'miss')
+
+    const reader = streamed.response.body?.getReader()
+    assert.ok(reader)
+    const first = await reader.read()
+    assert.equal(new TextDecoder().decode(first.value), 'first-')
+    assert.equal(Boolean(db.prepare('SELECT 1 FROM resource_cache WHERE url = ?').get(url)), false)
+
+    secondChunk?.()
+    const second = await reader.read()
+    assert.equal(new TextDecoder().decode(second.value), 'second')
+    assert.equal((await reader.read()).done, true)
+    await streamed.completion
+
+    const cached = await cachedResourceResponse({
+      source: 'test',
+      resourceType: 'image',
+      url,
+      timeoutMs: 10_000,
+    })
+    assert.ok(cached)
+    assert.equal(cached.response.headers.get('x-x-music-cache'), 'hit')
+    assert.equal(await cached.response.text(), 'first-second')
+    assert.equal(fetches, 1)
+  } finally {
+    const row = db.prepare('SELECT file_path FROM resource_cache WHERE url = ?').get(url) as { file_path: string } | undefined
+    if (row) fs.rmSync(row.file_path, { force: true })
+    db.prepare('DELETE FROM resource_cache WHERE url = ?').run(url)
+    globalThis.fetch = originalFetch
   }
 })

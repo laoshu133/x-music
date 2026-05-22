@@ -200,7 +200,7 @@ const teeUpstreamToClientAndCache = ({
             const buffer = Buffer.from(value)
             writtenBytes += buffer.length
             hash.update(buffer)
-            writeStream.write(buffer)
+            if (!writeStream.write(buffer)) await waitForWritableDrain(writeStream)
           }
 
           if (!clientCancelled) {
@@ -288,6 +288,13 @@ const waitForWritable = async (stream: fs.WriteStream): Promise<void> => {
   if (stream.closed) return
   await new Promise<void>((resolve, reject) => {
     stream.once('finish', resolve)
+    stream.once('error', reject)
+  })
+}
+
+const waitForWritableDrain = async (stream: fs.WriteStream): Promise<void> => {
+  await new Promise<void>((resolve, reject) => {
+    stream.once('drain', resolve)
     stream.once('error', reject)
   })
 }

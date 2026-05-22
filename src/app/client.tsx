@@ -154,10 +154,18 @@ interface UserDetail {
     source: 'qq' | 'local'
     total: number
     items: UserTrackItem[]
+    page?: number
+    limit?: number
     error?: string
   }
   recentPlays: UserTrackItem[]
 }
+
+type UserProfile = Pick<UserDetail, 'account' | 'qq'>
+type UserFavorites = UserDetail['favorites']
+type UserPlays = { page: number; limit: number; total: number; items: UserTrackItem[] }
+type UserDetailTab = 'profile' | 'favorites' | 'plays'
+const userDetailPageSize = 50
 
 interface JobItem {
   id: number
@@ -964,15 +972,19 @@ function JobsPanel({ jobs }: { jobs: JobsResult }) {
 
 function UsersPanel({ users }: { users: UsersResult }) {
   const [selectedUser, setSelectedUser] = useState<UserItem | null>(null)
-  const [detail, setDetail] = useState<ApiState<UserDetail>>(emptyState)
+  const [profile, setProfile] = useState<ApiState<UserProfile>>(emptyState)
+  const [favorites, setFavorites] = useState<ApiState<UserFavorites>>(emptyState)
+  const [plays, setPlays] = useState<ApiState<UserPlays>>(emptyState)
 
   const openUser = async (user: UserItem) => {
     setSelectedUser(user)
-    setDetail({ loading: true, error: '', data: null })
+    setProfile({ loading: true, error: '', data: null })
+    setFavorites(emptyState)
+    setPlays(emptyState)
     try {
-      setDetail({ loading: false, error: '', data: await fetchJson<UserDetail>(`/api/admin/users?qqUin=${encodeURIComponent(user.qqUin)}`) })
+      setProfile({ loading: false, error: '', data: await fetchJson<UserProfile>(`/api/admin/users?qqUin=${encodeURIComponent(user.qqUin)}&section=profile`) })
     } catch (error) {
-      setDetail({ loading: false, error: error instanceof Error ? error.message : String(error), data: null })
+      setProfile({ loading: false, error: error instanceof Error ? error.message : String(error), data: null })
     }
   }
 
@@ -980,73 +992,195 @@ function UsersPanel({ users }: { users: UsersResult }) {
     <div className="users-layout">
       <section className="users-table">
         <div className="user-row header">
-          <span>ID</span>
-          <span>QQ</span>
+          <span>用户</span>
           <span>权限</span>
-          <span>播放歌曲数</span>
-          <span>收藏歌曲数</span>
+          <span>播放</span>
+          <span>收藏</span>
           <span>最近登录</span>
           <span>最近登录 IP</span>
           <span>最近使用</span>
         </div>
         {users.items.map(user => (
           <button className={`user-row ${selectedUser?.qqUin === user.qqUin ? 'active' : ''}`} key={user.qqUin} onClick={() => void openUser(user)}>
-            <span>{user.embyUserId ?? '-'}</span>
-            <span>{user.qqUin}</span>
-            <span>{user.isAdmin ? '管理员' : '用户'}</span>
-            <span>{user.playCount}</span>
-            <span>{user.favoriteCount}</span>
-            <span>{formatOptionalDateTime(user.lastLoginAt)}</span>
-            <span>{user.lastLoginIp ?? '-'}</span>
-            <span>{formatOptionalDateTime(user.lastActiveAt)}</span>
+            <span className="user-cell-main"><strong>{user.qqUin}</strong><small>{user.embyUserId ?? '无 Emby ID'}</small></span>
+            <span><StatusBadge status={user.isAdmin ? 'admin' : 'user'} /></span>
+            <span className="numeric-cell">{user.playCount}</span>
+            <span className="numeric-cell">{user.favoriteCount}</span>
+            <span className="date-cell">{formatOptionalDateTime(user.lastLoginAt)}</span>
+            <span className="ip-cell">{user.lastLoginIp ?? '-'}</span>
+            <span className="date-cell">{formatOptionalDateTime(user.lastActiveAt)}</span>
           </button>
         ))}
         {!users.items.length ? <p>暂无用户</p> : null}
       </section>
-      {selectedUser ? <UserDetailDialog user={selectedUser} detail={detail} onClose={() => setSelectedUser(null)} /> : null}
+      {selectedUser ? (
+        <UserDetailDialog
+          user={selectedUser}
+          profile={profile}
+          favorites={favorites}
+          plays={plays}
+          setFavorites={setFavorites}
+          setPlays={setPlays}
+          onClose={() => setSelectedUser(null)}
+        />
+      ) : null}
     </div>
   )
 }
 
-function UserDetailDialog({ user, detail, onClose }: { user: UserItem; detail: ApiState<UserDetail>; onClose: () => void }) {
-  const account = detail.data?.account ?? user
+function UserDetailDialog({
+  user,
+  profile,
+  favorites,
+  plays,
+  setFavorites,
+  setPlays,
+  onClose,
+}: {
+  user: UserItem
+  profile: ApiState<UserProfile>
+  favorites: ApiState<UserFavorites>
+  plays: ApiState<UserPlays>
+  setFavorites: (state: ApiState<UserFavorites>) => void
+  setPlays: (state: ApiState<UserPlays>) => void
+  onClose: () => void
+}) {
+  const [tab, setTab] = useState<UserDetailTab>('profile')
+  const [favoritesPage, setFavoritesPage] = useState(1)
+  const [playsPage, setPlaysPage] = useState(1)
+  const account = profile.data?.account ?? user
+  const favoriteBadge = favorites.data?.total ?? account.favoriteCount
+  const playBadge = plays.data?.total ?? account.playCount
+  const loadFavorites = async (page = favoritesPage, force = false) => {
+    if (!force && favorites.data && favorites.data.page === page) return
+    if (favorites.loading) return
+    setFavorites({ loading: true, error: '', data: null })
+    try {
+      setFavorites({
+        loading: false,
+        error: '',
+        data: await fetchJson<UserFavorites>(`/api/admin/users?qqUin=${encodeURIComponent(user.qqUin)}&section=favorites&page=${page}&limit=${userDetailPageSize}`),
+      })
+      setFavoritesPage(page)
+    } catch (error) {
+      setFavorites({ loading: false, error: error instanceof Error ? error.message : String(error), data: null })
+    }
+  }
+  const loadPlays = async (page = playsPage, force = false) => {
+    if (!force && plays.data && plays.data.page === page) return
+    if (plays.loading) return
+    setPlays({ loading: true, error: '', data: null })
+    try {
+      setPlays({
+        loading: false,
+        error: '',
+        data: await fetchJson<UserPlays>(`/api/admin/users?qqUin=${encodeURIComponent(user.qqUin)}&section=plays&page=${page}&limit=${userDetailPageSize}`),
+      })
+      setPlaysPage(page)
+    } catch (error) {
+      setPlays({ loading: false, error: error instanceof Error ? error.message : String(error), data: null })
+    }
+  }
+  const switchTab = (next: UserDetailTab) => {
+    setTab(next)
+    if (next === 'favorites') void loadFavorites()
+    if (next === 'plays') void loadPlays()
+  }
+
   return (
     <div className="dialog-backdrop" role="presentation" onClick={onClose}>
       <section className="user-detail dialog-panel" role="dialog" aria-modal="true" aria-labelledby="user-detail-title" onClick={event => event.stopPropagation()}>
-        <div className="section-head">
-          <h3 id="user-detail-title">用户 {account.qqUin}</h3>
+        <div className="user-detail-head">
+          <div>
+            <h3 id="user-detail-title">用户 {account.qqUin}</h3>
+            <p>{account.embyUserId ?? '未绑定 Emby ID'}</p>
+          </div>
           <button className="secondary-button compact-button" onClick={onClose}>关闭</button>
         </div>
-        <Status state={detail} />
-        <dl className="connection-list">
-          <div><dt>QQ</dt><dd><span>{account.qqUin}</span></dd></div>
-          <div><dt>Emby ID</dt><dd><span>{account.embyUserId ?? '-'}</span></dd></div>
-          <div><dt>播放器帐号</dt><dd><span>{account.embyUsername}</span></dd></div>
-          <div><dt>权限</dt><dd><span>{account.isAdmin ? '管理员' : '用户'}</span></dd></div>
-          <div><dt>QQ Key</dt><dd><span>{detail.data?.account.hasQQMusicKey ? '已保存' : '未保存'}</span></dd></div>
-          <div><dt>加密 UIN</dt><dd><span>{detail.data?.account.encryptedUin ?? '-'}</span></dd></div>
-          <div><dt>最近登录</dt><dd><span>{formatOptionalDateTime(account.lastLoginAt)}</span></dd></div>
-          <div><dt>最近登录 IP</dt><dd><span>{account.lastLoginIp ?? '-'}</span></dd></div>
-          <div><dt>最近使用</dt><dd><span>{formatOptionalDateTime(account.lastActiveAt)}</span></dd></div>
-          <div><dt>创建时间</dt><dd><span>{formatDateTime(account.createdAt)}</span></dd></div>
-        </dl>
-        {detail.data ? (
-          <div className="user-detail-grid">
-            <UserTrackList
-              title={`收藏歌曲 (${detail.data.favorites.total})`}
-              subtitle={detail.data.favorites.source === 'qq' ? 'QQ 音乐实时读取' : '本地记录'}
-              tracks={detail.data.favorites.items}
-              timeField="favoriteUpdatedAt"
-            />
-            <UserTrackList
-              title={`最近播放 (${detail.data.recentPlays.length})`}
-              subtitle="本地播放记录"
-              tracks={detail.data.recentPlays}
-              timeField="playedAt"
-            />
-          </div>
-        ) : null}
-        {detail.data?.favorites.error ? <p className="status error">QQ 收藏读取失败，已显示本地记录：{detail.data.favorites.error}</p> : null}
+        <div className="detail-tabs" role="tablist" aria-label="用户详情">
+          <button className={tab === 'profile' ? 'active' : ''} onClick={() => switchTab('profile')}>
+            <span>用户信息</span><small>{account.isAdmin ? '管理员' : '用户'}</small>
+          </button>
+          <button className={tab === 'favorites' ? 'active' : ''} onClick={() => switchTab('favorites')}>
+            <span>收藏歌曲</span><small>{favoriteBadge}</small>
+          </button>
+          <button className={tab === 'plays' ? 'active' : ''} onClick={() => switchTab('plays')}>
+            <span>最近播放</span><small>{playBadge}</small>
+          </button>
+        </div>
+
+        <div className="detail-tab-panel">
+          {tab === 'profile' ? (
+            <div className="detail-tab-content">
+            <Status state={profile} />
+            <dl className="user-info-grid">
+              <div><dt>QQ</dt><dd><span>{account.qqUin}</span></dd></div>
+              <div><dt>Emby ID</dt><dd><span>{account.embyUserId ?? '-'}</span></dd></div>
+              <div><dt>播放器帐号</dt><dd><span>{account.embyUsername}</span></dd></div>
+              <div><dt>权限</dt><dd><span>{account.isAdmin ? '管理员' : '用户'}</span></dd></div>
+              <div><dt>QQ Key</dt><dd><span>{profile.data?.account.hasQQMusicKey ? '已保存' : '未保存'}</span></dd></div>
+              <div><dt>加密 UIN</dt><dd><span>{profile.data?.account.encryptedUin ?? '-'}</span></dd></div>
+              <div><dt>最近登录</dt><dd><span>{formatOptionalDateTime(account.lastLoginAt)}</span></dd></div>
+              <div><dt>最近登录 IP</dt><dd><span>{account.lastLoginIp ?? '-'}</span></dd></div>
+              <div><dt>最近使用</dt><dd><span>{formatOptionalDateTime(account.lastActiveAt)}</span></dd></div>
+              <div><dt>创建时间</dt><dd><span>{formatDateTime(account.createdAt)}</span></dd></div>
+            </dl>
+            </div>
+          ) : null}
+
+          {tab === 'favorites' ? (
+            <div className="detail-tab-content">
+            <Status state={favorites} />
+            {favorites.data ? (
+              <UserTrackList
+                title={`收藏歌曲 (${favorites.data.total})`}
+                subtitle={favorites.data.source === 'qq' ? 'QQ 音乐实时读取' : '本地记录'}
+                tracks={favorites.data.items}
+                timeField="favoriteUpdatedAt"
+                page={favorites.data.page ?? favoritesPage}
+                limit={favorites.data.limit ?? userDetailPageSize}
+              />
+            ) : null}
+            {favorites.data ? (
+              <Pager
+                page={favorites.data.page ?? favoritesPage}
+                limit={favorites.data.limit ?? userDetailPageSize}
+                total={favorites.data.total}
+                loading={favorites.loading}
+                onPage={page => void loadFavorites(page, true)}
+              />
+            ) : null}
+            {favorites.data?.error ? <p className="status error">QQ 收藏读取失败，已显示本地记录：{favorites.data.error}</p> : null}
+            {!favorites.data && !favorites.loading && !favorites.error ? <p className="empty-panel">切换到此页后加载收藏歌曲</p> : null}
+            </div>
+          ) : null}
+
+          {tab === 'plays' ? (
+            <div className="detail-tab-content">
+            <Status state={plays} />
+            {plays.data ? (
+              <UserTrackList
+                title={`最近播放 (${plays.data.items.length})`}
+                subtitle="本地播放记录"
+                tracks={plays.data.items}
+                timeField="playedAt"
+                page={plays.data.page}
+                limit={plays.data.limit}
+              />
+            ) : null}
+            {plays.data ? (
+              <Pager
+                page={plays.data.page}
+                limit={plays.data.limit}
+                total={plays.data.total}
+                loading={plays.loading}
+                onPage={page => void loadPlays(page, true)}
+              />
+            ) : null}
+            {!plays.data && !plays.loading && !plays.error ? <p className="empty-panel">切换到此页后加载最近播放</p> : null}
+            </div>
+          ) : null}
+        </div>
       </section>
     </div>
   )
@@ -1057,6 +1191,8 @@ function UserTrackList({ title, subtitle, tracks, timeField }: {
   subtitle: string
   tracks: UserTrackItem[]
   timeField: 'playedAt' | 'favoriteUpdatedAt'
+  page: number
+  limit: number
 }) {
   return (
     <section className="user-track-list">
@@ -1067,16 +1203,40 @@ function UserTrackList({ title, subtitle, tracks, timeField }: {
         </div>
       </div>
       <div className="mini-table">
-        {tracks.slice(0, 30).map(track => (
-          <div className="mini-row" key={`${track.songmid}-${track[timeField] ?? ''}`}>
+        <div className="mini-row mini-header">
+          <span>歌曲</span>
+          <span>歌手</span>
+          <span>时间</span>
+        </div>
+        {tracks.map((track, index) => (
+          <div className="mini-row" key={`${page}-${(page - 1) * limit + index}-${track.source}-${track.songmid}-${track[timeField] ?? ''}`}>
             <span>{track.name}</span>
             <span>{track.singer}</span>
             <span>{formatOptionalDateTime(track[timeField])}</span>
           </div>
         ))}
-        {!tracks.length ? <p>暂无记录</p> : null}
+        {!tracks.length ? <p className="empty-panel">暂无记录</p> : null}
       </div>
     </section>
+  )
+}
+
+function Pager({ page, limit, total, loading, onPage }: {
+  page: number
+  limit: number
+  total: number
+  loading: boolean
+  onPage: (page: number) => void
+}) {
+  const totalPages = Math.max(1, Math.ceil(total / limit))
+  return (
+    <div className="pager">
+      <span>{page} / {totalPages}</span>
+      <div>
+        <button className="secondary-button compact-button" disabled={loading || page <= 1} onClick={() => onPage(page - 1)}>上一页</button>
+        <button className="secondary-button compact-button" disabled={loading || page >= totalPages} onClick={() => onPage(page + 1)}>下一页</button>
+      </div>
+    </div>
   )
 }
 

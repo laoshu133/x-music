@@ -961,6 +961,12 @@ a {
   overflow-x: auto;
 }
 
+.users-table {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: auto;
+}
+
 .job-row,
 .user-row {
   display: grid;
@@ -983,8 +989,9 @@ a {
 }
 
 .user-row {
-  grid-template-columns: 150px 110px 90px 92px 92px 140px 130px 140px;
-  min-width: 980px;
+  grid-template-columns: minmax(210px, 1.4fr) 100px 76px 76px 132px 132px 132px;
+  min-width: 900px;
+  padding: 12px 14px;
 }
 
 .job-row.header,
@@ -992,6 +999,7 @@ a {
   border-top: 0;
   color: var(--muted);
   font-weight: 600;
+  background: var(--surface-2);
 }
 
 button.job-row,
@@ -1012,6 +1020,29 @@ button.user-row.active {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.user-cell-main {
+  display: grid;
+  gap: 3px;
+}
+
+.user-cell-main strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 14px;
+}
+
+.user-cell-main small,
+.date-cell,
+.ip-cell {
+  color: var(--muted);
+}
+
+.numeric-cell {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
 }
 
 .status-badge {
@@ -1043,6 +1074,18 @@ button.user-row.active {
   background: #f7e5e0;
 }
 
+.status-badge.admin {
+  border-color: rgba(23, 107, 93, 0.45);
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+}
+
+.status-badge.user {
+  border-color: var(--line);
+  color: var(--muted);
+  background: var(--surface);
+}
+
 .icon-button {
   width: 36px;
   height: 36px;
@@ -1061,7 +1104,74 @@ button.user-row.active {
 }
 
 .user-detail {
-  width: min(980px, 100%);
+  width: min(1040px, 100%);
+  padding: 20px;
+}
+
+.user-detail-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+}
+
+.user-detail-head h3 {
+  margin: 0;
+}
+
+.user-detail-head p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.detail-tabs {
+  display: inline-grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  width: min(620px, 100%);
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 4px;
+  background: var(--surface-2);
+}
+
+.detail-tabs button {
+  min-height: 34px;
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.detail-tabs button small {
+  min-width: 24px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 1px 7px;
+  color: var(--muted);
+  background: var(--surface);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+}
+
+.detail-tabs button.active {
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 1px 3px rgba(43, 34, 22, 0.08);
+}
+
+.detail-tabs button.active small {
+  border-color: rgba(23, 107, 93, 0.35);
+  color: var(--accent-strong);
+  background: var(--accent-soft);
 }
 
 .dialog-backdrop {
@@ -1070,15 +1180,71 @@ button.user-row.active {
   z-index: 30;
   display: grid;
   place-items: center;
-  background: rgba(22, 21, 18, 0.28);
+  background: rgba(22, 21, 18, 0.42);
   padding: 20px;
+  backdrop-filter: blur(6px);
 }
 
 .dialog-panel {
   width: min(720px, 100%);
-  max-height: min(760px, calc(100vh - 40px));
+  max-height: min(820px, calc(100vh - 40px));
   overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
   box-shadow: var(--shadow);
+}
+
+.detail-tab-panel {
+  min-height: 430px;
+  max-height: min(560px, calc(100vh - 260px));
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.detail-tab-content {
+  height: 100%;
+  min-height: 430px;
+  overflow: auto;
+  padding: 14px;
+}
+
+.user-info-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.user-info-grid div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: var(--surface-2);
+}
+
+.user-info-grid dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.user-info-grid dd {
+  min-width: 0;
+  margin: 0;
+  font-size: 13px;
+}
+
+.user-info-grid dd span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .job-detail pre {
@@ -1093,15 +1259,12 @@ button.user-row.active {
   line-height: 1.5;
 }
 
-.user-detail-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-  margin-top: 4px;
-}
-
 .user-track-list {
   min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+  background: var(--surface);
 }
 
 .compact-head {
@@ -1123,6 +1286,8 @@ button.user-row.active {
   display: grid;
   gap: 0;
   border-top: 1px solid var(--line);
+  max-height: 390px;
+  overflow: auto;
 }
 
 .mini-row {
@@ -1135,11 +1300,44 @@ button.user-row.active {
   font-size: 12px;
 }
 
+.mini-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  color: var(--muted);
+  font-weight: 600;
+  background: var(--surface);
+}
+
 .mini-row span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.empty-panel {
+  display: grid;
+  min-height: 180px;
+  place-items: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.pager {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.pager div {
+  display: flex;
+  gap: 8px;
 }
 
 @media (max-width: 980px) {
@@ -1196,8 +1394,13 @@ button.user-row.active {
   .benefit-grid,
   .player-support-grid,
   .connection-copy-grid,
-  .user-detail-grid {
+  .user-info-grid,
+  .user-detail-head {
     grid-template-columns: 1fr;
+  }
+
+  .user-detail-actions {
+    justify-content: flex-start;
   }
 }
 

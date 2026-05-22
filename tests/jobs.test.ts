@@ -430,7 +430,7 @@ test('emby sync job waits for library final path before WebDAV upload', async ()
   }
 })
 
-test('emby sync job applies favorite state after upstream item is found', async () => {
+test('emby sync job does not apply favorite state', async () => {
   const originalFetch = globalThis.fetch
   const originalWebdavDsn = process.env.EMBY_SOURCE_WEBDAV_DSN
   const songmid = `SYNC_FAVORITE_${Date.now()}`
@@ -450,8 +450,6 @@ test('emby sync job applies favorite state after upstream item is found', async 
         source: 'tx',
         songmid,
         musicInfo,
-        favorite: true,
-        embyUserId: 'emby-user-favorite',
       },
     })
 
@@ -463,18 +461,12 @@ test('emby sync job applies favorite state after upstream item is found', async 
       if (requestUrl.pathname.endsWith('/Items')) {
         return Response.json({ Items: [{ Id: 'emby-favorite-song', Name: 'Favorite Sync Song', Artists: ['Favorite Artist'] }] })
       }
-      if (requestUrl.pathname.endsWith('/Users/emby-user-favorite/FavoriteItems/emby-favorite-song')) {
-        return new Response(null, { status: 204 })
-      }
       return Response.json({}, { status: 404 })
     }) as typeof fetch
 
     assert.equal(await processOneEmbySyncJob(1), true)
     assert.equal(getJob(created.id)?.status, 'completed')
-    assert.ok(requests.some(request => (
-      request.method === 'POST'
-      && request.pathname.endsWith('/Users/emby-user-favorite/FavoriteItems/emby-favorite-song')
-    )))
+    assert.ok(!requests.some(request => request.pathname.includes('/FavoriteItems/')))
   } finally {
     rmSync(rawPath, { force: true })
     process.env.EMBY_SOURCE_WEBDAV_DSN = originalWebdavDsn

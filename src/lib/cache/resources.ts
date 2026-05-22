@@ -1,6 +1,6 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
-import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, rename, rm, unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { Readable } from 'node:stream'
 import { appConfig } from '@/lib/config'
@@ -36,6 +36,11 @@ interface ResourceCacheRow {
   last_accessed_at: string
 }
 
+interface ResourceResponseResult {
+  response: Response
+  completion?: Promise<CachedResourceRecord | undefined>
+}
+
 const inflight = new Map<string, Promise<CachedResourceRecord | undefined>>()
 
 export function resourceCacheDir(): string {
@@ -65,6 +70,58 @@ export async function getCachedResource(input: {
     .finally(() => inflight.delete(cacheKey))
   inflight.set(cacheKey, pending)
   return pending
+}
+
+export async function cachedResourceResponse(input: {
+  source: string
+  resourceType: CachedResourceType
+  url: string
+  headers?: HeadersInit
+  method?: string
+  body?: BodyInit | null
+  timeoutMs?: number
+}): Promise<ResourceResponseResult | undefined> {
+  const cacheKey = cacheKeyFor(input.source, input.resourceType, requestCacheIdentity(input.url, input.method, input.body))
+  const existing = findCachedResource(cacheKey)
+  if (existing && fs.existsSync(existing.filePath)) {
+    touchCachedResource(cacheKey)
+    return { response: responseFromCachedResource(existing) }
+  }
+
+  const current = inflight.get(cacheKey)
+  if (current) {
+    const record = await current
+    return record ? { response: responseFromCachedResource(record) } : undefined
+  }
+
+  const upstream = await fetch(input.url, {
+    method: input.method,
+    headers: input.headers,
+    body: input.body,
+    cache: 'no-store',
+    signal: AbortSignal.timeout(input.timeoutMs ?? 10_000),
+  }).catch(() => undefined)
+  if (!upstream?.ok || !upstream.body) return undefined
+
+  const contentType = upstream.headers.get('content-type')?.split(';', 1)[0]?.trim() || undefined
+  const contentLength = upstream.headers.get('content-length') ?? undefined
+  const { body, completion } = teeResourceToClientAndCache({
+    upstreamBody: upstream.body,
+    source: input.source,
+    resourceType: input.resourceType,
+    url: input.url,
+    cacheKey,
+    contentType,
+  })
+
+  inflight.set(cacheKey, completion.finally(() => inflight.delete(cacheKey)))
+  return {
+    response: new Response(body, {
+      status: upstream.status,
+      headers: resourceResponseHeaders(contentType, contentLength, 'miss'),
+    }),
+    completion,
+  }
 }
 
 export async function getCachedTextResource(input: {
@@ -207,6 +264,15 @@ export function responseFromCachedResource(record: CachedResourceRecord): Respon
   })
 }
 
+function resourceResponseHeaders(contentType: string | undefined, contentLength: string | undefined, cacheState: 'hit' | 'miss'): HeadersInit {
+  return {
+    ...(contentType ? { 'content-type': contentType } : {}),
+    ...(contentLength ? { 'content-length': contentLength } : {}),
+    'cache-control': 'public, max-age=86400',
+    'x-x-music-cache': cacheState,
+  }
+}
+
 async function fetchAndStoreResource(input: {
   source: string
   resourceType: CachedResourceType
@@ -224,18 +290,131 @@ async function fetchAndStoreResource(input: {
     cache: 'no-store',
     signal: AbortSignal.timeout(input.timeoutMs ?? 10_000),
   }).catch(() => undefined)
-  if (!response?.ok) return undefined
+  if (!response?.ok || !response.body) return undefined
 
   const contentType = response.headers.get('content-type')?.split(';', 1)[0]?.trim() || undefined
-  const bytes = Buffer.from(await response.arrayBuffer())
-  return writeCachedBytes({
+  return streamToCachedResource({
+    body: response.body,
     source: input.source,
     resourceType: input.resourceType,
     url: input.url,
     cacheKey: input.cacheKey,
-    bytes,
     contentType,
   })
+}
+
+function teeResourceToClientAndCache(input: {
+  upstreamBody: ReadableStream<Uint8Array>
+  source: string
+  resourceType: CachedResourceType
+  url: string
+  cacheKey: string
+  contentType?: string
+}): { body: ReadableStream<Uint8Array>; completion: Promise<CachedResourceRecord | undefined> } {
+  const reader = input.upstreamBody.getReader()
+  const writerPromise = createResourceWriter(input)
+  let clientCancelled = false
+  let resolveCompletion: (record: CachedResourceRecord | undefined) => void
+  let rejectCompletion: (error: unknown) => void
+
+  const completion = new Promise<CachedResourceRecord | undefined>((resolve, reject) => {
+    resolveCompletion = resolve
+    rejectCompletion = reject
+  })
+
+  const body = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const writer = await writerPromise
+      try {
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done) break
+          await writer.write(value)
+          if (!clientCancelled) controller.enqueue(value)
+        }
+
+        if (!clientCancelled) controller.close()
+        resolveCompletion(await writer.complete())
+      } catch (error) {
+        await writer.abort()
+        if (!clientCancelled) controller.error(error)
+        rejectCompletion(error)
+      }
+    },
+    cancel() {
+      clientCancelled = true
+      // Continue draining upstream so the shared cache entry can complete for subsequent requests.
+    },
+  })
+
+  return { body, completion }
+}
+
+async function streamToCachedResource(input: {
+  body: ReadableStream<Uint8Array>
+  source: string
+  resourceType: CachedResourceType
+  url: string
+  cacheKey: string
+  contentType?: string
+}): Promise<CachedResourceRecord | undefined> {
+  const reader = input.body.getReader()
+  const writer = await createResourceWriter(input)
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      await writer.write(value)
+    }
+    return writer.complete()
+  } catch (error) {
+    await writer.abort()
+    throw error
+  }
+}
+
+async function createResourceWriter(input: {
+  source: string
+  resourceType: CachedResourceType
+  url: string
+  cacheKey: string
+  contentType?: string
+}): Promise<{
+  write(value: Uint8Array): Promise<void>
+  complete(): Promise<CachedResourceRecord>
+  abort(): Promise<void>
+}> {
+  const dir = path.join(resourceCacheDir(), input.resourceType)
+  await mkdir(dir, { recursive: true })
+  const extension = extensionFromContentType(input.contentType, input.url)
+  const filePath = path.join(dir, `${input.cacheKey}${extension}`)
+  const partPath = path.join(dir, `${input.cacheKey}-${Date.now()}.part`)
+  const writeStream = fs.createWriteStream(partPath)
+  let writtenBytes = 0
+
+  return {
+    async write(value: Uint8Array) {
+      const buffer = Buffer.from(value)
+      writtenBytes += buffer.length
+      if (!writeStream.write(buffer)) await waitForDrain(writeStream)
+    },
+    async complete() {
+      writeStream.end()
+      await waitForFinish(writeStream)
+      await rename(partPath, filePath)
+      upsertCachedResourceRecord({
+        ...input,
+        filePath,
+        sizeBytes: writtenBytes,
+      })
+      return findCachedResource(input.cacheKey)!
+    },
+    async abort() {
+      writeStream.destroy()
+      await unlink(partPath).catch(() => undefined)
+    },
+  }
 }
 
 async function fetchAndStoreTextResource(input: {
@@ -282,6 +461,24 @@ async function writeCachedBytes(input: {
   const filePath = path.join(dir, `${input.cacheKey}${extensionFromContentType(input.contentType, input.url)}`)
   await writeFile(filePath, input.bytes)
 
+  upsertCachedResourceRecord({
+    ...input,
+    filePath,
+    sizeBytes: input.bytes.length,
+  })
+
+  return findCachedResource(input.cacheKey)!
+}
+
+function upsertCachedResourceRecord(input: {
+  source: string
+  resourceType: CachedResourceType
+  url: string
+  cacheKey: string
+  filePath: string
+  contentType?: string
+  sizeBytes: number
+}): void {
   db.prepare(`
     INSERT INTO resource_cache (
       cache_key,
@@ -317,12 +514,10 @@ async function writeCachedBytes(input: {
     source: input.source,
     resourceType: input.resourceType,
     url: input.url,
-    filePath,
+    filePath: input.filePath,
     contentType: input.contentType ?? null,
-    sizeBytes: input.bytes.length,
+    sizeBytes: input.sizeBytes,
   })
-
-  return findCachedResource(input.cacheKey)!
 }
 
 function findCachedResource(cacheKey: string): CachedResourceRecord | undefined {
@@ -394,6 +589,21 @@ function bodyToCacheText(body?: BodyInit | null): string {
   if (body instanceof ArrayBuffer) return Buffer.from(body).toString('base64')
   if (ArrayBuffer.isView(body)) return Buffer.from(body.buffer).toString('base64')
   return String(body)
+}
+
+async function waitForDrain(stream: fs.WriteStream): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    stream.once('drain', resolve)
+    stream.once('error', reject)
+  })
+}
+
+async function waitForFinish(stream: fs.WriteStream): Promise<void> {
+  if (stream.closed) return
+  await new Promise<void>((resolve, reject) => {
+    stream.once('finish', resolve)
+    stream.once('error', reject)
+  })
 }
 
 function mapResource(row: ResourceCacheRow): CachedResourceRecord {

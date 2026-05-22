@@ -10,7 +10,6 @@ import {
   notifyEmbyMediaUpdated,
   refreshEmbyLibrary,
   searchEmbyAudioByName,
-  setEmbyFavorite,
 } from './upstream-api'
 import { getDefaultUpstreamMusicLibraryLocation } from './auth'
 import type { SyncEmbyTrackJobPayload } from './sync'
@@ -106,15 +105,6 @@ export async function processOneEmbySyncJob(options: number | EmbySyncJobOptions
       remoteId: embyItemId,
       raw: job.payload.musicInfo,
     })
-    if (job.payload.embyUserId && job.payload.favorite !== undefined) {
-      await setEmbyFavorite({
-        userId: job.payload.embyUserId,
-        itemId: embyItemId,
-        favorite: job.payload.favorite,
-      }).catch((error: unknown) => {
-        console.warn(`failed to sync Emby favorite state for ${job.payload.musicInfo.name}`, error)
-      })
-    }
     if (job.payload.playlistId) {
       await createOrUpdateEmbyPlaylist({
         name: `QQ ${job.payload.playlistId}`,
