@@ -7,12 +7,47 @@ import {
   notifyEmbyMediaUpdated,
   refreshEmbyLibrary,
   searchEmbyAudioByName,
+  setEmbyFavorite,
 } from './upstream-api'
 import { getDefaultUpstreamMusicLibraryLocation } from './auth'
 import type { SyncEmbyTrackJobPayload } from './sync'
 import { syncMediaFilesToEmbyWebdav } from './webdav'
 
-export async function processOneEmbySyncJob(maxAttempts = 3): Promise<boolean> {
+export interface EmbySyncJobOptions {
+  maxAttempts?: number
+  cacheWaitMs?: number
+  cachePollIntervalMs?: number
+  scanWaitMs?: number
+  scanPollIntervalMs?: number
+}
+
+interface CachedMediaRow {
+  finalPath?: string
+  rawPath?: string
+  lyricsPath?: string
+  coverPath?: string
+  status?: string
+}
+
+const defaultCacheWaitMs = Number(process.env.EMBY_SYNC_CACHE_WAIT_MS ?? 30000)
+const defaultCachePollIntervalMs = Number(process.env.EMBY_SYNC_CACHE_POLL_INTERVAL_MS ?? 2000)
+const defaultScanWaitMs = Number(process.env.EMBY_SYNC_SCAN_WAIT_MS ?? 60000)
+const defaultScanPollIntervalMs = Number(process.env.EMBY_SYNC_SCAN_POLL_INTERVAL_MS ?? 5000)
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+export async function processOneEmbySyncJob(options: number | EmbySyncJobOptions = 3): Promise<boolean> {
+  const maxAttempts = typeof options === 'number' ? options : options.maxAttempts ?? 3
+  const cacheWaitMs = typeof options === 'number' ? defaultCacheWaitMs : options.cacheWaitMs ?? defaultCacheWaitMs
+  const cachePollIntervalMs = typeof options === 'number'
+    ? defaultCachePollIntervalMs
+    : options.cachePollIntervalMs ?? defaultCachePollIntervalMs
+  const scanWaitMs = typeof options === 'number' ? defaultScanWaitMs : options.scanWaitMs ?? defaultScanWaitMs
+  const scanPollIntervalMs = typeof options === 'number'
+    ? defaultScanPollIntervalMs
+    : options.scanPollIntervalMs ?? defaultScanPollIntervalMs
   const job = claimNextJob<SyncEmbyTrackJobPayload>({
     type: 'sync_emby_track',
     maxAttempts,
@@ -21,29 +56,10 @@ export async function processOneEmbySyncJob(maxAttempts = 3): Promise<boolean> {
   if (!job) return false
 
   try {
-    const row = db.prepare(`
-      SELECT
-        tf.final_path AS finalPath,
-        tf.raw_path AS rawPath,
-        tf.lyrics_path AS lyricsPath,
-        tf.cover_path AS coverPath,
-        tf.status
-      FROM track_files tf
-      INNER JOIN tracks t ON t.id = tf.track_id
-      WHERE t.source = ? AND t.songmid = ?
-        AND tf.status IN ('ready', 'tagging', 'cached_raw')
-      ORDER BY
-        CASE tf.status WHEN 'ready' THEN 0 WHEN 'tagging' THEN 1 WHEN 'cached_raw' THEN 2 ELSE 3 END,
-        tf.updated_at DESC
-      LIMIT 1
-    `).get(job.payload.source, job.payload.songmid) as {
-      finalPath?: string
-      rawPath?: string
-      lyricsPath?: string
-      coverPath?: string
-      status?: string
-    } | undefined
-
+    const row = await waitForCachedMedia(job.payload, {
+      timeoutMs: cacheWaitMs,
+      pollIntervalMs: cachePollIntervalMs,
+    })
     const mediaPath = row?.finalPath ?? row?.rawPath
     if (!mediaPath) {
       if (job.attempts >= maxAttempts) {
@@ -65,7 +81,10 @@ export async function processOneEmbySyncJob(maxAttempts = 3): Promise<boolean> {
       ? joinEmbyPath(await getDefaultUpstreamMusicLibraryLocation(), syncedMedia.embyPath)
       : mediaPath
     await notifyEmbyMediaUpdated(scanPath).catch(() => refreshEmbyLibrary())
-    const embyItemId = await searchEmbyAudioByName(job.payload.musicInfo)
+    const embyItemId = await waitForEmbyAudio(job.payload.musicInfo, {
+      timeoutMs: scanWaitMs,
+      pollIntervalMs: scanPollIntervalMs,
+    })
     if (!embyItemId) {
       const message = `Emby scan triggered but item was not found for ${job.payload.musicInfo.name}`
       if (job.attempts >= maxAttempts) {
@@ -83,6 +102,15 @@ export async function processOneEmbySyncJob(maxAttempts = 3): Promise<boolean> {
       remoteId: embyItemId,
       raw: job.payload.musicInfo,
     })
+    if (job.payload.embyUserId && job.payload.favorite !== undefined) {
+      await setEmbyFavorite({
+        userId: job.payload.embyUserId,
+        itemId: embyItemId,
+        favorite: job.payload.favorite,
+      }).catch((error: unknown) => {
+        console.warn(`failed to sync Emby favorite state for ${job.payload.musicInfo.name}`, error)
+      })
+    }
     if (job.payload.playlistId) {
       await createOrUpdateEmbyPlaylist({
         name: `QQ ${job.payload.playlistId}`,
@@ -113,6 +141,51 @@ export async function processOneEmbySyncJob(maxAttempts = 3): Promise<boolean> {
 function joinEmbyPath(root: string | undefined, relativePath: string): string {
   if (!root) return relativePath
   return `${root.replace(/\/+$/g, '')}/${relativePath.replace(/^\/+/g, '')}`
+}
+
+async function waitForCachedMedia(
+  payload: SyncEmbyTrackJobPayload,
+  options: { timeoutMs: number; pollIntervalMs: number },
+): Promise<CachedMediaRow | undefined> {
+  const deadline = Date.now() + Math.max(0, options.timeoutMs)
+  for (;;) {
+    const row = getCachedMedia(payload)
+    if (row?.finalPath || row?.rawPath) return row
+    if (Date.now() >= deadline) return undefined
+    await sleep(Math.max(100, Math.min(options.pollIntervalMs, deadline - Date.now())))
+  }
+}
+
+function getCachedMedia(payload: SyncEmbyTrackJobPayload): CachedMediaRow | undefined {
+  return db.prepare(`
+    SELECT
+      tf.final_path AS finalPath,
+      tf.raw_path AS rawPath,
+      tf.lyrics_path AS lyricsPath,
+      tf.cover_path AS coverPath,
+      tf.status
+    FROM track_files tf
+    INNER JOIN tracks t ON t.id = tf.track_id
+    WHERE t.source = ? AND t.songmid = ?
+      AND tf.status IN ('ready', 'tagging', 'cached_raw')
+    ORDER BY
+      CASE tf.status WHEN 'ready' THEN 0 WHEN 'tagging' THEN 1 WHEN 'cached_raw' THEN 2 ELSE 3 END,
+      tf.updated_at DESC
+    LIMIT 1
+  `).get(payload.source, payload.songmid) as CachedMediaRow | undefined
+}
+
+async function waitForEmbyAudio(
+  musicInfo: SyncEmbyTrackJobPayload['musicInfo'],
+  options: { timeoutMs: number; pollIntervalMs: number },
+): Promise<string | undefined> {
+  const deadline = Date.now() + Math.max(0, options.timeoutMs)
+  for (;;) {
+    const embyItemId = await searchEmbyAudioByName(musicInfo)
+    if (embyItemId) return embyItemId
+    if (Date.now() >= deadline) return undefined
+    await sleep(Math.max(100, Math.min(options.pollIntervalMs, deadline - Date.now())))
+  }
 }
 
 function qqLyricsUrl(songmid: string): string {

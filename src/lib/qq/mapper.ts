@@ -9,6 +9,7 @@ type QQSinger = {
 type QQAlbum = {
   name?: string
   mid?: string
+  time_public?: string
 }
 
 type QQFile = {
@@ -25,6 +26,8 @@ export type QQSong = {
   title?: string
   name?: string
   interval?: number
+  time_public?: string
+  year?: string | number
   singer?: QQSinger[]
   album?: QQAlbum
   file?: QQFile
@@ -82,6 +85,11 @@ export function mapQQSong(item: QQSong): MusicInfo | null {
       strMediaMid: mediaMid,
       albumMid: albumId,
       songmid,
+      time_public: item.time_public,
+      year: item.year,
+      album: {
+        time_public: item.album?.time_public,
+      },
     },
   }
 }

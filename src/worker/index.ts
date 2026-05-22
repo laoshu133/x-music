@@ -11,6 +11,7 @@ import { processOneEmbySyncJob } from '@/lib/emby/sync-worker'
 import { cleanupInboxFile } from '@/lib/tagging/cleanup'
 import { createTaggingProvider } from '@/lib/tagging/provider'
 import type { TagTrackFileJobPayload } from '@/lib/tagging/types'
+import { fileURLToPath } from 'node:url'
 
 const pollIntervalMs = Number(process.env.WORKER_POLL_INTERVAL_MS ?? 5000)
 const maxAttempts = Number(process.env.WORKER_MAX_ATTEMPTS ?? 3)
@@ -98,6 +99,17 @@ async function processEmbySyncJob(): Promise<boolean> {
   return processOneEmbySyncJob(maxAttempts)
 }
 
+interface WorkerTickProcessors {
+  processTagJob?: () => Promise<boolean>
+  processEmbySyncJob?: () => Promise<boolean>
+}
+
+export async function processWorkerTick(processors: WorkerTickProcessors = {}): Promise<boolean> {
+  const processedTagJob = await (processors.processTagJob ?? processTagJob)()
+  const processedEmbySyncJob = await (processors.processEmbySyncJob ?? processEmbySyncJob)()
+  return processedTagJob || processedEmbySyncJob
+}
+
 async function main(): Promise<void> {
   ensureJobsTable()
 
@@ -106,7 +118,7 @@ async function main(): Promise<void> {
   console.log(`poll interval: ${pollIntervalMs}ms`)
 
   while (!stopping) {
-    const didWork = await processTagJob() || await processEmbySyncJob()
+    const didWork = await processWorkerTick()
     if (!didWork) await sleep(pollIntervalMs)
   }
 }
@@ -114,7 +126,9 @@ async function main(): Promise<void> {
 installShutdownHandler('SIGINT')
 installShutdownHandler('SIGTERM')
 
-main().catch((error) => {
-  console.error('worker crashed', error)
-  process.exitCode = 1
-})
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  main().catch((error) => {
+    console.error('worker crashed', error)
+    process.exitCode = 1
+  })
+}

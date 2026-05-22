@@ -7,6 +7,8 @@ export interface SyncEmbyTrackJobPayload {
   songmid: string
   playlistId?: string
   musicInfo: MusicInfo
+  favorite?: boolean
+  embyUserId?: string
 }
 
 export function enqueueEmbyTrackSync(input: SyncEmbyTrackJobPayload): void {

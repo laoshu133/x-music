@@ -75,6 +75,16 @@ export async function createOrUpdateEmbyPlaylist(input: {
   })}`, { method: 'POST' })
 }
 
+export async function setEmbyFavorite(input: {
+  userId: string
+  itemId: string
+  favorite: boolean
+}): Promise<unknown> {
+  return embyFetch(`/Users/${encodeURIComponent(input.userId)}/FavoriteItems/${encodeURIComponent(input.itemId)}`, {
+    method: input.favorite ? 'POST' : 'DELETE',
+  })
+}
+
 async function embyFetch<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
   const settings = getEffectiveSettings()
   if (!settings.emby.baseUrl) throw new Error('Upstream Emby is not configured')
