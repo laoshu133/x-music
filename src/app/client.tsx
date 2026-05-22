@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type { ComponentType } from 'react'
 import {
   Activity,
+  BadgeCheck,
   CheckCircle2,
   Copy,
   Database,
@@ -14,9 +15,11 @@ import {
   LogIn,
   LogOut,
   MonitorPlay,
+  Music2,
   PlayCircle,
   RefreshCw,
   Settings,
+  Sparkles,
   Workflow,
   UserRound,
 } from 'lucide-react'
@@ -348,7 +351,7 @@ export default function MusicClient() {
           </div>
           <div>
             <h1>XMusic</h1>
-            <span>Emby 音乐网关</span>
+          <span>把 QQ 音乐带进播放器</span>
           </div>
         </div>
         <nav className="tabs" aria-label="主导航">
@@ -372,7 +375,7 @@ export default function MusicClient() {
             <h2>{headingFor(view)}</h2>
           </div>
           <div className="header-actions">
-            <span className="account-pill">QQ {account.data.uin}</span>
+            <span className="account-pill">已登录</span>
           </div>
         </header>
 
@@ -466,7 +469,7 @@ function LoginPage({
         </div>
         <div>
           <h1>XMusic</h1>
-          <span>登录后进入 Emby 音乐网关</span>
+          <span>连接你的 QQ 音乐收藏</span>
         </div>
       </div>
       <div className="login-methods">
@@ -483,8 +486,8 @@ function LoginPage({
           <Status state={loginQr} />
         </section>
         <section>
-          <h2>粘贴 Cookie 登录</h2>
-          <textarea value={cookieText} onChange={event => onCookieTextChange(event.target.value)} placeholder="粘贴 y.qq.com 已登录请求里的 Cookie" />
+          <h2>备用登录</h2>
+          <textarea value={cookieText} onChange={event => onCookieTextChange(event.target.value)} placeholder="粘贴 QQ 音乐 Cookie" />
           <button onClick={onLogin} disabled={account.loading || !cookieText.trim()}><KeyRound size={16} />保存 Cookie</button>
         </section>
       </div>
@@ -498,16 +501,14 @@ function AccountSummary({ account, avatarUrl, onLogout }: { account: AccountStat
   return (
     <section className="account-panel">
       <div className="section-head">
-        <h3>当前帐号</h3>
+        <h3>帐号</h3>
         <button className="ghost-button" onClick={onLogout}><LogOut size={16} />登出</button>
       </div>
       <div className="account-summary">
         {avatarUrl ? <img src={avatarUrl} alt="" /> : <div className="avatar-placeholder">{account.uin?.slice(-2) ?? 'QQ'}</div>}
         <dl className="account-facts">
-          <div><dt>QQ</dt><dd>{account.uin}</dd></div>
-          <div><dt>Emby</dt><dd>{account.emby?.username ?? account.uin}</dd></div>
-          <div><dt>来源</dt><dd>{account.source}</dd></div>
-          <div><dt>Key</dt><dd>{account.hasQQMusicKey ? 'ready' : 'missing'}</dd></div>
+          <div><dt>QQ 音乐</dt><dd>{account.uin}</dd></div>
+          <div><dt>播放器帐号</dt><dd>{account.emby?.username ?? account.uin}</dd></div>
         </dl>
       </div>
     </section>
@@ -525,26 +526,31 @@ function HomePanel({
 }) {
   return (
     <div className="home-layout">
-      <section className="intro-panel">
-        <h3>产品架构</h3>
-        <p>XMusic 现在作为 QQ 音乐到 Emby 的网关运行。搜索、排行、歌单、收藏、历史和猜你喜欢不再作为独立页面维护，统一通过对外提供的 Emby 服务暴露给播放器。</p>
-        <p>Web 端主要负责登录、服务配置、连接信息和运行状态检查；实际播放与服务可用性测试交给 ampcast。</p>
+      <section className="hero-panel">
+        <p className="eyebrow">XMusic</p>
+        <h3>把 QQ 音乐收藏放进你熟悉的播放器</h3>
+        <p>登录一次，即可在支持 Emby 的播放器里浏览收藏、歌单、排行和播放记录。XMusic 负责整理音乐入口，你只需要打开播放器开听。</p>
+        <div className="hero-actions">
+          <a className="primary-link" href={ampcastUrl} target="_blank" rel="noreferrer"><ExternalLink size={16} />打开播放器</a>
+          <button className="secondary-button" onClick={onOpenConfig}><Settings size={16} />连接信息</button>
+        </div>
       </section>
-      <section className="quick-grid">
-        <InfoCard icon={Link2} title="对外 Emby 地址" value={embyUrl || '-'} copyValue={embyUrl} />
-        <InfoCard icon={UserRound} title="UserName" value="QQ + 当前 QQ 号" />
-        <InfoCard icon={KeyRound} title="PWD" value="配置页可查看和修改" />
-        <InfoCard icon={MonitorPlay} title="ampcast" value="打开播放器测试服务" href={ampcastUrl} />
+      <section className="benefit-grid">
+        <BenefitCard icon={Music2} title="一个入口" text="QQ 音乐内容与本地音乐统一出现在播放器里。" />
+        <BenefitCard icon={BadgeCheck} title="个人帐号" text="每个 QQ 帐号都有独立的播放器登录信息。" />
+        <BenefitCard icon={Sparkles} title="自动整理" text="收藏、歌单、播放记录保持同步，少做重复操作。" />
       </section>
-      <section className="steps-panel">
-        <h3>使用说明</h3>
-        <ol>
-          <li>登录后在配置页确认 XMusic 对外提供的 Emby Host、UserName 和 PWD。</li>
-          <li>UserName 默认使用 QQ + 当前 QQ 号，PWD 可在配置页修改。</li>
-          <li>打开播放器页，用 ampcast 连接当前服务的 Emby 地址进行播放测试。</li>
-          <li>在状态页确认数据库、缓存目录、后台任务和同步状态。</li>
-        </ol>
-        <button onClick={onOpenConfig}><Settings size={16} />进入配置</button>
+      <section className="connect-panel">
+        <div className="section-head">
+          <h3>播放器连接</h3>
+          <button className="secondary-button" onClick={onOpenConfig}><Settings size={16} />管理</button>
+        </div>
+        <div className="quick-grid">
+          <InfoCard icon={Link2} title="服务器地址" value={embyUrl || '-'} copyValue={embyUrl} />
+          <InfoCard icon={UserRound} title="用户名" value="见配置页" />
+          <InfoCard icon={KeyRound} title="密码" value="见配置页" />
+          <InfoCard icon={MonitorPlay} title="ampcast" value="直接打开" href={ampcastUrl} />
+        </div>
       </section>
     </div>
   )
@@ -556,7 +562,7 @@ function PlayerPanel({ config, embyUrl, ampcastUrl }: { config: AdminConfig | nu
       <section className="ampcast-panel">
         <div>
           <h3>ampcast 播放器</h3>
-          <p>使用 rekkyrosso/ampcast 连接当前服务对外提供的 Emby 地址。登录时选择 Emby，服务器填写下方地址，用户名使用 QQ + 当前 QQ 号，密码使用登录 XMusic 时自动生成的播放器密码。</p>
+          <p>在播放器中选择 Emby 登录，填入当前 XMusic 的服务器地址、用户名和密码即可收听。</p>
         </div>
         <div className="player-actions">
           <a className="primary-link" href={ampcastUrl} target="_blank" rel="noreferrer"><ExternalLink size={16} />打开 ampcast</a>
@@ -568,8 +574,8 @@ function PlayerPanel({ config, embyUrl, ampcastUrl }: { config: AdminConfig | nu
         <h3>连接参数</h3>
         <dl className="connection-list">
           <div><dt>服务器</dt><dd>{embyUrl || '-'}</dd></div>
-          <div><dt>用户名</dt><dd>{config?.gateway.accountMode === 'per-account' ? 'QQ + 当前 QQ 号' : '-'}</dd></div>
-          <div><dt>密码</dt><dd>账号首次登录时生成</dd></div>
+          <div><dt>用户名</dt><dd>{config?.gateway.accountMode === 'per-account' ? '见配置页' : '-'}</dd></div>
+          <div><dt>密码</dt><dd>见配置页</dd></div>
         </dl>
       </section>
     </div>
@@ -620,7 +626,7 @@ function ConfigPanel({
         </label>
         <label className="check-row">
           <input type="checkbox" checked={draft.qqSyncFavorites} onChange={event => patch({ qqSyncFavorites: event.target.checked })} />
-          <span>同步收藏到 Emby 架构</span>
+          <span>同步我的收藏</span>
         </label>
         <label className="check-row">
           <input type="checkbox" checked={draft.qqSyncPlayHistory} onChange={event => patch({ qqSyncPlayHistory: event.target.checked })} />
@@ -789,6 +795,26 @@ function InfoCard({
         {href ? <a href={href} target="_blank" rel="noreferrer">{value}</a> : <strong>{value}</strong>}
       </div>
       {copyValue ? <CopyButton value={copyValue} label={`复制${title}`} iconOnly /> : null}
+    </article>
+  )
+}
+
+function BenefitCard({
+  icon: Icon,
+  title,
+  text,
+}: {
+  icon: ComponentType<{ size?: number }>
+  title: string
+  text: string
+}) {
+  return (
+    <article className="benefit-card">
+      <Icon size={18} />
+      <div>
+        <h4>{title}</h4>
+        <p>{text}</p>
+      </div>
     </article>
   )
 }

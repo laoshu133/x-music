@@ -55,6 +55,7 @@ button:disabled {
 h1,
 h2,
 h3,
+h4,
 p,
 dl,
 dd,
@@ -452,7 +453,12 @@ a {
   }
 }
 
-.home-layout,
+.home-layout {
+  display: grid;
+  gap: 14px;
+  align-items: start;
+}
+
 .player-layout {
   display: grid;
   grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.65fr);
@@ -460,7 +466,9 @@ a {
   align-items: start;
 }
 
-.intro-panel,
+.hero-panel,
+.connect-panel,
+.benefit-card,
 .steps-panel,
 .ampcast-panel,
 .connection-panel,
@@ -477,20 +485,76 @@ a {
   padding: 14px;
 }
 
-.intro-panel,
+.hero-panel,
 .ampcast-panel {
   display: grid;
   gap: 12px;
 }
 
-.intro-panel h3,
+.hero-panel {
+  min-height: 260px;
+  align-content: center;
+  padding: 34px;
+  background:
+    linear-gradient(135deg, rgba(23, 107, 93, 0.13), rgba(255, 253, 249, 0.35) 42%),
+    var(--surface);
+}
+
+.hero-panel h3 {
+  max-width: 760px;
+  font-size: clamp(34px, 5vw, 58px);
+  line-height: 1.04;
+  letter-spacing: 0;
+}
+
+.hero-panel p:not(.eyebrow) {
+  max-width: 680px;
+  font-size: 17px;
+}
+
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 8px;
+}
+
 .steps-panel h3,
 .ampcast-panel h3,
 .connection-panel h3,
 .ops-grid h3,
-.config-grid h3 {
+.config-grid h3,
+.connect-panel h3 {
   margin: 0 0 8px;
   font-size: 16px;
+}
+
+.benefit-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.benefit-card {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.benefit-card svg {
+  color: var(--accent);
+  margin-top: 2px;
+}
+
+.benefit-card h4 {
+  font-size: 17px;
+  line-height: 1.25;
+}
+
+.benefit-card p {
+  margin-top: 5px;
+  font-size: 14px;
 }
 
 .quick-grid {
@@ -818,7 +882,8 @@ a {
   .player-layout,
   .config-grid,
   .metric-grid,
-  .ops-grid {
+  .ops-grid,
+  .benefit-grid {
     grid-template-columns: 1fr;
   }
 }
@@ -845,6 +910,15 @@ a {
 
   .login-card {
     padding: 16px;
+  }
+
+  .hero-panel {
+    min-height: 0;
+    padding: 22px;
+  }
+
+  .hero-panel h3 {
+    font-size: 34px;
   }
 
   .status-banner {

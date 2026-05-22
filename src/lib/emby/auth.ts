@@ -90,7 +90,8 @@ export async function getDefaultUpstreamMusicLibraryId(): Promise<string | undef
 }
 
 export async function getDefaultUpstreamMusicLibraryLocation(): Promise<string | undefined> {
-  return (await getUpstreamMusicLibraryMapping()).locations[0]
+  const cached = await getUpstreamMusicLibraryMapping()
+  return cached.locations[0] ?? (await getUpstreamMusicLibraryMapping({ refresh: true })).locations[0]
 }
 
 async function getUpstreamMusicLibraryMapping(options: { refresh?: boolean } = {}): Promise<UpstreamMusicLibraryMapping> {
