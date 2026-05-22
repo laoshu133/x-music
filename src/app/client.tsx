@@ -1049,7 +1049,7 @@ function UserDetailDialog({
   const [favoritesPage, setFavoritesPage] = useState(1)
   const [playsPage, setPlaysPage] = useState(1)
   const account = profile.data?.account ?? user
-  const favoriteBadge = favorites.data?.total ?? account.favoriteCount
+  const favoriteBadge = favorites.data?.total ?? (favorites.loading ? '...' : '-')
   const playBadge = plays.data?.total ?? account.playCount
   const loadFavorites = async (page = favoritesPage, force = false) => {
     if (!force && favorites.data && favorites.data.page === page) return
@@ -1186,7 +1186,7 @@ function UserDetailDialog({
   )
 }
 
-function UserTrackList({ title, subtitle, tracks, timeField }: {
+function UserTrackList({ title, subtitle, tracks, timeField, page, limit }: {
   title: string
   subtitle: string
   tracks: UserTrackItem[]

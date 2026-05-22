@@ -389,31 +389,37 @@ function rowToAccount(row: AccountRow): AccountRecord {
 function accountStatsByQQ(): Map<string, { playCount: number; favoriteCount: number }> {
   const singleAccount = db.prepare('SELECT qq_uin FROM accounts ORDER BY updated_at DESC LIMIT 2').all() as Array<{ qq_uin: string }>
   const fallbackQQ = singleAccount.length === 1 ? singleAccount[0].qq_uin : undefined
-  const rows = db.prepare(`
-    SELECT
-      a.qq_uin,
-      COUNT(DISTINCT CASE
-        WHEN pe.qq_uin = a.qq_uin OR (@fallbackQQ = a.qq_uin AND pe.qq_uin IS NULL) THEN pe.id
-      END) AS play_count,
-      COUNT(DISTINCT CASE
-        WHEN af.desired_state = 'favorite' THEN af.track_id
-        WHEN @fallbackQQ = a.qq_uin
-          AND af.track_id IS NULL
-          AND fs.desired_state = 'favorite'
-          AND fs.qq_uin IS NULL
-        THEN fs.track_id
-      END) AS favorite_count
-    FROM accounts a
-    LEFT JOIN play_events pe ON pe.qq_uin = a.qq_uin OR (@fallbackQQ = a.qq_uin AND pe.qq_uin IS NULL)
-    LEFT JOIN account_favorites af ON af.qq_uin = a.qq_uin
-    LEFT JOIN favorite_sync fs ON @fallbackQQ = a.qq_uin AND fs.qq_uin IS NULL
-    GROUP BY a.qq_uin
-  `).all({ fallbackQQ: fallbackQQ ?? null }) as AccountStatsRow[]
+  const stats = new Map<string, { playCount: number; favoriteCount: number }>()
+  for (const account of singleAccount.length === 1 ? singleAccount : listAccounts().map(item => ({ qq_uin: item.qqUin }))) {
+    const playCount = countAccountRecentPlays(account.qq_uin)
+    const favoriteCount = countAccountFavorites(account.qq_uin)
+    stats.set(account.qq_uin, { playCount, favoriteCount })
+  }
+  return stats
+}
 
-  return new Map(rows.map(row => [row.qq_uin, {
-    playCount: row.play_count,
-    favoriteCount: row.favorite_count,
-  }]))
+function countAccountFavorites(qqUin: string): number {
+  const fallbackToGlobal = shouldUseGlobalHistoryFallback(qqUin)
+  const row = db.prepare(`
+    SELECT COUNT(DISTINCT track_id) AS count
+    FROM (
+      SELECT track_id
+      FROM account_favorites
+      WHERE qq_uin = @qqUin
+        AND desired_state = 'favorite'
+      UNION ALL
+      SELECT fs.track_id
+      FROM favorite_sync fs
+      WHERE @fallbackToGlobal = 1
+        AND fs.qq_uin IS NULL
+        AND fs.desired_state = 'favorite'
+        AND NOT EXISTS (
+          SELECT 1 FROM account_favorites af
+          WHERE af.qq_uin = @qqUin AND af.track_id = fs.track_id
+        )
+    )
+  `).get({ qqUin, fallbackToGlobal: fallbackToGlobal ? 1 : 0 }) as { count: number }
+  return row.count
 }
 
 function listAccountLocalFavorites(qqUin: string, page: number, limit: number): AccountTrackItem[] {
