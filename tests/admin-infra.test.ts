@@ -1335,6 +1335,65 @@ test('musiver virtual favorite item delete succeeds when virtual song cache is m
   }
 })
 
+test('mobile emby virtual favorite item post delete suffix is handled as unfavorite', async () => {
+  const originalFetch = globalThis.fetch
+  const songmid = '003FdJZH1wljMU'
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999043')
+    saveQQLoginCookie('uin=o999043; euin=encrypted999043; qm_keyst=test-key')
+    markAccountUpstreamBound('999043')
+    const account = getAccountByQQ('999043')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const authHeader = `MediaBrowser Client="Musiver", Version="1.3.9", Token="${authPayload.AccessToken}"`
+
+    const song = {
+      source: 'tx' as const,
+      songmid,
+      name: 'Mobile Favorite Delete Song',
+      singer: 'Favorite Artist',
+      raw: { songId: 551307, songType: 0 },
+    }
+    setLocalFavoriteSynced(song, true)
+    db.prepare('DELETE FROM app_settings WHERE key = ?').run(`virtual.song.${songmid}`)
+
+    const upstreamRequests: string[] = []
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      upstreamRequests.push(String(url))
+      return Response.json({ error: 'virtual favorite mutation leaked upstream' }, { status: 500 })
+    }) as typeof fetch
+
+    const virtualId = songVirtualId(song)
+    const response = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/FavoriteItems/${encodeURIComponent(virtualId)}/Delete`, {
+        method: 'POST',
+        headers: { authorization: authHeader },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/FavoriteItems/${encodeURIComponent(virtualId)}/Delete`),
+    )
+
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.ItemId, virtualId)
+    assert.equal(payload.IsFavorite, false)
+    assert.deepEqual(upstreamRequests, [])
+    assert.equal(getFavoriteStatus('tx', songmid).favorite, false)
+    assert.equal(getFavoriteStatus('tx', songmid).syncState, 'pending')
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999043')
+    clearQQLoginCookie()
+    db.prepare('DELETE FROM app_settings WHERE key = ?').run(`virtual.song.${songmid}`)
+    db.prepare("DELETE FROM tracks WHERE songmid = ? AND source = 'tx'").run(songmid)
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('musiver virtual favorite item delete returns success when no local song record exists', async () => {
   const originalFetch = globalThis.fetch
   const songmid = 'missing-local-favorite-song'

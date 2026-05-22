@@ -337,16 +337,28 @@ function rowToAccount(row: AccountRow): AccountRecord {
 }
 
 function accountStatsByQQ(): Map<string, { playCount: number; favoriteCount: number }> {
+  const singleAccount = db.prepare('SELECT qq_uin FROM accounts ORDER BY updated_at DESC LIMIT 2').all() as Array<{ qq_uin: string }>
+  const fallbackQQ = singleAccount.length === 1 ? singleAccount[0].qq_uin : undefined
   const rows = db.prepare(`
     SELECT
       a.qq_uin,
-      COUNT(DISTINCT pe.id) AS play_count,
-      COUNT(DISTINCT CASE WHEN af.desired_state = 'favorite' THEN af.track_id END) AS favorite_count
+      COUNT(DISTINCT CASE
+        WHEN pe.qq_uin = a.qq_uin OR (@fallbackQQ = a.qq_uin AND pe.qq_uin IS NULL) THEN pe.id
+      END) AS play_count,
+      COUNT(DISTINCT CASE
+        WHEN af.desired_state = 'favorite' THEN af.track_id
+        WHEN @fallbackQQ = a.qq_uin
+          AND af.track_id IS NULL
+          AND fs.desired_state = 'favorite'
+          AND fs.qq_uin IS NULL
+        THEN fs.track_id
+      END) AS favorite_count
     FROM accounts a
-    LEFT JOIN play_events pe ON pe.qq_uin = a.qq_uin
+    LEFT JOIN play_events pe ON pe.qq_uin = a.qq_uin OR (@fallbackQQ = a.qq_uin AND pe.qq_uin IS NULL)
     LEFT JOIN account_favorites af ON af.qq_uin = a.qq_uin
+    LEFT JOIN favorite_sync fs ON @fallbackQQ = a.qq_uin AND fs.qq_uin IS NULL
     GROUP BY a.qq_uin
-  `).all() as AccountStatsRow[]
+  `).all({ fallbackQQ: fallbackQQ ?? null }) as AccountStatsRow[]
 
   return new Map(rows.map(row => [row.qq_uin, {
     playCount: row.play_count,
@@ -355,6 +367,7 @@ function accountStatsByQQ(): Map<string, { playCount: number; favoriteCount: num
 }
 
 function listAccountLocalFavorites(qqUin: string, limit: number): AccountTrackItem[] {
+  const fallbackToGlobal = shouldUseGlobalHistoryFallback(qqUin)
   const rows = db.prepare(`
     SELECT
       t.source,
@@ -368,13 +381,26 @@ function listAccountLocalFavorites(qqUin: string, limit: number): AccountTrackIt
       t.raw_json,
       af.updated_at AS favorite_updated_at,
       af.sync_state
-    FROM account_favorites af
+    FROM (
+      SELECT track_id, updated_at, sync_state
+      FROM account_favorites
+      WHERE qq_uin = @qqUin
+        AND desired_state = 'favorite'
+      UNION ALL
+      SELECT fs.track_id, fs.updated_at, fs.sync_state
+      FROM favorite_sync fs
+      WHERE @fallbackToGlobal = 1
+        AND fs.qq_uin IS NULL
+        AND fs.desired_state = 'favorite'
+        AND NOT EXISTS (
+          SELECT 1 FROM account_favorites af
+          WHERE af.qq_uin = @qqUin AND af.track_id = fs.track_id
+        )
+    ) af
     INNER JOIN tracks t ON t.id = af.track_id
-    WHERE af.qq_uin = ?
-      AND af.desired_state = 'favorite'
     ORDER BY af.updated_at DESC
     LIMIT ?
-  `).all(qqUin, limit) as Array<{
+  `).all({ qqUin, fallbackToGlobal: fallbackToGlobal ? 1 : 0, 1: limit }) as Array<{
     source: MusicInfo['source']
     songmid: string
     name: string
@@ -404,6 +430,7 @@ function listAccountLocalFavorites(qqUin: string, limit: number): AccountTrackIt
 }
 
 function listAccountRecentPlays(qqUin: string, limit: number): AccountTrackItem[] {
+  const fallbackToGlobal = shouldUseGlobalHistoryFallback(qqUin)
   const rows = db.prepare(`
     SELECT
       t.source,
@@ -419,10 +446,11 @@ function listAccountRecentPlays(qqUin: string, limit: number): AccountTrackItem[
       pe.played_at
     FROM play_events pe
     INNER JOIN tracks t ON t.id = pe.track_id
-    WHERE pe.qq_uin = ?
+    WHERE pe.qq_uin = @qqUin
+      OR (@fallbackToGlobal = 1 AND pe.qq_uin IS NULL)
     ORDER BY pe.played_at DESC, pe.id DESC
     LIMIT ?
-  `).all(qqUin, limit) as Array<{
+  `).all({ qqUin, fallbackToGlobal: fallbackToGlobal ? 1 : 0, 1: limit }) as Array<{
     source: MusicInfo['source']
     songmid: string
     name: string
@@ -449,6 +477,11 @@ function listAccountRecentPlays(qqUin: string, limit: number): AccountTrackItem[
     quality: row.quality,
     playedAt: row.played_at,
   }))
+}
+
+function shouldUseGlobalHistoryFallback(qqUin: string): boolean {
+  const rows = db.prepare('SELECT qq_uin FROM accounts ORDER BY updated_at DESC LIMIT 2').all() as Array<{ qq_uin: string }>
+  return rows.length === 1 && rows[0].qq_uin === qqUin
 }
 
 function parseRawJson(value: string | null): unknown {

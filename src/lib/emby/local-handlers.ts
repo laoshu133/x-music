@@ -104,7 +104,7 @@ export async function handleLocalEmbyRequest(request: Request, embyPath: string)
     const itemId = extractFavoriteItemId(embyPath)
     if (itemId && decodeVirtualId(itemId)) {
       if (!isAuthorizedLocalRequest(request)) return unauthorizedResponse()
-      return handleFavoriteItemMutationRequest(request, itemId)
+      return handleFavoriteItemMutationRequest(request, itemId, favoriteItemMutationState(request, embyPath))
     }
   }
 
@@ -349,9 +349,8 @@ function forgetVirtualItem(decoded: VirtualId): void {
   }
 }
 
-async function handleFavoriteItemMutationRequest(request: Request, itemId: string): Promise<Response> {
+async function handleFavoriteItemMutationRequest(request: Request, itemId: string, favorite: boolean): Promise<Response> {
   const decoded = decodeVirtualId(itemId)
-  const favorite = request.method === 'POST'
   if (!decoded) return favoriteItemMutationResponse(itemId, favorite)
 
   if (decoded.kind !== 'qq-song') {
@@ -400,6 +399,11 @@ function favoriteItemMutationResponse(itemId: string, favorite: boolean): Respon
     ItemId: itemId,
     ServerId: LOCAL_SERVER_ID,
   })
+}
+
+function favoriteItemMutationState(request: Request, path: string): boolean {
+  if (request.method === 'DELETE') return false
+  return !/\/Delete$/i.test(path)
 }
 
 function trackRecordToMusicInfo(track: TrackRecord): MusicInfo {
@@ -492,7 +496,7 @@ function isItemRequest(path: string): boolean {
 }
 
 function isFavoriteItemMutationRequest(path: string): boolean {
-  return /^\/Users\/[^/]+\/FavoriteItems\/[^/]+$/i.test(path)
+  return /^\/Users\/[^/]+\/FavoriteItems\/[^/]+(?:\/Delete)?$/i.test(path)
 }
 
 function isPlaybackInfoRequest(path: string): boolean {
@@ -1985,7 +1989,7 @@ function extractItemId(path: string): string | undefined {
 }
 
 function extractFavoriteItemId(path: string): string | undefined {
-  const favoriteItemMatch = path.match(/^\/Users\/[^/]+\/FavoriteItems\/([^/]+)$/i)
+  const favoriteItemMatch = path.match(/^\/Users\/[^/]+\/FavoriteItems\/([^/]+)(?:\/Delete)?$/i)
   return favoriteItemMatch?.[1] ? decodeURIComponent(favoriteItemMatch[1]) : undefined
 }
 
