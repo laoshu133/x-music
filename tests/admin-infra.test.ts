@@ -1933,13 +1933,94 @@ test('local emby virtual artist filters stay local instead of leaking invalid id
     assert.equal(response.status, 200)
     const payload = await response.json()
     assert.equal(payload.TotalRecordCount, 1)
-    assert.equal(payload.Items[0].Name, 'QQ Artist Filter 1')
+    assert.equal(payload.Items[0].Name, 'QQ Artist Seed')
+    assert.equal(payload.Items[0].HasLyrics, true)
+    assert.equal(payload.Items[0].MediaSources[0].MediaStreams[1].Codec, 'lrc')
     assert.deepEqual(upstreamRequests, [])
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999025')
     clearQQLoginCookie()
     db.prepare("DELETE FROM app_settings WHERE key LIKE 'virtual.song.qq-artist-filter-%'").run()
     db.prepare("DELETE FROM app_settings WHERE key = 'virtual.song.qq-artist-seed'").run()
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('musiver virtual song detail and artist filter keep lyrics and cover metadata', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999031')
+    saveQQLoginCookie('uin=o999031; qm_keyst=test-key')
+    markAccountUpstreamBound('999031')
+    const account = getAccountByQQ('999031')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const songId = encodeVirtualId({ kind: 'qq-song', songmid: '0017Zt260lV7ll' })
+    const authHeader = `MediaBrowser Client="Musiver", Device="Mi-Mini-M2", Version="1.3.9", Token="${authPayload.AccessToken}"`
+
+    db.prepare(`
+      INSERT INTO app_settings (key, value_json, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP
+    `).run('virtual.song.0017Zt260lV7ll', JSON.stringify({
+      song: {
+        source: 'tx',
+        songmid: '0017Zt260lV7ll',
+        name: 'Musiver Virtual Song',
+        singer: 'Musiver Artist',
+        albumName: 'Musiver Album',
+        albumId: '003virtualAlbum',
+        interval: '03:08',
+        img: 'https://y.gtimg.cn/music/photo_new/T002R500x500M000003virtualAlbum.jpg',
+        types: [{ type: '320k', size: '1 MB' }],
+        raw: { strMediaMid: 'qq-media-musiver' },
+      },
+    }))
+
+    const upstreamRequests: string[] = []
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      upstreamRequests.push(String(url))
+      return Response.json({ error: 'virtual request leaked upstream' }, { status: 500 })
+    }) as typeof fetch
+
+    const detail = await dispatchEmbyRequest(
+      new Request(`http://local/Users/${authPayload.User.Id}/Items/${encodeURIComponent(songId)}`, {
+        headers: { authorization: authHeader, 'user-agent': 'musiver/1.3.9 (Macintosh)' },
+      }),
+      stripOptionalEmbyPrefix(`/Users/${authPayload.User.Id}/Items/${encodeURIComponent(songId)}`),
+    )
+    assert.equal(detail.status, 200)
+    const detailPayload = await detail.json()
+    assert.equal(detailPayload.Name, 'Musiver Virtual Song')
+    assert.equal(detailPayload.ImageTags.Primary, '003virtualAlbum')
+    assert.equal(detailPayload.AlbumPrimaryImageTag, '003virtualAlbum')
+    assert.equal(detailPayload.HasLyrics, true)
+    assert.equal(detailPayload.MediaSources[0].MediaStreams[1].Codec, 'lrc')
+
+    const artistItems = await dispatchEmbyRequest(
+      new Request(`http://local/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio&Recursive=true&Fields=AudioInfo%2CSortName%2CMediaSources%2CDateCreated%2CProductionYear%2CCanDelete&StartIndex=0&Limit=30&ImageTypeLimit=1&EnableImageTypes=Primary&SortBy=CommunityRating&SortOrder=Descending&ArtistIds=0017Zt260lV7ll-artist-0`, {
+        headers: { authorization: authHeader, 'user-agent': 'musiver/1.3.9 (Macintosh)' },
+      }),
+      stripOptionalEmbyPrefix(`/Users/${authPayload.User.Id}/Items`),
+    )
+    assert.equal(artistItems.status, 200)
+    const artistPayload = await artistItems.json()
+    assert.equal(artistPayload.TotalRecordCount, 1)
+    assert.equal(artistPayload.Items[0].Name, 'Musiver Virtual Song')
+    assert.equal(artistPayload.Items[0].ImageTags.Primary, '003virtualAlbum')
+    assert.equal(artistPayload.Items[0].HasLyrics, true)
+    assert.equal(artistPayload.Items[0].MediaSources[0].MediaStreams[1].DeliveryMethod, 'External')
+    assert.deepEqual(upstreamRequests, [])
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999031')
+    clearQQLoginCookie()
+    db.prepare("DELETE FROM app_settings WHERE key = 'virtual.song.0017Zt260lV7ll'").run()
     globalThis.fetch = originalFetch
   }
 })
@@ -2106,6 +2187,83 @@ test('local emby virtual audio GET returns playable errors as 502 JSON', async (
     db.prepare('DELETE FROM app_settings WHERE key = ?').run('virtual.song.qq-audio-error-song-1')
     db.prepare("DELETE FROM tracks WHERE songmid = ? AND source = 'tx'").run('qq-audio-error-song-1')
     db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track' AND json_extract(payload_json, '$.songmid') = ?").run('qq-audio-error-song-1')
+    globalThis.fetch = originalFetch
+    if (originalLxMusicSourceScript === undefined) {
+      delete process.env.LX_MUSIC_SOURCE_SCRIPT
+    } else {
+      process.env.LX_MUSIC_SOURCE_SCRIPT = originalLxMusicSourceScript
+    }
+  }
+})
+
+test('musiver virtual audio stream prefers mp3 quality requested by client', async () => {
+  const originalFetch = globalThis.fetch
+  const originalLxMusicSourceScript = process.env.LX_MUSIC_SOURCE_SCRIPT
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999032')
+    process.env.LX_MUSIC_SOURCE_SCRIPT = 'https://script.example/legacy-lx?key=test-key'
+    saveQQLoginCookie('uin=o999032; qm_keyst=test-key')
+    markAccountUpstreamBound('999032')
+    const account = getAccountByQQ('999032')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const songId = encodeVirtualId({ kind: 'qq-song', songmid: '003CnoIy3AcyPE' })
+    const authHeader = `MediaBrowser Client="Musiver", Device="Mi-Mini-M2", Version="1.3.9", Token="${authPayload.AccessToken}"`
+    db.prepare(`
+      INSERT INTO app_settings (key, value_json, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP
+    `).run('virtual.song.003CnoIy3AcyPE', JSON.stringify({
+      song: {
+        source: 'tx',
+        songmid: '003CnoIy3AcyPE',
+        name: '天公疼憨人',
+        singer: '曾心梅',
+        albumName: '天公疼憨人',
+        albumId: '001ujqZ31d05Tm',
+        interval: '4:22',
+        types: [{ type: '128k', size: '4.01MB' }],
+        raw: { songId: 104833610, strMediaMid: '000Tgfyk3sAoaL' },
+      },
+    }))
+
+    const requestedQualities: string[] = []
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'script.example') {
+        if (requestUrl.searchParams.get('action') === 'musicUrl') {
+          requestedQualities.push(requestUrl.searchParams.get('quality') ?? '')
+        }
+        return new Response('https://cdn.example/audio.mp3')
+      }
+      if (requestUrl.hostname === 'cdn.example') {
+        return new Response('audio-bytes', { headers: { 'content-type': 'audio/mpeg' } })
+      }
+      if (requestUrl.hostname === 'stat6.y.qq.com') return new Response('{}')
+      return Response.json({ Items: [], TotalRecordCount: 0 })
+    }) as typeof fetch
+
+    const response = await dispatchEmbyRequest(
+      new Request(`http://local/Audio/${encodeURIComponent(songId)}/stream?UserId=${authPayload.User.Id}&Container=mp3&AudioCodec=mp3&api_key=${authPayload.AccessToken}`, {
+        headers: { authorization: authHeader, 'user-agent': 'musiver/1.3.9 (Macintosh)' },
+      }),
+      stripOptionalEmbyPrefix(`/Audio/${encodeURIComponent(songId)}/stream`),
+    )
+    assert.equal(response.status, 200)
+    assert.equal(await response.text(), 'audio-bytes')
+    assert.deepEqual(requestedQualities, ['128k'])
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999032')
+    clearQQLoginCookie()
+    db.prepare('DELETE FROM app_settings WHERE key = ?').run('virtual.song.003CnoIy3AcyPE')
+    db.prepare("DELETE FROM tracks WHERE songmid = ? AND source = 'tx'").run('003CnoIy3AcyPE')
+    db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track' AND json_extract(payload_json, '$.songmid') = ?").run('003CnoIy3AcyPE')
     globalThis.fetch = originalFetch
     if (originalLxMusicSourceScript === undefined) {
       delete process.env.LX_MUSIC_SOURCE_SCRIPT

@@ -21,6 +21,7 @@ import { markRequestSource } from '@/lib/request-log'
 import { albumVirtualId, decodeVirtualId, encodeVirtualId, genreVirtualId, playlistVirtualId, songVirtualId, type VirtualId } from './virtual-ids'
 import {
   loadVirtualAlbumSongs,
+  listVirtualSongs,
   loadVirtualPlaylist,
   loadVirtualSong,
   rememberVirtualAlbumSongs,
@@ -554,8 +555,20 @@ async function handleVirtualArtistItemsRequest(
   const artistNames = virtualArtistNames(url)
   if (!artistNames.length) return emptyItemsResponse()
 
-  const favorites = await listQQFavoriteSongs(request, Number.POSITIVE_INFINITY)
   const normalizedArtists = new Set(artistNames.map(normalizeText).filter(Boolean))
+  const cached = listVirtualSongs()
+    .map(entry => entry.song)
+    .filter(song => {
+      const songArtists = splitArtists(song.singer).map(normalizeText)
+      return songArtists.some(artist => normalizedArtists.has(artist))
+    })
+  if (cached.length > 0) {
+    const items = dedupeSongs(cached).slice(0, finiteFetchCount(desiredCount))
+      .map(song => songToEmbyItem(song))
+    return pagedItemsResponse(items, page, cached.length)
+  }
+
+  const favorites = await listQQFavoriteSongs(request, Number.POSITIVE_INFINITY)
   const filtered = favorites.items.filter(song => {
     const songArtists = splitArtists(song.singer).map(normalizeText)
     return songArtists.some(artist => normalizedArtists.has(artist))
@@ -875,7 +888,7 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
     if (proxied?.ok || proxied?.status === 206) return proxied
   }
 
-  const preferredQuality: MusicQuality = 'flac'
+  const preferredQuality = preferredAudioQualityForRequest(request, musicInfo)
   const playableFile = qualityFallbacks(preferredQuality)
     .map((quality) => getPlayableTrackFile(musicInfo.source, musicInfo.songmid, quality))
     .find((file) => file !== undefined)
@@ -1026,6 +1039,24 @@ async function virtualAudioHeadHeaders(musicInfo: MusicInfo): Promise<Headers> {
 function playableQualityForSong(musicInfo: MusicInfo): MusicQuality | undefined {
   return qualityFallbacks('flac')
     .find((quality) => getPlayableTrackFile(musicInfo.source, musicInfo.songmid, quality) !== undefined)
+}
+
+function preferredAudioQualityForRequest(request: Request, musicInfo: MusicInfo): MusicQuality {
+  const url = new URL(request.url)
+  const container = (url.searchParams.get('Container') ?? url.searchParams.get('container') ?? '').toLowerCase()
+  const audioCodec = (url.searchParams.get('AudioCodec') ?? url.searchParams.get('audioCodec') ?? '').toLowerCase()
+  const available = availableSongQualities(musicInfo)
+  if ((container.includes('mp3') || audioCodec.includes('mp3')) && available.includes('320k')) return '320k'
+  if ((container.includes('mp3') || audioCodec.includes('mp3')) && available.includes('128k')) return '128k'
+  return available[0] ?? 'flac'
+}
+
+function availableSongQualities(musicInfo: MusicInfo): MusicQuality[] {
+  const available = new Set((musicInfo.types ?? [])
+    .map(item => item.type)
+    .filter((quality): quality is MusicQuality => quality === 'flac' || quality === '320k' || quality === '128k'))
+  const ordered = qualityFallbacks('flac').filter(quality => available.has(quality))
+  return ordered.length ? ordered : qualityFallbacks('flac')
 }
 
 function audioContentTypeFromPath(filePath: string): string {

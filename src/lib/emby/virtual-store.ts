@@ -15,6 +15,24 @@ export function loadVirtualSong(songmid: string): { song: MusicInfo; playlistId?
   return JSON.parse(row.value_json) as { song: MusicInfo; playlistId?: string }
 }
 
+export function listVirtualSongs(): Array<{ song: MusicInfo; playlistId?: string }> {
+  const rows = db.prepare(`
+    SELECT value_json
+    FROM app_settings
+    WHERE key LIKE 'virtual.song.%'
+    ORDER BY updated_at DESC
+    LIMIT 500
+  `).all() as Array<{ value_json: string }>
+  return rows.flatMap((row) => {
+    try {
+      const parsed = JSON.parse(row.value_json) as { song?: MusicInfo; playlistId?: string }
+      return parsed.song ? [{ song: parsed.song, playlistId: parsed.playlistId }] : []
+    } catch {
+      return []
+    }
+  })
+}
+
 export function rememberVirtualPlaylist(playlist: QQPlaylistInfo): void {
   db.prepare(`
     INSERT INTO app_settings (key, value_json, updated_at)
