@@ -972,11 +972,10 @@ test('musiver item delete converts single delete to upstream batch delete', asyn
   }
 })
 
-test('musiver items delete hides upstream playlist locally when upstream rejects delete', async () => {
+test('musiver items delete reports upstream delete failures', async () => {
   const originalFetch = globalThis.fetch
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999038')
-    db.prepare("DELETE FROM app_settings WHERE key = 'emby.deletedItem.11740781'").run()
     saveQQLoginCookie('uin=o999038; qm_keyst=test-key')
     markAccountUpstreamBound('999038')
     const account = getAccountByQQ('999038')
@@ -995,15 +994,6 @@ test('musiver items delete hides upstream playlist locally when upstream rejects
       if (requestUrl.pathname === '/Items/Delete' && init?.method === 'POST') {
         return new Response("Value cannot be null. (Parameter 'user')", { status: 400 })
       }
-      if (requestUrl.pathname.endsWith(`/Users/${authPayload.User.Id}/Items`) || requestUrl.pathname.endsWith('/Items')) {
-        return Response.json({
-          Items: [
-            { Id: '11740781', Name: 'Rejected Delete Playlist', Type: 'Playlist' },
-            { Id: '11740782', Name: 'Visible Playlist', Type: 'Playlist' },
-          ],
-          TotalRecordCount: 2,
-        })
-      }
       return Response.json({ error: 'unexpected upstream request' }, { status: 500 })
     }) as typeof fetch
 
@@ -1014,22 +1004,15 @@ test('musiver items delete hides upstream playlist locally when upstream rejects
       }),
       stripOptionalEmbyPrefix('/emby/Items/Delete'),
     )
-    assert.equal(deleted.status, 204)
-
-    const items = await dispatchEmbyRequest(
-      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Playlist&ParentId=x-music-music&Limit=10&StartIndex=0`, {
-        headers: { authorization: authHeader },
-      }),
-      stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/Items`),
-    )
-    assert.equal(items.status, 200)
-    const payload = await items.json()
-    const itemIds = payload.Items.map((item: { Id: string }) => item.Id)
-    assert.equal(itemIds.includes('11740781'), false)
-    assert.equal(itemIds.includes('11740782'), true)
+    assert.equal(deleted.status, 502)
+    const payload = await deleted.json()
+    assert.equal(payload.error, '无法删除 Emby 歌单')
+    assert.match(payload.message, /上游 Emby 拒绝/)
+    assert.match(payload.detail, /Items\/Delete/)
+    assert.match(payload.detail, /user/)
+    assert.match(payload.actionable, /删除权限/)
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999038')
-    db.prepare("DELETE FROM app_settings WHERE key = 'emby.deletedItem.11740781'").run()
     clearQQLoginCookie()
     globalThis.fetch = originalFetch
   }

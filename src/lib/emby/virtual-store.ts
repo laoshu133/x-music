@@ -72,16 +72,3 @@ export function loadVirtualAlbumSongs(albumId: string): MusicInfo[] {
 export function forgetVirtualAlbum(albumId: string): void {
   db.prepare('DELETE FROM app_settings WHERE key = ?').run(`virtual.album.${albumId}`)
 }
-
-export function rememberDeletedEmbyItem(id: string): void {
-  db.prepare(`
-    INSERT INTO app_settings (key, value_json, updated_at)
-    VALUES (?, ?, CURRENT_TIMESTAMP)
-    ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP
-  `).run(`emby.deletedItem.${id}`, JSON.stringify({ id }))
-}
-
-export function isDeletedEmbyItem(id: string): boolean {
-  const row = db.prepare('SELECT 1 FROM app_settings WHERE key = ?').get(`emby.deletedItem.${id}`)
-  return Boolean(row)
-}

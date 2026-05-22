@@ -24,13 +24,11 @@ import {
   forgetVirtualAlbum,
   forgetVirtualPlaylist,
   forgetVirtualSong,
-  isDeletedEmbyItem,
   loadVirtualAlbumSongs,
   listVirtualSongs,
   loadVirtualPlaylist,
   loadVirtualSong,
   rememberVirtualAlbumSongs,
-  rememberDeletedEmbyItem,
   rememberVirtualPlaylist,
   rememberVirtualSong,
 } from './virtual-store'
@@ -284,24 +282,32 @@ async function handleItemsDeleteRequest(request: Request, embyPath: string): Pro
   }
 
   const upstreamIds: string[] = []
-  const locallyDeletedIds: string[] = []
   for (const id of ids) {
     const decoded = decodeVirtualId(id)
     if (decoded) {
       forgetVirtualItem(decoded)
     } else {
       upstreamIds.push(id)
-      locallyDeletedIds.push(id)
     }
   }
 
   try {
     await deleteEmbyItems(upstreamIds, { token: authorizedLocalAccount(request)?.embyAccessToken })
   } catch (error) {
-    for (const id of locallyDeletedIds) rememberDeletedEmbyItem(id)
+    return embyDeleteFailureResponse(error)
   }
 
   return new Response(null, { status: 204 })
+}
+
+function embyDeleteFailureResponse(error: unknown): Response {
+  const detail = error instanceof Error ? error.message : String(error)
+  return Response.json({
+    error: '无法删除 Emby 歌单',
+    message: '上游 Emby 拒绝了删除请求，歌单没有被删除。',
+    detail,
+    actionable: '请确认当前 Emby 用户有删除权限，歌单所在媒体库允许删除内容；如果刚调整过权限，请重新登录后再试。',
+  }, { status: 502 })
 }
 
 function deleteRequestIds(request: Request, embyPath: string): string[] {
@@ -495,7 +501,7 @@ async function handleItemsRequest(request: Request, embyPath: string): Promise<R
 
   if (searchTerm?.trim()) {
     const upstream = await tryReadItemsResponse(request, embyPath)
-    const upstreamItems = filterVisibleItems(filterItemsByTypes(upstream?.Items ?? [], requestedTypes))
+    const upstreamItems = filterItemsByTypes(upstream?.Items ?? [], requestedTypes)
     const virtualItems: any[] = []
 
     if (shouldIncludeType(requestedTypes, 'audio')) {
@@ -520,7 +526,7 @@ async function handleItemsRequest(request: Request, embyPath: string): Promise<R
 
   if (filters.has('isplayed') && shouldIncludeType(requestedTypes, 'audio')) {
     const upstream = await tryReadItemsResponse(request, embyPath)
-    const upstreamItems = filterVisibleItems(filterItemsByTypes(upstream?.Items ?? [], requestedTypes))
+    const upstreamItems = filterItemsByTypes(upstream?.Items ?? [], requestedTypes)
     const localItems = localPlayHistoryToEmbyItems(desiredCount)
       .filter(item => !hasEquivalentEmbyItem(upstreamItems, item))
     const merged = sortPlayedItems([...upstreamItems, ...localItems], url.searchParams.get('SortBy') ?? url.searchParams.get('sortBy') ?? '')
@@ -532,7 +538,7 @@ async function handleItemsRequest(request: Request, embyPath: string): Promise<R
       tryReadItemsResponse(request, embyPath),
       listQQFavoriteSongs(request, desiredCount),
     ])
-    const upstreamItems = filterVisibleItems(filterItemsByTypes(upstream?.Items ?? [], requestedTypes))
+    const upstreamItems = filterItemsByTypes(upstream?.Items ?? [], requestedTypes)
     const virtualItems = favorites.items
       .filter(song => !hasEquivalentEmbySong(upstreamItems, song))
       .map(song => {
@@ -544,7 +550,7 @@ async function handleItemsRequest(request: Request, embyPath: string): Promise<R
 
   if (isMusicLibraryId(parentId) && requestedTypes.has('musicalbum')) {
     const upstream = await tryReadItemsResponse(request, embyPath)
-    const upstreamItems = filterVisibleItems(filterItemsByTypes(upstream?.Items ?? [], requestedTypes))
+    const upstreamItems = filterItemsByTypes(upstream?.Items ?? [], requestedTypes)
     const favorites = await listQQFavoriteSongs(request, desiredCount)
     const virtualAlbums = favoriteSongsToAlbumItems(favorites.items)
       .filter(album => !hasEquivalentEmbyAlbum(upstreamItems, album.Name))
@@ -555,7 +561,7 @@ async function handleItemsRequest(request: Request, embyPath: string): Promise<R
   if (requestedTypes.has('playlist')) {
     const upstream = await tryReadItemsResponse(request, embyPath)
     const playlists = await listVirtualPlaylists(request, desiredCount)
-    const upstreamItems = filterVisibleItems(upstream?.Items ?? [])
+    const upstreamItems = upstream?.Items ?? []
     const virtualItems = playlists
       .filter(playlist => !hasEquivalentEmbyPlaylist(upstreamItems, playlist.name))
       .map(playlistToEmbyItem)
@@ -567,7 +573,7 @@ async function handleItemsRequest(request: Request, embyPath: string): Promise<R
 
   if (isMusicLibraryId(parentId)) {
     const upstream = await tryReadItemsResponse(request, embyPath)
-    return upstream ? Response.json({ ...upstream, Items: filterVisibleItems(upstream.Items ?? []) }) : emptyItemsResponse()
+    return upstream ? Response.json(upstream) : emptyItemsResponse()
   }
 
   return undefined
@@ -654,7 +660,7 @@ async function handleCollectionRequest(request: Request, embyPath: string): Prom
   const page = requestPageParams(url)
   const favorites = await listQQFavoriteSongs(request, Number.POSITIVE_INFINITY)
   const qqGenres = favoriteSongsToGenreItems(favorites.items)
-  const upstreamItems = filterVisibleItems(upstream?.Items ?? [])
+  const upstreamItems = upstream?.Items ?? []
   const merged = [
     ...upstreamItems,
     ...qqGenres.filter(genre => !upstreamItems.some(item => normalizeText(String(item?.Name ?? '')) === normalizeText(genre.Name))),
@@ -1927,10 +1933,6 @@ function filteredUpstreamTotal(upstream: { Items?: any[]; TotalRecordCount?: num
   const rawItems = upstream?.Items ?? []
   if (rawItems.length !== filteredItems.length) return filteredItems.length
   return upstream?.TotalRecordCount
-}
-
-function filterVisibleItems(items: any[]): any[] {
-  return items.filter(item => !isDeletedEmbyItem(String(item?.Id ?? '')))
 }
 
 function upstreamFirstPagedResponse(
