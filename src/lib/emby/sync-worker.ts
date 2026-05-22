@@ -10,6 +10,7 @@ import {
   notifyEmbyMediaUpdated,
   refreshEmbyLibrary,
   searchEmbyAudioByName,
+  searchEmbyAudioByPath,
 } from './upstream-api'
 import { getDefaultUpstreamMusicLibraryLocation } from './auth'
 import type { SyncEmbyTrackJobPayload } from './sync'
@@ -85,11 +86,12 @@ export async function processOneEmbySyncJob(options: number | EmbySyncJobOptions
       : mediaPath
     await notifyEmbyMediaUpdated(scanPath).catch(() => refreshEmbyLibrary())
     const embyItemId = await waitForEmbyAudio(job.payload.musicInfo, {
+      path: scanPath,
       timeoutMs: scanWaitMs,
       pollIntervalMs: scanPollIntervalMs,
     })
     if (!embyItemId) {
-      const message = `Emby scan triggered but item was not found for ${job.payload.musicInfo.name}`
+      const message = `Emby scan triggered but item was not found for ${job.payload.musicInfo.name} at ${scanPath}`
       if (job.attempts >= maxAttempts) {
         failJob(job.id, message)
       } else {
@@ -188,10 +190,12 @@ function getCachedMedia(payload: SyncEmbyTrackJobPayload): CachedMediaRow | unde
 
 async function waitForEmbyAudio(
   musicInfo: SyncEmbyTrackJobPayload['musicInfo'],
-  options: { timeoutMs: number; pollIntervalMs: number },
+  options: { path?: string; timeoutMs: number; pollIntervalMs: number },
 ): Promise<string | undefined> {
   const deadline = Date.now() + Math.max(0, options.timeoutMs)
   for (;;) {
+    const embyItemIdByPath = options.path ? await searchEmbyAudioByPath(options.path) : undefined
+    if (embyItemIdByPath) return embyItemIdByPath
     const embyItemId = await searchEmbyAudioByName(musicInfo)
     if (embyItemId) return embyItemId
     if (Date.now() >= deadline) return undefined

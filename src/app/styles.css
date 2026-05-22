@@ -961,6 +961,11 @@ a {
   overflow-x: auto;
 }
 
+.jobs-table {
+  padding: 0;
+  overflow: auto;
+}
+
 .users-table {
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -974,7 +979,7 @@ a {
   align-items: center;
   min-width: 620px;
   border-top: 1px solid var(--line);
-  padding: 10px 0;
+  padding: 12px 14px;
   font-size: 13px;
   color: inherit;
   text-align: left;
@@ -986,6 +991,7 @@ a {
 
 .job-row {
   grid-template-columns: 72px minmax(150px, 1fr) 110px 90px 130px;
+  width: 100%;
 }
 
 .user-row {
@@ -1012,6 +1018,10 @@ button.job-row.active,
 button.user-row:hover,
 button.user-row.active {
   background: var(--surface-2);
+}
+
+.jobs-table > p {
+  padding: 14px;
 }
 
 .job-row span,

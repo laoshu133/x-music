@@ -37,6 +37,29 @@ export async function searchEmbyAudioByName(song: MusicInfo): Promise<string | u
   return match?.Id
 }
 
+export async function searchEmbyAudioByPath(path: string): Promise<string | undefined> {
+  const data = await embyFetch<{
+    Items?: Array<{ Id?: string; Path?: string; MediaSources?: Array<{ Path?: string }> }>
+  }>(`/Items?${new URLSearchParams({
+    IncludeItemTypes: 'Audio',
+    Recursive: 'true',
+    Fields: 'Path,MediaSources',
+    Path: path,
+    Limit: '10',
+  })}`)
+
+  const normalizedPath = normalizePath(path)
+  const match = data.Items?.find(item => {
+    const paths = [
+      item.Path,
+      ...(item.MediaSources ?? []).map(source => source.Path),
+    ]
+    return paths.some(candidate => normalizePath(candidate) === normalizedPath)
+  }) ?? data.Items?.[0]
+
+  return match?.Id
+}
+
 export async function searchEmbyPlaylistByName(name: string): Promise<string | undefined> {
   const data = await embyFetch<{
     Items?: Array<{ Id?: string; Name?: string }>
@@ -130,4 +153,8 @@ function joinPaths(basePath: string, childPath: string): string {
 
 function normalize(value?: string): string {
   return (value ?? '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
+}
+
+function normalizePath(value?: string): string {
+  return (value ?? '').trim().toLowerCase().replace(/\\/g, '/').replace(/\/+/g, '/')
 }

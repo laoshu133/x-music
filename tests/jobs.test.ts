@@ -269,6 +269,7 @@ test('emby sync job waits for asynchronous Emby scan results', async () => {
       const requestUrl = new URL(String(url))
       if (requestUrl.pathname.endsWith('/Library/Media/Updated')) return new Response(null, { status: 204 })
       if (requestUrl.pathname.endsWith('/Items')) {
+        if (requestUrl.searchParams.has('Path')) return Response.json({ Items: [] })
         searchCount += 1
         return Response.json({
           Items: searchCount === 1
@@ -301,7 +302,7 @@ test('emby sync job uploads ready media through WebDAV before scanning Emby', as
   const finalPath = path.join(appConfig.musicDir, relativeDir, 'WebDAV Artist - WebDAV Song.flac')
   const lyricsPath = path.join(appConfig.musicDir, relativeDir, 'WebDAV Artist - WebDAV Song.lrc')
   const coverPath = path.join(appConfig.musicDir, relativeDir, 'cover.jpg')
-  const requests: Array<{ method: string; pathname: string; body?: string }> = []
+  const requests: Array<{ method: string; pathname: string; search?: string; body?: string }> = []
 
   db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track'").run()
   db.prepare("DELETE FROM app_settings WHERE key = 'emby.upstreamMusicLibraryMapping'").run()
@@ -340,6 +341,7 @@ test('emby sync job uploads ready media through WebDAV before scanning Emby', as
         requests.push({
           method,
           pathname: requestUrl.pathname,
+          search: requestUrl.search,
           body: init?.body ? 'body' : undefined,
         })
         return new Response(null, { status: method === 'PUT' ? 204 : 201 })
@@ -357,12 +359,28 @@ test('emby sync job uploads ready media through WebDAV before scanning Emby', as
         requests.push({
           method,
           pathname: requestUrl.pathname,
+          search: requestUrl.search,
           body: String(init?.body ?? ''),
         })
         return new Response(null, { status: 204 })
       }
       if (requestUrl.pathname.endsWith('/Items')) {
-        return Response.json({ Items: [{ Id: 'emby-webdav-song', Name: 'WebDAV Song', Artists: ['WebDAV Artist'] }] })
+        requests.push({
+          method,
+          pathname: requestUrl.pathname,
+          search: requestUrl.search,
+        })
+        if (requestUrl.searchParams.has('Path')) {
+          return Response.json({
+            Items: [{
+              Id: 'emby-webdav-song',
+              Name: 'Unexpected Name',
+              Artists: ['Unexpected Artist'],
+              Path: '/volume1/music/WebDAV Artist/WebDAV Album/WebDAV Artist - WebDAV Song.flac',
+            }],
+          })
+        }
+        return Response.json({ Items: [] })
       }
       return Response.json({}, { status: 404 })
     }) as typeof fetch
@@ -383,6 +401,8 @@ test('emby sync job uploads ready media through WebDAV before scanning Emby', as
     )
     const mediaUpdated = requests.find(request => request.pathname.endsWith('/Library/Media/Updated'))
     assert.match(mediaUpdated?.body ?? '', /\/volume1\/music\/WebDAV Artist\/WebDAV Album\/WebDAV Artist - WebDAV Song\.flac/)
+    const itemSearch = requests.find(request => request.pathname.endsWith('/Items') && request.search?.includes('Path='))
+    assert.match(itemSearch?.search ?? '', /Path=.*%2Fvolume1%2Fmusic%2FWebDAV\+Artist%2FWebDAV\+Album%2FWebDAV\+Artist\+-\+WebDAV\+Song\.flac/)
   } finally {
     rmSync(path.join(appConfig.musicDir, 'WebDAV Artist'), { recursive: true, force: true })
     process.env.EMBY_SOURCE_WEBDAV_DSN = originalWebdavDsn
