@@ -1329,6 +1329,67 @@ test('local emby favorite songs pages through QQ results beyond 200', async () =
   }
 })
 
+test('local emby favorite songs include QQ songs without media mid', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999023')
+    saveQQLoginCookie('uin=o999023; euin=encrypted999023; qm_keyst=test-key')
+    markAccountUpstreamBound('999023')
+    const account = getAccountByQQ('999023')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const authHeader = `MediaBrowser Client="ampcast", Version="0.9.28", Device="PC", Token="${authPayload.AccessToken}"`
+
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'u.y.qq.com') {
+        return Response.json({
+          code: 0,
+          req: {
+            code: 0,
+            data: {
+              songlist: [{
+                id: 2,
+                mid: 'qq-favorite-no-media-mid',
+                title: 'QQ Favorite Without Media Mid',
+                interval: 188,
+                singer: [{ name: 'QQ Artist', mid: 'qq-artist-1' }],
+                album: { name: 'QQ Favorite Album', mid: 'qq-album-1' },
+                file: {},
+              }],
+              total_song_num: 1,
+            },
+          },
+        })
+      }
+
+      return Response.json({ Items: [], TotalRecordCount: 0 })
+    }) as typeof fetch
+
+    const songs = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio&ParentId=x-music-music&Filters=IsFavorite&Limit=500&StartIndex=0`, {
+        headers: { 'X-Emby-Authorization': authHeader },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/Items`),
+    )
+    assert.equal(songs.status, 200)
+    const payload = await songs.json()
+    assert.equal(payload.TotalRecordCount, 1)
+    assert.equal(payload.Items[0].Name, 'QQ Favorite Without Media Mid')
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999023')
+    clearQQLoginCookie()
+    db.prepare("DELETE FROM app_settings WHERE key = 'virtual.song.qq-favorite-no-media-mid'").run()
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('local emby favorite songs return all QQ pages when client omits pagination', async () => {
   const originalFetch = globalThis.fetch
   try {
@@ -1401,7 +1462,7 @@ test('local emby favorite songs return all QQ pages when client omits pagination
   }
 })
 
-test('local emby favorite songs keep upstream favorites before QQ favorites', async () => {
+test('local emby favorite songs sort mixed sources by favorite time descending', async () => {
   const originalFetch = globalThis.fetch
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999022')
@@ -1439,6 +1500,7 @@ test('local emby favorite songs keep upstream favorites before QQ favorites', as
                   interval: 188,
                   singer: [{ name: 'QQ Artist', mid: 'qq-artist-1' }],
                   album: { name: 'QQ Favorite Album', mid: 'qq-album-1' },
+                  fav_time: id === 1 ? '2024-01-04T00:00:00.000Z' : '2024-01-01T00:00:00.000Z',
                   file: { media_mid: `qq-media-${id}`, size_320mp3: 1024 },
                 }
               }),
@@ -1450,8 +1512,8 @@ test('local emby favorite songs keep upstream favorites before QQ favorites', as
 
       return Response.json({
         Items: [
-          { Id: 'emby-real-favorite-1', Name: 'Emby Real Favorite 1', Type: 'Audio' },
-          { Id: 'emby-real-favorite-2', Name: 'Emby Real Favorite 2', Type: 'Audio' },
+          { Id: 'emby-real-favorite-1', Name: 'Emby Real Favorite 1', Type: 'Audio', DateCreated: '2024-01-02T00:00:00.000Z' },
+          { Id: 'emby-real-favorite-2', Name: 'Emby Real Favorite 2', Type: 'Audio', DateCreated: '2024-01-03T00:00:00.000Z' },
         ],
         TotalRecordCount: 2,
       })
@@ -1467,14 +1529,99 @@ test('local emby favorite songs keep upstream favorites before QQ favorites', as
     const payload = await response.json()
     assert.equal(payload.TotalRecordCount, 4)
     assert.deepEqual(payload.Items.map((item: { Name: string }) => item.Name), [
-      'Emby Real Favorite 1',
-      'Emby Real Favorite 2',
       'QQ Favorite Order 1',
+      'Emby Real Favorite 2',
+      'Emby Real Favorite 1',
     ])
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999022')
     clearQQLoginCookie()
     db.prepare("DELETE FROM app_settings WHERE key LIKE 'virtual.song.qq-favorite-order-%'").run()
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('local emby favorite songs count merged deduped items', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999024')
+    saveQQLoginCookie('uin=o999024; euin=encrypted999024; qm_keyst=test-key')
+    markAccountUpstreamBound('999024')
+    const account = getAccountByQQ('999024')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const authHeader = `MediaBrowser Client="ampcast", Version="0.9.28", Device="PC", Token="${authPayload.AccessToken}"`
+
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'u.y.qq.com') {
+        const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {}
+        assert.equal(Number(body.req?.param?.song_begin ?? 0), 0)
+        return Response.json({
+          code: 0,
+          req: {
+            code: 0,
+            data: {
+              songlist: [
+                {
+                  id: 1,
+                  mid: 'qq-favorite-overlap-1',
+                  title: 'Overlapped Favorite',
+                  interval: 188,
+                  singer: [{ name: 'Shared Artist', mid: 'qq-artist-1' }],
+                  album: { name: 'QQ Favorite Album', mid: 'qq-album-1' },
+                  file: { media_mid: 'qq-media-overlap-1', size_320mp3: 1024 },
+                },
+                {
+                  id: 2,
+                  mid: 'qq-favorite-unique-2',
+                  title: 'QQ Unique Favorite',
+                  interval: 188,
+                  singer: [{ name: 'QQ Artist', mid: 'qq-artist-2' }],
+                  album: { name: 'QQ Favorite Album', mid: 'qq-album-1' },
+                  file: { media_mid: 'qq-media-unique-2', size_320mp3: 1024 },
+                },
+              ],
+              total_song_num: 2,
+            },
+          },
+        })
+      }
+
+      return Response.json({
+        Items: [
+          { Id: 'emby-overlap-1', Name: 'Overlapped Favorite', Type: 'Audio', Artists: ['Shared Artist'] },
+          { Id: 'emby-real-favorite-2', Name: 'Emby Unique Favorite', Type: 'Audio', Artists: ['Emby Artist'] },
+        ],
+        TotalRecordCount: 2,
+      })
+    }) as typeof fetch
+
+    const response = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio&ParentId=x-music-music&Filters=IsFavorite&Limit=10&StartIndex=0`, {
+        headers: { 'X-Emby-Authorization': authHeader },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/Items`),
+    )
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.TotalRecordCount, 3)
+    assert.deepEqual(payload.Items.map((item: { Name: string }) => item.Name).sort(), [
+      'Emby Unique Favorite',
+      'Overlapped Favorite',
+      'QQ Unique Favorite',
+    ])
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999024')
+    clearQQLoginCookie()
+    db.prepare("DELETE FROM app_settings WHERE key LIKE 'virtual.song.qq-favorite-overlap-%'").run()
+    db.prepare("DELETE FROM app_settings WHERE key LIKE 'virtual.song.qq-favorite-unique-%'").run()
     globalThis.fetch = originalFetch
   }
 })

@@ -51,6 +51,8 @@ const QQ_PLAYLIST_PAGE_SIZE = 50
 const QQ_FAVORITES_CACHE_TTL_MS = 60_000
 const QQ_FAVORITES_MAX_CONCURRENCY = 4
 const VIRTUAL_RECOMMENDATION_PLAYLIST_PLAY_COUNT = '999999999'
+const QQ_FAVORITE_ORDER_BASE_MS = Date.UTC(2099, 0, 1)
+const FAVORITE_SORT_TIME = Symbol('favoriteSortTime')
 
 type PageParams = {
   startIndex: number
@@ -63,6 +65,7 @@ type WindowResult<T> = {
 }
 
 const favoriteSongsCache = new Map<string, { expiresAt: number; result: WindowResult<MusicInfo> }>()
+const favoriteSongsInflight = new Map<string, Promise<WindowResult<MusicInfo>>>()
 
 export async function handleLocalEmbyRequest(request: Request, embyPath: string): Promise<Response | undefined> {
   if (request.method === 'GET' && pathEquals(embyPath, '/System/Info/Public')) {
@@ -535,17 +538,18 @@ async function handleItemsRequest(request: Request, embyPath: string): Promise<R
 
   if (filters.has('isfavorite') && shouldIncludeType(requestedTypes, 'audio')) {
     const [upstream, favorites] = await Promise.all([
-      tryReadItemsResponse(request, embyPath),
-      listQQFavoriteSongs(request, desiredCount),
+      tryReadItemsResponse(request, embyPath, { startIndex: 0, limit: MAX_EMBY_LIST_LIMIT }),
+      listQQFavoriteSongs(request, Number.POSITIVE_INFINITY),
     ])
     const upstreamItems = filterItemsByTypes(upstream?.Items ?? [], requestedTypes)
     const virtualItems = favorites.items
       .filter(song => !hasEquivalentEmbySong(upstreamItems, song))
-      .map(song => {
+      .map((song, index) => {
         rememberVirtualSong(song)
-        return songToEmbyItem(song, undefined, true)
-      })
-    return upstreamFirstPagedResponse(upstreamItems, filteredUpstreamTotal(upstream, upstreamItems), virtualItems, favorites.total, page)
+        return favoriteSongToEmbyItem(song, index)
+    })
+    const merged = sortFavoriteItems([...upstreamItems, ...virtualItems])
+    return pagedItemsResponse(merged, page)
   }
 
   if (isMusicLibraryId(parentId) && requestedTypes.has('musicalbum')) {
@@ -1226,21 +1230,47 @@ async function listQQFavoriteSongs(request: Request, limit: number): Promise<Win
   const cookie = qqCookieForRequest(request)
   const cacheKey = favoriteCacheKey(cookie)
   const cached = favoriteSongsCache.get(cacheKey)
-  if (cached && cached.expiresAt > Date.now() && cached.result.items.length >= finiteFetchCount(limit, 0)) {
+  if (cached && cached.expiresAt > Date.now()) {
     return {
       items: sliceToFetchLimit(cached.result.items, limit),
       total: cached.result.total,
     }
   }
 
+  const inflight = favoriteSongsInflight.get(cacheKey)
+  if (inflight) {
+    const result = await inflight
+    return {
+      items: sliceToFetchLimit(result.items, limit),
+      total: result.total,
+    }
+  }
+
+  const pending = loadAllQQFavoriteSongs(cookie)
+  favoriteSongsInflight.set(cacheKey, pending)
+  try {
+    const result = await pending
+    favoriteSongsCache.set(cacheKey, {
+      expiresAt: Date.now() + QQ_FAVORITES_CACHE_TTL_MS,
+      result,
+    })
+    return {
+      items: sliceToFetchLimit(result.items, limit),
+      total: result.total,
+    }
+  } finally {
+    favoriteSongsInflight.delete(cacheKey)
+  }
+}
+
+async function loadAllQQFavoriteSongs(cookie?: string): Promise<WindowResult<MusicInfo>> {
   const pageSize = QQ_SONG_PAGE_SIZE
   const first = await getQQFavoriteSongs({ cookie, page: 1, limit: pageSize }).catch(() => undefined)
   if (!first) return { items: [], total: 0 }
 
   const total = first.total
   const allPage = first.allPage ?? Math.ceil(total / first.limit)
-  const requestedPages = Math.min(allPage, Math.ceil(finiteFetchCount(limit, total) / pageSize))
-  const remainingPages = Array.from({ length: Math.max(requestedPages - 1, 0) }, (_, index) => index + 2)
+  const remainingPages = Array.from({ length: Math.max(allPage - 1, 0) }, (_, index) => index + 2)
   const pageResults = await mapWithConcurrency(remainingPages, QQ_FAVORITES_MAX_CONCURRENCY, async (page) => {
     return getQQFavoriteSongs({ cookie, page, limit: pageSize }).catch(() => undefined)
   })
@@ -1252,12 +1282,7 @@ async function listQQFavoriteSongs(request: Request, limit: number): Promise<Win
   ]
 
   const deduped = dedupeSongs(songs)
-  const result = { items: sliceToFetchLimit(deduped, limit), total: total || deduped.length }
-  favoriteSongsCache.set(cacheKey, {
-    expiresAt: Date.now() + QQ_FAVORITES_CACHE_TTL_MS,
-    result: { items: deduped, total: result.total },
-  })
-  return result
+  return { items: deduped, total: deduped.length }
 }
 
 async function searchQQMusicWindow(query: string, limit: number): Promise<WindowResult<MusicInfo>> {
@@ -1387,6 +1412,50 @@ function lastPlayedTimeOf(item: any): number {
   if (typeof value !== 'string') return 0
   const time = Date.parse(value)
   return Number.isFinite(time) ? time : 0
+}
+
+function sortFavoriteItems(items: any[]): any[] {
+  return items
+    .map((item, index) => ({ item, index, time: favoriteItemTimeMs(item) }))
+    .sort((a, b) => b.time - a.time || a.index - b.index)
+    .map(entry => entry.item)
+}
+
+function favoriteItemTimeMs(item: any): number {
+  for (const value of favoriteItemTimeCandidates(item)) {
+    const time = parseTimeMs(value)
+    if (time > 0) return time
+  }
+  return 0
+}
+
+function favoriteItemTimeCandidates(item: any): unknown[] {
+  return [
+    item?.[FAVORITE_SORT_TIME],
+    item?.UserData?.FavoriteDate,
+    item?.UserData?.DateFavorite,
+    item?.UserData?.DateLastFavorite,
+    item?.UserData?.LastPlayedDate,
+    item?.DateFavorite,
+    item?.DateLastFavorite,
+    item?.DateModified,
+    item?.DateCreated,
+    item?.PremiereDate,
+  ]
+}
+
+function parseTimeMs(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return normalizeTimestampMs(value)
+  if (typeof value !== 'string' || !value.trim()) return 0
+  const numeric = Number(value)
+  if (Number.isFinite(numeric)) return normalizeTimestampMs(numeric)
+  const time = Date.parse(value)
+  return Number.isFinite(time) ? time : 0
+}
+
+function normalizeTimestampMs(value: number): number {
+  if (value <= 0) return 0
+  return value < 100_000_000_000 ? value * 1000 : value
 }
 
 function favoriteSongsToAlbumItems(songs: MusicInfo[]) {
@@ -1591,6 +1660,48 @@ function songToEmbyItem(song: MusicInfo, _playlistId?: string, isFavorite = fals
       Played: false,
     },
   }
+}
+
+function favoriteSongToEmbyItem(song: MusicInfo, index: number) {
+  const item = songToEmbyItem(song, undefined, true) as ReturnType<typeof songToEmbyItem> & {
+    UserData: ReturnType<typeof songToEmbyItem>['UserData'] & { LastPlayedDate?: string }
+  }
+  const favoriteTime = qqFavoriteSongTimeMs(song)
+  if (favoriteTime > 0) {
+    const favoriteDate = new Date(favoriteTime).toISOString()
+    item.DateCreated = favoriteDate
+    item.UserData.LastPlayedDate = favoriteDate
+  } else {
+    Object.defineProperty(item, FAVORITE_SORT_TIME, {
+      value: QQ_FAVORITE_ORDER_BASE_MS - index,
+      enumerable: false,
+    })
+  }
+  return item
+}
+
+function qqFavoriteSongTimeMs(song: MusicInfo): number {
+  return parseTimeMs(readNestedRawValue(song.raw, [
+    'favoriteTime',
+    'favTime',
+    'fav_time',
+    'addTime',
+    'add_time',
+    'modifyTime',
+    'modify_time',
+    'ctime',
+    'createTime',
+    'create_time',
+  ]))
+}
+
+function readNestedRawValue(raw: unknown, keys: string[]): unknown {
+  if (!raw || typeof raw !== 'object') return undefined
+  const record = raw as Record<string, unknown>
+  for (const key of keys) {
+    if (record[key] !== undefined) return record[key]
+  }
+  return undefined
 }
 
 function songMediaSource(song: MusicInfo, runtimeTicks?: number) {
@@ -1961,15 +2072,19 @@ function upstreamFirstPagedResponse(
   })
 }
 
-async function tryReadItemsResponse(request: Request, embyPath: string): Promise<{ Items?: any[]; TotalRecordCount?: number } | undefined> {
+async function tryReadItemsResponse(
+  request: Request,
+  embyPath: string,
+  pageOverride?: { startIndex?: number; limit?: number },
+): Promise<{ Items?: any[]; TotalRecordCount?: number } | undefined> {
   try {
-    return await fetchEmbyJson<{ Items?: any[]; TotalRecordCount?: number }>(`${embyPath}${await upstreamSearch(request)}`)
+    return await fetchEmbyJson<{ Items?: any[]; TotalRecordCount?: number }>(`${embyPath}${await upstreamSearch(request, pageOverride)}`)
   } catch {
     return undefined
   }
 }
 
-async function upstreamSearch(request: Request): Promise<string> {
+async function upstreamSearch(request: Request, pageOverride?: { startIndex?: number; limit?: number }): Promise<string> {
   const url = new URL(request.url)
   for (const key of ['ParentId', 'parentId']) {
     const value = url.searchParams.get(key)
@@ -1981,6 +2096,14 @@ async function upstreamSearch(request: Request): Promise<string> {
         url.searchParams.delete(key)
       }
     }
+  }
+  if (pageOverride?.startIndex !== undefined) {
+    url.searchParams.set('StartIndex', String(pageOverride.startIndex))
+    url.searchParams.delete('startIndex')
+  }
+  if (pageOverride?.limit !== undefined) {
+    url.searchParams.set('Limit', String(pageOverride.limit))
+    url.searchParams.delete('limit')
   }
   return url.search
 }

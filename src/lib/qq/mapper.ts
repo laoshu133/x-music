@@ -28,6 +28,16 @@ export type QQSong = {
   interval?: number
   time_public?: string
   year?: string | number
+  favoriteTime?: string | number
+  favTime?: string | number
+  fav_time?: string | number
+  addTime?: string | number
+  add_time?: string | number
+  modifyTime?: string | number
+  modify_time?: string | number
+  ctime?: string | number
+  createTime?: string | number
+  create_time?: string | number
   singer?: QQSinger[]
   album?: QQAlbum
   file?: QQFile
@@ -59,8 +69,8 @@ function mapTypes(file?: QQFile) {
 
 export function mapQQSong(item: QQSong): MusicInfo | null {
   const songmid = item.mid
-  const mediaMid = item.file?.media_mid
-  if (!songmid || !mediaMid) return null
+  if (!songmid) return null
+  const mediaMid = item.file?.media_mid ?? songmid
 
   const albumId = item.album?.mid ?? ''
   const firstSingerMid = item.singer?.[0]?.mid
@@ -85,6 +95,16 @@ export function mapQQSong(item: QQSong): MusicInfo | null {
       strMediaMid: mediaMid,
       albumMid: albumId,
       songmid,
+      favoriteTime: item.favoriteTime,
+      favTime: item.favTime,
+      fav_time: item.fav_time,
+      addTime: item.addTime,
+      add_time: item.add_time,
+      modifyTime: item.modifyTime,
+      modify_time: item.modify_time,
+      ctime: item.ctime,
+      createTime: item.createTime,
+      create_time: item.create_time,
       time_public: item.time_public,
       year: item.year,
       album: {
