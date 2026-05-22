@@ -32,4 +32,4 @@ services:
       - x-music-data:/app/data
 
 volumes:
-  - x-music-data:
+  x-music-data:
