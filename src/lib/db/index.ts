@@ -10,15 +10,15 @@ const databasePath = appConfig.databaseUrl.startsWith('file:')
 const resolvedDatabasePath = path.resolve(databasePath)
 fs.mkdirSync(path.dirname(resolvedDatabasePath), { recursive: true })
 
-export const db = new Database(resolvedDatabasePath)
-db.pragma('busy_timeout = 5000')
-db.pragma('journal_mode = WAL')
-db.pragma('foreign_keys = ON')
-
 const schemaPath = path.join(process.cwd(), 'src/lib/db/schema.sql')
 
-withDatabaseInitLock(() => {
-  db.exec(fs.readFileSync(schemaPath, 'utf8'))
+export const db = withDatabaseInitLock(() => {
+  const database = new Database(resolvedDatabasePath)
+  database.pragma('busy_timeout = 5000')
+  database.pragma('journal_mode = WAL')
+  database.pragma('foreign_keys = ON')
+
+  database.exec(fs.readFileSync(schemaPath, 'utf8'))
 
   for (const statement of [
     'ALTER TABLE track_files ADD COLUMN lyrics_path TEXT',
@@ -29,11 +29,13 @@ withDatabaseInitLock(() => {
     'ALTER TABLE resource_cache ADD COLUMN last_accessed_at TEXT',
   ]) {
     try {
-      db.exec(statement)
+      database.exec(statement)
     } catch (error) {
       if (!String(error).includes('duplicate column name')) throw error
     }
   }
+
+  return database
 })
 
 function withDatabaseInitLock<T>(callback: () => T): T {
