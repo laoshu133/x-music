@@ -38,10 +38,10 @@ npm install
 npm run dev
 ```
 
-The default development server is:
+The default local development server is:
 
 ```text
-http://localhost:8098
+http://localhost:3004
 ```
 
 Run the worker in a second terminal when testing background jobs:
@@ -81,15 +81,22 @@ data/
 
 ## Emby Gateway
 
-Point ampcast or another Emby-compatible client at:
+For local development, point ampcast or another Emby-compatible client at:
+
+```text
+http://localhost:3004
+```
+
+For Docker or production deployment, point clients at:
 
 ```text
 http://localhost:8098
 ```
 
-The canonical explicit gateway route is:
+The canonical explicit gateway routes are:
 
 ```text
+http://localhost:3004/x-music/emby
 http://localhost:8098/x-music/emby
 ```
 
@@ -114,6 +121,7 @@ Optional:
 
 - `DATABASE_URL`: SQLite database URL, default `file:./data/app.sqlite`.
 - `MUSIC_DATA_DIR`: shared music data root, default `./data`.
+- `PORT`: production/server port, default deployment value `8098`; local `npm run dev` uses `3004`.
 - `EMBY_PROXY_TIMEOUT_MS`: upstream Emby proxy timeout, default `30000`.
 - `AMPCAST_URL`: ampcast web entry used by the player page, default `https://ampcast.app/`.
 - `WORKER_POLL_INTERVAL_MS`: idle worker polling interval, default `5000`.

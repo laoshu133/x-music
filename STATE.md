@@ -5,7 +5,8 @@ Last updated: 2026-05-22
 - Project name: XMusic
 - Code name: `x-music`
 - Previous name: `miXmusic`
-- Default server port: `8098`
+- Default local development port: `3004`
+- Default production/deployment port: `8098`
 - Working directory: `/Users/xiaomi/projects/x-music`
 - Current branch: `master`
 - Current upstream: `origin/master`
@@ -25,7 +26,8 @@ The project is for personal/private deployment. Do not optimize for public multi
 - The virtual music library ID is `x-music-music`.
 - The account session cookie is `x_music_account`.
 - The gateway source response header is `x-x-music-source`.
-- Default local, Docker, and compose web port is `8098`.
+- Default local development port is `3004`.
+- Default Docker and production web port is `8098`.
 - Source scan after migration found no old `mixmusic`/`miXmusic` naming in tracked app source or docs.
 
 ## Implemented
@@ -129,8 +131,9 @@ The project is for personal/private deployment. Do not optimize for public multi
 
 ### P0 - Real Environment Acceptance
 
-- Verify the renamed service on `http://localhost:8098`.
-- In ampcast, connect to `http://localhost:8098` or `http://localhost:8098/x-music/emby`.
+- Verify the renamed service locally on `http://localhost:3004` and in deployment on `http://localhost:8098`.
+- In ampcast local development, connect to `http://localhost:3004` or `http://localhost:3004/x-music/emby`.
+- In ampcast deployment, connect to `http://localhost:8098` or `http://localhost:8098/x-music/emby`.
 - Confirm login with username `QQ${QQ_UID}` and generated account password.
 - Re-check My Songs, My Albums, Most Played, Recently Played, playlists, search, and image loading after the XMusic rename.
 - Verify one real QQ virtual song playback end-to-end:

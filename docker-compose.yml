@@ -6,16 +6,12 @@ services:
       dockerfile: Dockerfile
     command: node server.js
     restart: unless-stopped
-    environment:
-      EMBY_UPSTREAM_URL: ${EMBY_UPSTREAM_URL:?Set EMBY_UPSTREAM_URL in Dokploy environment}
-      EMBY_API_KEY: ${EMBY_API_KEY:?Set EMBY_API_KEY in Dokploy environment}
-      MUSIC_DATA_DIR: /app/data
-      DATABASE_URL: file:/app/data/app.sqlite
-      PORT: 8098
+    env_file:
+      - .env
     ports:
       - "8098:8098"
     volumes:
-      - ./data:/app/data
+      - x-music-data:/app/data
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8098/api/health >/dev/null || exit 1"]
       interval: 30s
@@ -30,10 +26,10 @@ services:
       dockerfile: Dockerfile
     command: npm run worker
     restart: unless-stopped
-    environment:
-      EMBY_UPSTREAM_URL: ${EMBY_UPSTREAM_URL:?Set EMBY_UPSTREAM_URL in Dokploy environment}
-      EMBY_API_KEY: ${EMBY_API_KEY:?Set EMBY_API_KEY in Dokploy environment}
-      MUSIC_DATA_DIR: /app/data
-      DATABASE_URL: file:/app/data/app.sqlite
+    env_file:
+      - .env
     volumes:
-      - ./data:/app/data
+      - x-music-data:/app/data
+
+volumes:
+  - x-music-data:
