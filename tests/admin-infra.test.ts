@@ -13,6 +13,7 @@ import { normalizeEmbyPath, stripOptionalEmbyPrefix } from '@/lib/emby/paths'
 import { proxyToUpstreamEmby } from '@/lib/emby/upstream-proxy'
 import { readEmbyAccessToken } from '@/lib/emby/tokens'
 import { decodeVirtualId, encodeVirtualId, songVirtualId } from '@/lib/emby/virtual-ids'
+import { updateAccountEmbyPassword } from '@/lib/db/accounts'
 
 function markAccountUpstreamBound(qqUin: string, embyUserId = `emby-user-${qqUin}`): void {
   db.prepare('UPDATE accounts SET emby_user_id = ? WHERE qq_uin = ?').run(embyUserId, qqUin)
@@ -382,6 +383,22 @@ test('local emby authenticate accepts mobile-compatible casing and form credenti
     assert.equal((await formResponse!.json()).User.Name, account.embyUsername)
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999025')
+    clearQQLoginCookie()
+  }
+})
+
+test('account emby password can be manually changed', () => {
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999026')
+    saveQQLoginCookie('uin=o999026; qm_keyst=test-key')
+    const account = getAccountByQQ('999026')
+    assert.ok(account)
+
+    const updated = updateAccountEmbyPassword(account.qqUin, ' manual-player-password ')
+    assert.equal(updated?.embyPassword, 'manual-player-password')
+    assert.equal(getAccountByQQ('999026')?.embyPassword, 'manual-player-password')
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999026')
     clearQQLoginCookie()
   }
 })

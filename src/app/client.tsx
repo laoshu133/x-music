@@ -181,6 +181,7 @@ export default function MusicClient() {
   const [message, setMessage] = useState('')
   const [browserOrigin, setBrowserOrigin] = useState('')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [embyPasswordDraft, setEmbyPasswordDraft] = useState('')
   const [configDraft, setConfigDraft] = useState<ConfigDraft>({
     qqEnabled: true,
     qqSyncFavorites: true,
@@ -210,6 +211,7 @@ export default function MusicClient() {
   const loadAccount = () => run(s => setAccount(s), () => fetchJson<AccountState>('/api/account'))
   const loadAccountEmbyConfig = () => run(s => setAccountEmbyConfig(s), async () => {
     const data = await fetchJson<AccountEmbyConfig>('/api/account/emby')
+    setEmbyPasswordDraft(data.password)
     return data
   })
   const loadHealth = () => run(s => setHealth(s), async () => {
@@ -304,18 +306,13 @@ export default function MusicClient() {
     if (next === 'jobs') loadJobs()
   }
 
-  const regeneratePassword = async () => {
-    setMessage('')
-    await run(s => setAccountEmbyConfig(s), () => fetchJson<AccountEmbyConfig>('/api/account/emby', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ action: 'regenerate-password' }),
-    }))
-    setMessage('播放器密码已重置，请重新连接')
-  }
-
   const saveAdminConfig = async () => {
     setMessage('')
+    const password = embyPasswordDraft.trim()
+    if (!password) {
+      setMessage('请输入播放器密码')
+      return
+    }
     const payload: Record<string, unknown> = {
       qqEnabled: configDraft.qqEnabled,
       qqSyncFavorites: configDraft.qqSyncFavorites,
@@ -326,6 +323,15 @@ export default function MusicClient() {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(payload),
     }))
+    await run(s => setAccountEmbyConfig(s), async () => {
+      const data = await fetchJson<AccountEmbyConfig>('/api/account/emby', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ password }),
+      })
+      setEmbyPasswordDraft(data.password)
+      return data
+    })
     setMessage('配置已保存')
   }
 
@@ -460,9 +466,10 @@ export default function MusicClient() {
               draft={configDraft}
               embyConfig={accountEmbyConfig}
               connection={connectionInfo}
+              passwordDraft={embyPasswordDraft}
               onChange={setConfigDraft}
+              onPasswordChange={setEmbyPasswordDraft}
               onSave={saveAdminConfig}
-              onRegeneratePassword={regeneratePassword}
               loading={adminConfig.loading || accountEmbyConfig.loading}
             />
           </section>
@@ -681,17 +688,19 @@ function ConfigPanel({
   draft,
   embyConfig,
   connection,
+  passwordDraft,
   onChange,
+  onPasswordChange,
   onSave,
-  onRegeneratePassword,
   loading,
 }: {
   draft: ConfigDraft
   embyConfig: ApiState<AccountEmbyConfig>
   connection: ConnectionInfo
+  passwordDraft: string
   onChange: (value: ConfigDraft) => void
+  onPasswordChange: (value: string) => void
   onSave: () => void
-  onRegeneratePassword: () => void
   loading: boolean
 }) {
   const patch = (value: Partial<ConfigDraft>) => onChange({ ...draft, ...value })
@@ -712,13 +721,17 @@ function ConfigPanel({
           <div>
             <dt>密码</dt>
             <dd>
-              <span>{showPassword ? connection.password || '-' : maskedSecret(connection.password)}</span>
+              <input
+                type={showPassword ? 'text' : 'password'}
+                value={passwordDraft}
+                onChange={event => onPasswordChange(event.target.value)}
+                placeholder="输入播放器密码"
+              />
               <span className="inline-actions">
-                <IconButton label={showPassword ? '隐藏密码' : '显示密码'} onClick={() => setShowPassword(value => !value)} disabled={!connection.password}>
+                <IconButton label={showPassword ? '隐藏密码' : '显示密码'} onClick={() => setShowPassword(value => !value)} disabled={!passwordDraft}>
                   {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
                 </IconButton>
-                <CopyButton value={connection.password} label="复制密码" iconOnly />
-                <IconButton label="重新生成密码" onClick={onRegeneratePassword} disabled={loading}><RefreshCw size={16} /></IconButton>
+                <CopyButton value={passwordDraft} label="复制密码" iconOnly />
               </span>
             </dd>
           </div>

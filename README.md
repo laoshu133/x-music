@@ -93,14 +93,9 @@ For Docker or production deployment, point clients at:
 http://localhost:8098
 ```
 
-The canonical explicit gateway routes are:
-
-```text
-http://localhost:3004/x-music/emby
-http://localhost:8098/x-music/emby
-```
-
-Fallback rewrites route unmatched Emby-style paths into `/x-music/emby`.
+The service root is the Emby-compatible gateway. Emby-style paths such as
+`/System/Info/Public`, `/Users/AuthenticateByName`, and `/Users/{id}/Items`
+are handled directly from the root.
 
 After QQ login, use the account information shown in the UI:
 

@@ -21,8 +21,8 @@ The project is for personal/private deployment. Do not optimize for public multi
 
 - The active product name is `XMusic`.
 - The active package/code name is `x-music`.
-- The canonical Emby gateway route is `/x-music/emby`.
-- Legacy `/mixmusic/emby` compatibility is intentionally not maintained.
+- The canonical Emby gateway is the service root (`/`).
+- Legacy `/mixmusic/emby` and `/x-music/emby` compatibility is intentionally not maintained.
 - The virtual music library ID is `x-music-music`.
 - The account session cookie is `x_music_account`.
 - The gateway source response header is `x-x-music-source`.
@@ -35,7 +35,7 @@ The project is for personal/private deployment. Do not optimize for public multi
 - Next.js 16 + React 19 application shell.
 - Docker image name is `x-music-app:latest`.
 - XMusic branding is reflected in UI, metadata, Emby server info, worker logs, README, and `.env.example`.
-- Fallback Emby-style route rewriting targets `/x-music/emby`.
+- Root-level Emby-style HTTP routes are handled by `src/app/[...path]/route.ts`.
 - Management UI is focused on QQ login, Emby connection details, runtime config, ampcast launch, and status checks.
 
 ## Emby Gateway Progress
@@ -112,7 +112,7 @@ The project is for personal/private deployment. Do not optimize for public multi
 - `npm test` passed on 2026-05-22: 58 tests passed.
 - `npm run build` passed on 2026-05-22.
 - Chrome verification on 2026-05-22 confirmed that upstream Emby Web only checks the music library access box when `EnabledFolders` contains the music library `Guid` (`0bdce3b2639a4626a99b334b6204f569` in the current source), while `11696830` remains the browsing parentId.
-- Current build output includes `/api/jobs`, `/x-music/emby`, and `/x-music/emby/[...path]`.
+- Current build output includes `/api/jobs` and the root-level catch-all Emby gateway route.
 - `git status --short --branch` was clean before this state-update task.
 - Tests cover:
   - QQ login account creation with `QQ${QQ_UID}`;
@@ -147,8 +147,8 @@ The project is for personal/private deployment. Do not optimize for public multi
 ### P0 - Real Environment Acceptance
 
 - Verify the renamed service locally on `http://localhost:3004` and in deployment on `http://localhost:8098`.
-- In ampcast local development, connect to `http://localhost:3004` or `http://localhost:3004/x-music/emby`.
-- In ampcast deployment, connect to `http://localhost:8098` or `http://localhost:8098/x-music/emby`.
+- In ampcast local development, connect to `http://localhost:3004`.
+- In ampcast deployment, connect to `http://localhost:8098`.
 - Confirm login with username `QQ${QQ_UID}` and generated account password.
 - Re-check My Songs, My Albums, Most Played, Recently Played, playlists, search, and image loading after the XMusic rename.
 - Verify one real QQ virtual song playback end-to-end:
