@@ -17,7 +17,7 @@ export async function GET(request: Request) {
   }
 
   const page = getPositiveInt(searchParams.get('page'), 1, 1000)
-  const limit = getPositiveInt(searchParams.get('limit'), 30, 100)
+  const limit = getPositiveInt(searchParams.get('limit'), 30, 50)
   const result = await searchQQMusic(query, page, limit)
   return NextResponse.json(result)
 }

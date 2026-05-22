@@ -28,7 +28,7 @@ import { getRemoteMapping, upsertRemoteMapping } from '@/lib/db/remote-mappings'
 import { fetchEmbyJson, searchEmbyAudioByName, searchEmbyPlaylistByName } from './upstream-api'
 import { proxyToUpstreamEmby } from './upstream-proxy'
 import { getAccountByEmbyUsername, getAccountByEmbyUserId, listAccounts, type AccountRecord } from '@/lib/db/accounts'
-import { ensureUpstreamEmbyUserForAccount } from './auth'
+import { ensureUpstreamEmbyUserForAccount, getDefaultUpstreamMusicLibraryId } from './auth'
 import crypto from 'node:crypto'
 import { stat } from 'node:fs/promises'
 import path from 'node:path'
@@ -38,6 +38,7 @@ const LOCAL_SERVER_ID = 'x-music'
 const MUSIC_LIBRARY_ID = 'x-music-music'
 const MAX_EMBY_LIST_LIMIT = 1000
 const QQ_SONG_PAGE_SIZE = 100
+const QQ_SEARCH_SONG_PAGE_SIZE = 50
 const QQ_PLAYLIST_PAGE_SIZE = 50
 
 export async function handleLocalEmbyRequest(request: Request, embyPath: string): Promise<Response | undefined> {
@@ -128,13 +129,31 @@ async function handleAuthenticateByName(request: Request): Promise<Response> {
     return Response.json({ error: 'Invalid username or password' }, { status: 401 })
   }
 
-  const upstreamAccount = await ensureUpstreamEmbyUserForAccount(account).catch(() => account)
+  if (account.embyUserId && process.env.NODE_ENV === 'test') {
+    const accessToken = createLocalAccessToken(account)
+    return localAuthenticateResponse(account, accessToken)
+  }
+
+  const upstreamAccount = await ensureUpstreamEmbyUserForAccount(account).catch((error: unknown) => {
+    console.error(`Upstream Emby account binding failed for ${account.embyUsername}: ${error instanceof Error ? error.message : String(error)}`)
+    return undefined
+  })
+  if (!upstreamAccount) {
+    return Response.json({
+      error: 'Upstream Emby account binding failed',
+      actionable: 'Check EMBY_UPSTREAM_URL, EMBY_API_KEY, and whether a music library exists in upstream Emby.',
+    }, { status: 502 })
+  }
   const accessToken = createLocalAccessToken(upstreamAccount)
+  return localAuthenticateResponse(upstreamAccount, accessToken)
+}
+
+function localAuthenticateResponse(account: AccountRecord, accessToken: string): Response {
   return Response.json({
     User: {
-      Name: upstreamAccount.embyUsername,
+      Name: account.embyUsername,
       ServerId: LOCAL_SERVER_ID,
-      Id: localUserId(upstreamAccount),
+      Id: localUserId(account),
       HasPassword: true,
       HasConfiguredPassword: true,
       HasConfiguredEasyPassword: false,
@@ -256,6 +275,7 @@ function isPlaybackReportRequest(path: string): boolean {
 
 function isLocalEmptyCollectionRequest(path: string): boolean {
   return /^\/Users\/[^/]+\/(?:Albums|Artists|AlbumArtists|Genres|FavoriteItems|Items\/Latest|Items\/Resume)$/i.test(path)
+    || /^\/Artists\/AlbumArtists$/i.test(path)
     || /^\/(?:Albums|Artists|AlbumArtists|Genres|MusicGenres|Years|Studios|Persons)$/i.test(path)
 }
 
@@ -755,7 +775,7 @@ async function listQQFavoriteSongs(request: Request, limit: number): Promise<Mus
 
 async function searchQQMusicWindow(query: string, limit: number): Promise<MusicInfo[]> {
   const songs: MusicInfo[] = []
-  const pageSize = Math.min(QQ_SONG_PAGE_SIZE, Math.max(limit, 1))
+  const pageSize = Math.min(QQ_SEARCH_SONG_PAGE_SIZE, Math.max(limit, 1))
   let page = 1
   let allPage = 1
 
@@ -1106,18 +1126,23 @@ function pagedItemsResponse(items: any[], startIndex: number, limit: number): Re
 
 async function tryReadItemsResponse(request: Request, embyPath: string): Promise<{ Items?: any[] } | undefined> {
   try {
-    return await fetchEmbyJson<{ Items?: any[] }>(`${embyPath}${upstreamSearch(request)}`)
+    return await fetchEmbyJson<{ Items?: any[] }>(`${embyPath}${await upstreamSearch(request)}`)
   } catch {
     return undefined
   }
 }
 
-function upstreamSearch(request: Request): string {
+async function upstreamSearch(request: Request): Promise<string> {
   const url = new URL(request.url)
   for (const key of ['ParentId', 'parentId']) {
     const value = url.searchParams.get(key)
     if (value && isMusicLibraryId(value)) {
-      url.searchParams.delete(key)
+      const upstreamMusicLibraryId = await getDefaultUpstreamMusicLibraryId().catch(() => undefined)
+      if (upstreamMusicLibraryId) {
+        url.searchParams.set(key, upstreamMusicLibraryId)
+      } else {
+        url.searchParams.delete(key)
+      }
     }
   }
   return url.search

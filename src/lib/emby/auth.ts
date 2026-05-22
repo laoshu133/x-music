@@ -1,12 +1,16 @@
 import { getEffectiveSettings } from '@/lib/db/settings'
 import { updateAccountEmbyAuth, type AccountRecord } from '@/lib/db/accounts'
+import { db } from '@/lib/db'
 
 const MUSIC_COLLECTION_TYPE = 'music'
 const MUSIC_LIBRARY_NAME = '音乐'
+const UPSTREAM_MUSIC_LIBRARY_MAPPING_KEY = 'emby.upstreamMusicLibraryMapping'
+const LEGACY_UPSTREAM_MUSIC_LIBRARY_IDS_KEY = 'emby.upstreamMusicLibraryIds'
 
 interface EmbyLibraryCandidate {
   Id?: string
   ItemId?: string
+  Guid?: string
   Name?: string
   CollectionType?: string
   Type?: string
@@ -14,6 +18,22 @@ interface EmbyLibraryCandidate {
     ItemId?: string
   }
   Locations?: string[]
+}
+
+interface UpstreamMusicLibraryMapping {
+  parentIds: string[]
+  policyIds: string[]
+}
+
+interface EmbyUserPolicy {
+  EnableAllFolders?: boolean
+  EnabledFolders?: string[]
+}
+
+interface EmbyUserWithPolicy {
+  Id?: string
+  Name?: string
+  Policy?: EmbyUserPolicy
 }
 
 export function embyAuthorizationHeader(token?: string): string {
@@ -52,27 +72,78 @@ export async function ensureUpstreamEmbyUserForAccount(account: AccountRecord): 
 }
 
 async function applyRestrictedUserPolicy(userId: string): Promise<void> {
-  const musicLibraryIds = await findMusicLibraryIds()
-  if (!musicLibraryIds.length) {
+  const musicLibrary = await getUpstreamMusicLibraryMapping({ refresh: true })
+  if (!musicLibrary.policyIds.length) {
     throw new Error('Unable to find upstream Emby music library id for restricted user policy')
   }
   await adminEmbyFetch(`/Users/${encodeURIComponent(userId)}/Policy`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(restrictedUserPolicy(musicLibraryIds)),
+    body: JSON.stringify(restrictedUserPolicy(musicLibrary.policyIds)),
   })
+  await verifyRestrictedUserPolicy(userId, musicLibrary.policyIds)
 }
 
-async function findMusicLibraryIds(): Promise<string[]> {
+export async function getDefaultUpstreamMusicLibraryId(): Promise<string | undefined> {
+  return readCachedMusicLibraryMapping().parentIds[0]
+}
+
+async function getUpstreamMusicLibraryMapping(options: { refresh?: boolean } = {}): Promise<UpstreamMusicLibraryMapping> {
+  if (!options.refresh) {
+    const cached = readCachedMusicLibraryMapping()
+    if (cached.policyIds.length || cached.parentIds.length) return cached
+  }
+
+  const mapping = await discoverMusicLibraryMapping()
+  if (mapping.policyIds.length || mapping.parentIds.length) writeCachedMusicLibraryMapping(mapping)
+  return mapping
+}
+
+async function discoverMusicLibraryMapping(): Promise<UpstreamMusicLibraryMapping> {
   const candidates = [
     ...await findMusicLibrariesFromVirtualFolders(),
     ...await findMusicLibrariesFromCollectionFolders(),
   ]
-  const ids = candidates
-    .filter(isMusicLibrary)
-    .flatMap(readLibraryIds)
-    .filter((id): id is string => Boolean(id))
-  return [...new Set(ids)]
+  const musicLibraries = candidates.filter(isMusicLibrary)
+  return {
+    parentIds: unique(musicLibraries.flatMap(readParentLibraryIds)),
+    policyIds: unique(musicLibraries.flatMap(readPolicyLibraryIds)),
+  }
+}
+
+function readCachedMusicLibraryMapping(): UpstreamMusicLibraryMapping {
+  const row = db.prepare('SELECT value_json FROM app_settings WHERE key = ?').get(UPSTREAM_MUSIC_LIBRARY_MAPPING_KEY) as { value_json: string } | undefined
+  const fallback = readLegacyCachedMusicLibraryMapping()
+  if (!row) return fallback
+  try {
+    const value = JSON.parse(row.value_json) as unknown
+    if (!isObject(value)) return fallback
+    return {
+      parentIds: stringArray((value as { parentIds?: unknown }).parentIds),
+      policyIds: stringArray((value as { policyIds?: unknown }).policyIds),
+    }
+  } catch {
+    return fallback
+  }
+}
+
+function readLegacyCachedMusicLibraryMapping(): UpstreamMusicLibraryMapping {
+  const row = db.prepare('SELECT value_json FROM app_settings WHERE key = ?').get(LEGACY_UPSTREAM_MUSIC_LIBRARY_IDS_KEY) as { value_json: string } | undefined
+  if (!row) return { parentIds: [], policyIds: [] }
+  try {
+    const ids = stringArray(JSON.parse(row.value_json) as unknown)
+    return { parentIds: ids, policyIds: ids }
+  } catch {
+    return { parentIds: [], policyIds: [] }
+  }
+}
+
+function writeCachedMusicLibraryMapping(mapping: UpstreamMusicLibraryMapping): void {
+  db.prepare(`
+    INSERT INTO app_settings (key, value_json, updated_at)
+    VALUES (?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP
+  `).run(UPSTREAM_MUSIC_LIBRARY_MAPPING_KEY, JSON.stringify(mapping))
 }
 
 async function findMusicLibrariesFromVirtualFolders(): Promise<EmbyLibraryCandidate[]> {
@@ -99,12 +170,33 @@ function isMusicLibrary(item: EmbyLibraryCandidate): boolean {
     || name.toLowerCase() === 'music'
 }
 
-function readLibraryIds(item: EmbyLibraryCandidate): string[] {
+function readParentLibraryIds(item: EmbyLibraryCandidate): string[] {
   return [
     item.ItemId,
     item.LibraryOptions?.ItemId,
     item.Id,
   ].filter((id): id is string => Boolean(id))
+}
+
+function readPolicyLibraryIds(item: EmbyLibraryCandidate): string[] {
+  return [
+    item.Guid,
+    item.ItemId,
+    item.LibraryOptions?.ItemId,
+    item.Id,
+  ].filter((id): id is string => Boolean(id))
+}
+
+function unique(ids: string[]): string[] {
+  return [...new Set(ids.filter(id => Boolean(id.trim())))]
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? unique(value.filter((id): id is string => typeof id === 'string')) : []
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
 }
 
 function restrictedUserPolicy(enabledFolders: string[]) {
@@ -152,6 +244,22 @@ async function findUpstreamUserByName(username: string): Promise<{ Id?: string; 
 
 async function findUpstreamUserById(userId: string): Promise<{ Id?: string; Name?: string } | undefined> {
   return adminEmbyFetch<{ Id?: string; Name?: string }>(`/Users/${encodeURIComponent(userId)}`)
+}
+
+async function verifyRestrictedUserPolicy(userId: string, enabledFolders: string[]): Promise<void> {
+  let lastPolicy: EmbyUserPolicy | undefined
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const user = await adminEmbyFetch<EmbyUserWithPolicy>(`/Users/${encodeURIComponent(userId)}`)
+    lastPolicy = user.Policy
+    if (isExpectedRestrictedPolicy(lastPolicy, enabledFolders)) return
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  throw new Error(`Upstream Emby user policy verification failed for ${userId}: expected music folders ${enabledFolders.join(', ')}, got ${lastPolicy?.EnabledFolders?.join(', ') ?? '(none)'}`)
+}
+
+function isExpectedRestrictedPolicy(policy: EmbyUserPolicy | undefined, enabledFolders: string[]): boolean {
+  const actualFolders = new Set(policy?.EnabledFolders ?? [])
+  return policy?.EnableAllFolders === false && enabledFolders.some(id => actualFolders.has(id))
 }
 
 async function createUpstreamUser(username: string): Promise<string | undefined> {

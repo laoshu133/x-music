@@ -51,13 +51,19 @@ The project is for personal/private deployment. Do not optimize for public multi
   - remote control disabled;
   - shared device control disabled;
   - all folders disabled except the music library;
-  - music library detection supports `CollectionType=music`, `音乐`, and `Music`.
-- Music library permission detection now falls back from `/Library/VirtualFolders` to Emby `CollectionFolder` items, covering sources where the music library id appears as a URL parentId such as `11696830`.
+  - music library detection supports `CollectionType=music`, `音乐`, and `Music`;
+  - Emby user access policy writes both the music library `Guid` and `ItemId` when available, because Emby Web's access-page checkboxes use `Guid` while music browsing URLs use `ItemId`/parentId.
+- Music library permission detection now falls back from `/Library/VirtualFolders` to Emby `CollectionFolder` items, covering sources where the music library URL parentId appears as `ItemId`/`Id` such as `11696830`.
 - Applying a restricted upstream user policy fails fast if no music library id can be found, instead of saving a user with no folder permissions.
+- After applying the restricted upstream user policy, XMusic reads the upstream user back and verifies `EnableAllFolders=false` and that at least one discovered music library access id is present in `EnabledFolders`; login returns a 502 instead of silently succeeding if binding or verification fails.
 - Local user views expose the XMusic virtual music collection as `x-music-music`.
+- The discovered upstream music library mapping is cached on login/bind:
+  - `parentIds` drive `x-music-music` to upstream Emby list/proxy `ParentId` mapping;
+  - `policyIds` drive upstream Emby user `EnabledFolders` permissions.
 - Search/list/favorites/recent/played endpoints merge upstream Emby items with QQ virtual items.
 - QQ virtual playlist, album, genre, image, item-detail, audio, and playback-report paths are handled locally.
 - Virtual IDs no longer leak to upstream Emby for playlist items, item details, audio HEAD, or playback report requests.
+- Ampcast-style artist collection requests such as `/Artists/AlbumArtists?ParentId=x-music-music` are handled as local collection requests and fall back to empty collections if upstream Emby rejects them.
 - Real upstream Emby image requests proxy correctly.
 
 ## QQ Music Progress
@@ -103,14 +109,17 @@ The project is for personal/private deployment. Do not optimize for public multi
 
 ## Verified
 
-- `npm test` passed on 2026-05-22: 55 tests passed.
+- `npm test` passed on 2026-05-22: 58 tests passed.
 - `npm run build` passed on 2026-05-22.
+- Chrome verification on 2026-05-22 confirmed that upstream Emby Web only checks the music library access box when `EnabledFolders` contains the music library `Guid` (`0bdce3b2639a4626a99b334b6204f569` in the current source), while `11696830` remains the browsing parentId.
 - Current build output includes `/api/jobs`, `/x-music/emby`, and `/x-music/emby/[...path]`.
 - `git status --short --branch` was clean before this state-update task.
 - Tests cover:
   - QQ login account creation with `QQ${QQ_UID}`;
   - upstream Emby user creation, rename, and restricted policy;
-  - upstream Emby music library permission fallback through CollectionFolder ids;
+  - upstream Emby user policy verification failure when the written policy does not include the music library;
+  - upstream Emby music library permission fallback through CollectionFolder ids and `Guid`-based access ids;
+  - local `x-music-music` parent mapping to the cached upstream music library id;
   - local Emby authentication;
   - CORS;
   - upstream proxy header cleanup;
@@ -119,6 +128,7 @@ The project is for personal/private deployment. Do not optimize for public multi
   - virtual playlist expansion;
   - virtual item details/audio/playback reports;
   - image proxying;
+  - Ampcast `/Artists/AlbumArtists` collection compatibility;
   - resource cache hits for QQ virtual artwork;
   - stable QQ song virtual IDs across playlists;
   - cache, job, LX URL, QQ favorite/history, and tagging behavior.

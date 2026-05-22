@@ -1,8 +1,10 @@
 import { getEffectiveSettings } from '@/lib/db/settings'
 import { markRequestSource } from '@/lib/request-log'
 import { listAccounts } from '@/lib/db/accounts'
-import { embyAuthorizationHeader, getEmbyAccessToken } from './auth'
+import { embyAuthorizationHeader, getDefaultUpstreamMusicLibraryId, getEmbyAccessToken } from './auth'
 import { createLocalAccessToken, readEmbyAccessToken } from './tokens'
+
+const MUSIC_LIBRARY_ID = 'x-music-music'
 
 const hopByHopHeaders = new Set([
   'connection',
@@ -34,6 +36,7 @@ export async function proxyToUpstreamEmby(request: Request, embyPath: string): P
   const upstreamUrl = new URL(settings.emby.baseUrl)
   upstreamUrl.pathname = joinPaths(upstreamUrl.pathname, embyPath)
   upstreamUrl.search = incomingUrl.search
+  await applyLocalLibraryMapping(upstreamUrl)
 
   const headers = new Headers()
   request.headers.forEach((value, key) => {
@@ -80,6 +83,18 @@ function applyToken(url: URL, headers: Headers, token: string | undefined): void
   url.searchParams.set('api_key', token)
   headers.set('X-Emby-Token', token)
   headers.set('X-Emby-Authorization', embyAuthorizationHeader(token))
+}
+
+async function applyLocalLibraryMapping(url: URL): Promise<void> {
+  for (const key of ['ParentId', 'parentId']) {
+    if (url.searchParams.get(key) !== MUSIC_LIBRARY_ID) continue
+    const upstreamMusicLibraryId = await getDefaultUpstreamMusicLibraryId().catch(() => undefined)
+    if (upstreamMusicLibraryId) {
+      url.searchParams.set(key, upstreamMusicLibraryId)
+    } else {
+      url.searchParams.delete(key)
+    }
+  }
 }
 
 function joinPaths(basePath: string, embyPath: string): string {

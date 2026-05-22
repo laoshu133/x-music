@@ -14,6 +14,14 @@ import { proxyToUpstreamEmby } from '@/lib/emby/upstream-proxy'
 import { readEmbyAccessToken } from '@/lib/emby/tokens'
 import { decodeVirtualId, encodeVirtualId, songVirtualId } from '@/lib/emby/virtual-ids'
 
+function markAccountUpstreamBound(qqUin: string, embyUserId = `emby-user-${qqUin}`): void {
+  db.prepare('UPDATE accounts SET emby_user_id = ? WHERE qq_uin = ?').run(embyUserId, qqUin)
+}
+
+function clearUpstreamMusicLibraryCache(): void {
+  db.prepare("DELETE FROM app_settings WHERE key IN ('emby.upstreamMusicLibraryMapping', 'emby.upstreamMusicLibraryIds')").run()
+}
+
 test('settings store persists typed values and merges effective defaults', () => {
   deleteSetting('qq.enabled')
   assert.equal(getSetting('qq.enabled'), undefined)
@@ -61,9 +69,16 @@ test('upstream emby account creation uses QQ-prefixed username and restricts acc
 
       if (requestUrl.pathname.endsWith('/Users')) return Response.json([])
       if (requestUrl.pathname.endsWith('/Users/New')) return Response.json({ Id: 'emby-user-999019', Name: body?.Name })
+      if (requestUrl.pathname.endsWith('/Users/emby-user-999019') && init?.method !== 'POST') {
+        return Response.json({
+          Id: 'emby-user-999019',
+          Name: 'QQ999019',
+          Policy: { EnableAllFolders: false, EnabledFolders: ['music-library-guid'] },
+        })
+      }
       if (requestUrl.pathname.endsWith('/Library/VirtualFolders')) {
         return Response.json([
-          { ItemId: 'music-folder-id', Name: '音乐', CollectionType: 'music' },
+          { Guid: 'music-library-guid', ItemId: 'music-folder-id', Name: '音乐', CollectionType: 'music' },
           { ItemId: 'movie-folder-id', Name: '电影', CollectionType: 'movies' },
         ])
       }
@@ -82,13 +97,14 @@ test('upstream emby account creation uses QQ-prefixed username and restricts acc
     const policy = requests.find(request => request.url.pathname.endsWith('/Users/emby-user-999019/Policy'))?.body
     assert.ok(policy)
     assert.equal(policy.EnableAllFolders, false)
-    assert.deepEqual(policy.EnabledFolders, ['music-folder-id'])
+    assert.deepEqual(policy.EnabledFolders, ['music-library-guid', 'music-folder-id'])
     assert.equal(policy.EnableAllChannels, false)
     assert.deepEqual(policy.EnabledChannels, [])
     assert.equal(policy.EnableRemoteControlOfOtherUsers, false)
     assert.equal(policy.EnableSharedDeviceControl, false)
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999019')
+    clearUpstreamMusicLibraryCache()
     clearQQLoginCookie()
     globalThis.fetch = originalFetch
   }
@@ -110,6 +126,13 @@ test('upstream emby account policy falls back to collection folder music id', as
 
       if (requestUrl.pathname.endsWith('/Users')) return Response.json([])
       if (requestUrl.pathname.endsWith('/Users/New')) return Response.json({ Id: 'emby-user-999021', Name: body?.Name })
+      if (requestUrl.pathname.endsWith('/Users/emby-user-999021') && init?.method !== 'POST') {
+        return Response.json({
+          Id: 'emby-user-999021',
+          Name: 'QQ999021',
+          Policy: { EnableAllFolders: false, EnabledFolders: ['music-library-guid'] },
+        })
+      }
       if (requestUrl.pathname.endsWith('/Library/VirtualFolders')) {
         return Response.json([
           { Name: 'Music', CollectionType: 'music' },
@@ -119,7 +142,7 @@ test('upstream emby account policy falls back to collection folder music id', as
       if (requestUrl.pathname.endsWith('/Items') && requestUrl.searchParams.get('IncludeItemTypes') === 'CollectionFolder') {
         return Response.json({
           Items: [
-            { Id: '11696830', Name: 'Music', Type: 'CollectionFolder', CollectionType: 'music' },
+            { Guid: 'music-library-guid', Id: '11696830', Name: 'Music', Type: 'CollectionFolder', CollectionType: 'music' },
             { Id: 'movie-folder-id', Name: 'Movies', Type: 'CollectionFolder', CollectionType: 'movies' },
           ],
         })
@@ -134,9 +157,51 @@ test('upstream emby account policy falls back to collection folder music id', as
     const policy = requests.find(request => request.url.pathname.endsWith('/Users/emby-user-999021/Policy'))?.body
     assert.ok(policy)
     assert.equal(policy.EnableAllFolders, false)
-    assert.deepEqual(policy.EnabledFolders, ['11696830'])
+    assert.deepEqual(policy.EnabledFolders, ['music-library-guid', '11696830'])
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999021')
+    clearUpstreamMusicLibraryCache()
+    clearQQLoginCookie()
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('upstream emby account binding fails when policy verification misses music library', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999024')
+    saveQQLoginCookie('uin=o999024; qm_keyst=test-key')
+    const account = getAccountByQQ('999024')
+    assert.ok(account)
+
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = new URL(String(url))
+      const body = typeof init?.body === 'string' ? JSON.parse(init.body) as Record<string, unknown> : undefined
+
+      if (requestUrl.pathname.endsWith('/Users')) return Response.json([])
+      if (requestUrl.pathname.endsWith('/Users/New')) return Response.json({ Id: 'emby-user-999024', Name: body?.Name })
+      if (requestUrl.pathname.endsWith('/Users/emby-user-999024') && init?.method !== 'POST') {
+        return Response.json({
+          Id: 'emby-user-999024',
+          Name: 'QQ999024',
+          Policy: { EnableAllFolders: false, EnabledFolders: [] },
+        })
+      }
+      if (requestUrl.pathname.endsWith('/Library/VirtualFolders')) {
+        return Response.json([{ Guid: 'music-library-guid', ItemId: 'music-folder-id', Name: '音乐', CollectionType: 'music' }])
+      }
+      if (requestUrl.pathname.endsWith('/Users/emby-user-999024/Policy')) return new Response(null, { status: 204 })
+
+      return Response.json({ error: 'unexpected request' }, { status: 500 })
+    }) as typeof fetch
+
+    await assert.rejects(
+      ensureUpstreamEmbyUserForAccount(account),
+      /policy verification failed/,
+    )
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999024')
+    clearUpstreamMusicLibraryCache()
     clearQQLoginCookie()
     globalThis.fetch = originalFetch
   }
@@ -159,13 +224,17 @@ test('upstream emby account binding normalizes existing username and reapplies r
       requests.push({ url: requestUrl, init, body })
 
       if (requestUrl.pathname.endsWith('/Users/emby-user-999020') && init?.method !== 'POST') {
-        return Response.json({ Id: 'emby-user-999020', Name: '999020' })
+        return Response.json({
+          Id: 'emby-user-999020',
+          Name: '999020',
+          Policy: { EnableAllFolders: false, EnabledFolders: ['music-library-guid'] },
+        })
       }
       if (requestUrl.pathname.endsWith('/Users/emby-user-999020') && init?.method === 'POST') {
         return new Response(null, { status: 204 })
       }
       if (requestUrl.pathname.endsWith('/Library/VirtualFolders')) {
-        return Response.json({ Items: [{ Id: 'music-folder-id', Name: 'Music', CollectionType: 'music' }] })
+        return Response.json({ Items: [{ Guid: 'music-library-guid', Id: 'music-folder-id', Name: 'Music', CollectionType: 'music' }] })
       }
       if (requestUrl.pathname.endsWith('/Users/emby-user-999020/Policy')) return new Response(null, { status: 204 })
 
@@ -181,12 +250,13 @@ test('upstream emby account binding normalizes existing username and reapplies r
     const policy = requests.find(request => request.url.pathname.endsWith('/Users/emby-user-999020/Policy'))?.body
     assert.ok(policy)
     assert.equal(policy.EnableAllFolders, false)
-    assert.deepEqual(policy.EnabledFolders, ['music-folder-id'])
+    assert.deepEqual(policy.EnabledFolders, ['music-library-guid', 'music-folder-id'])
     assert.equal(policy.EnableAllChannels, false)
     assert.equal(policy.EnableRemoteControlOfOtherUsers, false)
     assert.equal(policy.EnableSharedDeviceControl, false)
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999020')
+    clearUpstreamMusicLibraryCache()
     clearQQLoginCookie()
     globalThis.fetch = originalFetch
   }
@@ -257,6 +327,7 @@ test('local emby authenticate by name succeeds and rejects bad credentials', asy
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999001')
     saveQQLoginCookie('uin=o999001; qm_keyst=test-key')
+    markAccountUpstreamBound('999001')
     const account = getAccountByQQ('999001')
     assert.ok(account)
 
@@ -282,10 +353,40 @@ test('local emby authenticate by name succeeds and rejects bad credentials', asy
   }
 })
 
+test('local emby authenticate reports upstream binding failures', async () => {
+  const originalFetch = globalThis.fetch
+  const originalConsoleError = console.error
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999023')
+    saveQQLoginCookie('uin=o999023; qm_keyst=test-key')
+    const account = getAccountByQQ('999023')
+    assert.ok(account)
+
+    console.error = () => undefined
+    globalThis.fetch = (async () => Response.json({ error: 'upstream unavailable' }, { status: 500 })) as typeof fetch
+
+    const response = await handleLocalEmbyRequest(new Request('http://local/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), '/Users/AuthenticateByName')
+    assert.equal(response?.status, 502)
+    assert.deepEqual(await response!.json(), {
+      error: 'Upstream Emby account binding failed',
+      actionable: 'Check EMBY_UPSTREAM_URL, EMBY_API_KEY, and whether a music library exists in upstream Emby.',
+    })
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999023')
+    clearQQLoginCookie()
+    globalThis.fetch = originalFetch
+    console.error = originalConsoleError
+  }
+})
+
 test('local emby user views returns music library for ampcast startup', async () => {
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999002')
     saveQQLoginCookie('uin=o999002; qm_keyst=test-key')
+    markAccountUpstreamBound('999002')
     const account = getAccountByQQ('999002')
     assert.ok(account)
 
@@ -320,6 +421,7 @@ test('local emby music library item list reads upstream without virtual parent i
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999003')
     saveQQLoginCookie('uin=o999003; qm_keyst=test-key')
+    markAccountUpstreamBound('999003')
     const account = getAccountByQQ('999003')
     assert.ok(account)
 
@@ -359,6 +461,57 @@ test('local emby music library item list reads upstream without virtual parent i
     assert.equal(new URL(upstreamRequests[0]!).searchParams.has('ParentId'), false)
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999003')
+    clearUpstreamMusicLibraryCache()
+    clearQQLoginCookie()
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('local emby music library parent maps to cached upstream music library id', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999022')
+    db.prepare(`
+      INSERT INTO app_settings (key, value_json, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP
+    `).run('emby.upstreamMusicLibraryIds', JSON.stringify(['11696830']))
+    saveQQLoginCookie('uin=o999022; qm_keyst=test-key')
+    markAccountUpstreamBound('999022')
+    const account = getAccountByQQ('999022')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+
+    const upstreamRequests: string[] = []
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      upstreamRequests.push(String(url))
+      return Response.json({
+        Items: [{ Id: 'emby-song-1', Name: 'Emby Song', Type: 'Audio' }],
+        TotalRecordCount: 1,
+      })
+    }) as typeof fetch
+
+    const response = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio&ParentId=x-music-music&Limit=500&StartIndex=0`, {
+        headers: {
+          'X-Emby-Authorization': `MediaBrowser Client="ampcast", Version="0.9.28", Device="PC", Token="${authPayload.AccessToken}"`,
+        },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/Items`),
+    )
+
+    assert.equal(response.status, 200)
+    assert.equal(upstreamRequests.length, 1)
+    assert.equal(new URL(upstreamRequests[0]!).searchParams.get('ParentId'), '11696830')
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999022')
+    clearUpstreamMusicLibraryCache()
     clearQQLoginCookie()
     globalThis.fetch = originalFetch
   }
@@ -369,6 +522,7 @@ test('local emby search merges upstream Emby items with QQ virtual songs', async
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999005')
     saveQQLoginCookie('uin=o999005; qm_keyst=test-key')
+    markAccountUpstreamBound('999005')
     const account = getAccountByQQ('999005')
     assert.ok(account)
 
@@ -442,6 +596,7 @@ test('local emby search pages QQ songs with safe upstream page size', async () =
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999016')
     saveQQLoginCookie('uin=o999016; qm_keyst=test-key')
+    markAccountUpstreamBound('999016')
     const account = getAccountByQQ('999016')
     assert.ok(account)
 
@@ -500,7 +655,7 @@ test('local emby search pages QQ songs with safe upstream page size', async () =
     assert.equal(response.status, 200)
     const payload = await response.json()
     assert.equal(payload.Items.length, 250)
-    assert.deepEqual(qqPageSizes, [100, 100, 100])
+    assert.deepEqual(qqPageSizes, [50, 50, 50, 50, 50])
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999016')
     clearQQLoginCookie()
@@ -514,6 +669,7 @@ test('local emby playlist search merges upstream and QQ playlists', async () => 
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999006')
     saveQQLoginCookie('uin=o999006; qm_keyst=test-key')
+    markAccountUpstreamBound('999006')
     const account = getAccountByQQ('999006')
     assert.ok(account)
 
@@ -572,6 +728,7 @@ test('local emby playlist search pages QQ playlists with safe upstream page size
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999017')
     saveQQLoginCookie('uin=o999017; qm_keyst=test-key')
+    markAccountUpstreamBound('999017')
     const account = getAccountByQQ('999017')
     assert.ok(account)
 
@@ -634,6 +791,7 @@ test('local emby favorites merge QQ songs and virtual albums', async () => {
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999011')
     saveQQLoginCookie('uin=o999011; euin=encrypted999011; qm_keyst=test-key')
+    markAccountUpstreamBound('999011')
     const account = getAccountByQQ('999011')
     assert.ok(account)
 
@@ -722,6 +880,7 @@ test('local emby favorite songs pages through QQ results beyond 200', async () =
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999012')
     saveQQLoginCookie('uin=o999012; euin=encrypted999012; qm_keyst=test-key')
+    markAccountUpstreamBound('999012')
     const account = getAccountByQQ('999012')
     assert.ok(account)
 
@@ -794,6 +953,7 @@ test('local emby genres include QQ favorite album bucket when upstream has no ge
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999015')
     saveQQLoginCookie('uin=o999015; euin=encrypted999015; qm_keyst=test-key')
+    markAccountUpstreamBound('999015')
     const account = getAccountByQQ('999015')
     assert.ok(account)
 
@@ -855,6 +1015,7 @@ test('local emby query parent id expands QQ virtual playlist items', async () =>
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999008')
     saveQQLoginCookie('uin=o999008; qm_keyst=test-key')
+    markAccountUpstreamBound('999008')
     const account = getAccountByQQ('999008')
     assert.ok(account)
 
@@ -922,6 +1083,7 @@ test('local emby recommendation playlists cap QQ recommendation limit', async ()
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999018')
     saveQQLoginCookie('uin=o999018; qm_keyst=test-key')
+    markAccountUpstreamBound('999018')
     const account = getAccountByQQ('999018')
     assert.ok(account)
 
@@ -993,6 +1155,7 @@ test('local emby played lists merge local QQ play history', async () => {
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999013')
     saveQQLoginCookie('uin=o999013; qm_keyst=test-key')
+    markAccountUpstreamBound('999013')
     const account = getAccountByQQ('999013')
     assert.ok(account)
 
@@ -1063,6 +1226,7 @@ test('local emby virtual song item details and audio HEAD stay local', async () 
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999009')
     saveQQLoginCookie('uin=o999009; qm_keyst=test-key')
+    markAccountUpstreamBound('999009')
     const account = getAccountByQQ('999009')
     assert.ok(account)
 
@@ -1136,6 +1300,7 @@ test('local emby virtual audio GET records playback and syncs QQ history', async
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999014')
     saveQQLoginCookie('uin=o999014; qm_keyst=test-key')
+    markAccountUpstreamBound('999014')
     const account = getAccountByQQ('999014')
     assert.ok(account)
 
@@ -1211,7 +1376,7 @@ test('local emby virtual audio GET records playback and syncs QQ history', async
     assert.equal(new TextDecoder().decode(firstChunk.value), 'audio-bytes')
     await reader.cancel()
 
-    await new Promise(resolve => setTimeout(resolve, 0))
+    await waitFor(() => requestUrls.some(url => new URL(url).hostname === 'stat6.y.qq.com'))
 
     const playEvents = db.prepare(`
       SELECT COUNT(*) AS count
@@ -1237,6 +1402,7 @@ test('local emby virtual playback reports are consumed locally', async () => {
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999010')
     saveQQLoginCookie('uin=o999010; qm_keyst=test-key')
+    markAccountUpstreamBound('999010')
     const account = getAccountByQQ('999010')
     assert.ok(account)
 
@@ -1309,6 +1475,7 @@ test('local emby image requests proxy upstream images for real Emby ids', async 
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999007')
     saveQQLoginCookie('uin=o999007; qm_keyst=test-key')
+    markAccountUpstreamBound('999007')
     const account = getAccountByQQ('999007')
     assert.ok(account)
 
@@ -1400,6 +1567,7 @@ test('local emby image requests fetch cached QQ virtual artwork', async () => {
     assert.equal(imageRequests.length, 1)
   } finally {
     db.prepare('DELETE FROM app_settings WHERE key = ?').run('virtual.song.qq-image-song')
+    db.prepare('DELETE FROM app_settings WHERE key = ?').run('virtual.song.qq-stream-song-1')
     db.prepare('DELETE FROM resource_cache WHERE url = ?').run('https://img.example/qq-image.jpg')
     globalThis.fetch = originalFetch
   }
@@ -1410,6 +1578,7 @@ test('local emby library exploration endpoints proxy upstream and fall back to e
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999004')
     saveQQLoginCookie('uin=o999004; qm_keyst=test-key')
+    markAccountUpstreamBound('999004')
     const account = getAccountByQQ('999004')
     assert.ok(account)
 
@@ -1439,6 +1608,7 @@ test('local emby library exploration endpoints proxy upstream and fall back to e
       `/emby/Users/${authPayload.User.Id}/Items/Resume`,
       `/emby/Artists`,
       `/emby/AlbumArtists`,
+      `/emby/Artists/AlbumArtists?IncludeItemTypes=Audio&Fields=AudioInfo%2CChildCount%2CDateCreated%2CGenres%2CMediaSources%2CParentIndexNumber%2CPath%2CProductionYear%2CPremiereDate%2COverview%2CPresentationUniqueKey%2CProviderIds%2CUserDataPlayCount%2CUserDataLastPlayedDate&EnableUserData=true&Recursive=true&ImageTypeLimit=1&EnableImageTypes=Primary&EnableTotalRecordCount=true&ParentId=x-music-music&isFavorite=true&UserId=${authPayload.User.Id}&Limit=500&StartIndex=0`,
       `/emby/Albums`,
       `/emby/Genres?UserId=${authPayload.User.Id}&ParentId=x-music-music&IncludeItemTypes=MusicAlbum&SortBy=SortName&Recursive=true&Limit=500&StartIndex=0&EnableImages=false&EnableUserData=false&EnableTotalRecordCount=false`,
       `/emby/Years?UserId=${authPayload.User.Id}&ParentId=x-music-music&IncludeItemTypes=MusicAlbum&SortBy=SortName&Recursive=true&Limit=500&StartIndex=0&EnableImages=false&EnableUserData=false&EnableTotalRecordCount=false`,
@@ -1498,6 +1668,7 @@ test('local emby library exploration endpoints proxy upstream and fall back to e
     assert.equal(image.status, 204)
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999004')
+    clearUpstreamMusicLibraryCache()
     clearQQLoginCookie()
     globalThis.fetch = originalFetch
   }
@@ -1518,3 +1689,11 @@ test('QQ song virtual ids are stable across playlists by default', () => {
   assert.equal(songVirtualId(song), songVirtualId(song, encodeVirtualId({ kind: 'qq-playlist', id: 'playlist-a' })))
   assert.deepEqual(decodeVirtualId(songVirtualId(song)), { kind: 'qq-song', songmid: 'stable-song' })
 })
+
+async function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (predicate()) return
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+}
