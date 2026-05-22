@@ -83,10 +83,12 @@ test('emby sync job fails after max attempts when no cached file exists', async 
 
 test('emby sync job does not complete when scan cannot find item', async () => {
   const originalFetch = globalThis.fetch
+  const originalWebdavDsn = process.env.EMBY_SOURCE_WEBDAV_DSN
   const songmid = `SYNC_NOT_FOUND_${Date.now()}`
   const rawPath = `/tmp/x-music-${songmid}.mp3`
   db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track'").run()
   writeFileSync(rawPath, 'fake audio')
+  delete process.env.EMBY_SOURCE_WEBDAV_DSN
   try {
     const musicInfo = { source: 'tx' as const, songmid, name: 'Not Found Sync', singer: 'Tester' }
     const track = ensureTrack(musicInfo)
@@ -109,6 +111,7 @@ test('emby sync job does not complete when scan cannot find item', async () => {
     assert.match(job?.error ?? '', /item was not found/)
   } finally {
     rmSync(rawPath, { force: true })
+    process.env.EMBY_SOURCE_WEBDAV_DSN = originalWebdavDsn
     globalThis.fetch = originalFetch
   }
 })

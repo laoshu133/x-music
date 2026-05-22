@@ -93,7 +93,7 @@ export function getAccountByQQ(qqUin: string): AccountRecord | undefined {
 }
 
 export function getAccountByEmbyUsername(username: string): AccountRecord | undefined {
-  const row = db.prepare('SELECT * FROM accounts WHERE emby_username = ?').get(username) as AccountRow | undefined
+  const row = db.prepare('SELECT * FROM accounts WHERE lower(emby_username) = lower(?)').get(username) as AccountRow | undefined
   return row ? rowToAccount(row) : undefined
 }
 

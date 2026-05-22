@@ -61,6 +61,8 @@ interface LoginQrState {
   qrsig: string
 }
 
+type LoginQrPhase = 'idle' | 'active' | 'checking' | 'expired' | 'error'
+
 interface UserAvatarResult {
   source: 'tx'
   avatarUrl: string
@@ -170,6 +172,7 @@ export default function MusicClient() {
   const [cookieText, setCookieText] = useState('')
   const [account, setAccount] = useState<ApiState<AccountState>>({ loading: true, error: '', data: null })
   const [loginQr, setLoginQr] = useState<ApiState<LoginQrState>>(emptyState)
+  const [loginQrPhase, setLoginQrPhase] = useState<LoginQrPhase>('idle')
   const [avatar, setAvatar] = useState<ApiState<UserAvatarResult>>(emptyState)
   const [accountEmbyConfig, setAccountEmbyConfig] = useState<ApiState<AccountEmbyConfig>>(emptyState)
   const [adminConfig, setAdminConfig] = useState<ApiState<AdminConfig>>(emptyState)
@@ -240,34 +243,43 @@ export default function MusicClient() {
 
   const requestLoginQr = () => {
     setMessage('')
+    setLoginQrPhase('idle')
     run(s => setLoginQr(s), () => fetchJson<LoginQrState>('/api/account/qr'))
   }
 
   const checkLoginQr = async () => {
     const qr = loginQr.data
     if (!qr) return
+    setLoginQrPhase('checking')
     setMessage('')
-    await run(s => setAccount(s), async () => {
+    try {
       const result = await fetchJson<
-        | { isOk: false; refresh: boolean; message: string }
-        | { isOk: true; message: string; account: AccountState }
-      >('/api/account/qr/check', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ ptqrtoken: qr.ptqrtoken, qrsig: qr.qrsig, persist: true }),
-      })
+      | { isOk: false; refresh: boolean; status?: 'pending' | 'scanned' | 'expired'; message: string }
+      | { isOk: true; message: string; account: AccountState }
+    >('/api/account/qr/check', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ptqrtoken: qr.ptqrtoken, qrsig: qr.qrsig, persist: true }),
+    })
 
       if (!result.isOk) {
         setMessage(result.message)
-        return account.data ?? { loggedIn: false }
+        setLoginQrPhase(result.refresh ? 'expired' : 'active')
+        return
       }
 
       setLoginQr(emptyState())
+      setLoginQrPhase('idle')
       setMessage(result.message)
-      return result.account
-    })
-    await loadAdminConfig()
-    await loadAccountEmbyConfig()
+      setAccount({ loading: false, error: '', data: result.account })
+      await loadAdminConfig()
+      await loadAccountEmbyConfig()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setMessage(message)
+      setLoginQrPhase('error')
+      setAccount(current => ({ ...current, loading: false, error: message }))
+    }
   }
 
   const logout = async () => {
@@ -339,6 +351,20 @@ export default function MusicClient() {
     void run(s => setAvatar(s), () => fetchJson<UserAvatarResult>(`/api/user/avatar?uin=${encodeURIComponent(account.data!.uin!)}&size=100`))
   }, [account.data?.loggedIn, account.data?.uin])
 
+  useEffect(() => {
+    if (loginQr.data && loginQrPhase === 'idle') setLoginQrPhase('active')
+  }, [loginQr.data, loginQrPhase])
+
+  useEffect(() => {
+    if (!loginQr.data || loginQrPhase !== 'active' || account.data?.loggedIn) return
+
+    const timer = window.setInterval(() => {
+      void checkLoginQr()
+    }, 2500)
+
+    return () => window.clearInterval(timer)
+  }, [loginQr.data, loginQrPhase, account.data?.loggedIn])
+
   if (account.loading && !account.data) {
     return (
       <main className="login-screen">
@@ -359,6 +385,7 @@ export default function MusicClient() {
           onCookieTextChange={setCookieText}
           onLogin={login}
           loginQr={loginQr}
+          loginQrPhase={loginQrPhase}
           onRequestLoginQr={requestLoginQr}
           onCheckLoginQr={checkLoginQr}
           message={message}
@@ -475,6 +502,7 @@ function LoginPage({
   onCookieTextChange,
   onLogin,
   loginQr,
+  loginQrPhase,
   onRequestLoginQr,
   onCheckLoginQr,
   message,
@@ -484,11 +512,22 @@ function LoginPage({
   onCookieTextChange: (value: string) => void
   onLogin: () => void
   loginQr: ApiState<LoginQrState>
+  loginQrPhase: LoginQrPhase
   onRequestLoginQr: () => void
   onCheckLoginQr: () => void
   message: string
 }) {
   const [loginMethod, setLoginMethod] = useState<'qr' | 'cookie'>('qr')
+  const qrDisabled = loginQrPhase === 'expired' || loginQrPhase === 'error'
+  const qrStatusText = loginQrPhase === 'checking'
+    ? '正在检查扫码状态...'
+    : loginQrPhase === 'expired'
+      ? '二维码已失效，请刷新后重新扫码'
+      : loginQrPhase === 'error'
+        ? '扫码登录出错，请刷新二维码后重试'
+        : loginQr.data
+          ? '请使用 QQ 扫码确认登录'
+          : ''
 
   return (
     <section className="login-card">
@@ -527,8 +566,16 @@ function LoginPage({
             <h2>QQ 扫码登录</h2>
             {loginQr.data ? (
               <div className="qr-login large">
-                <img src={loginQr.data.img} alt="QQ 登录二维码" />
-                <button onClick={onCheckLoginQr} disabled={account.loading}><RefreshCw size={16} />检查扫码状态</button>
+                <div className={`qr-code ${qrDisabled ? 'disabled' : ''}`}>
+                  <img src={loginQr.data.img} alt="QQ 登录二维码" />
+                </div>
+                {qrStatusText ? <p className={`qr-status ${qrDisabled ? 'attention' : ''}`}>{qrStatusText}</p> : null}
+                <div className="qr-actions">
+                  <button onClick={onRequestLoginQr} disabled={loginQr.loading || account.loading}><RefreshCw size={16} />刷新二维码</button>
+                  <button onClick={onCheckLoginQr} disabled={account.loading || qrDisabled || loginQrPhase === 'checking'}>
+                    <RefreshCw size={16} className={loginQrPhase === 'checking' ? 'spin' : undefined} />检查扫码状态
+                  </button>
+                </div>
               </div>
             ) : (
               <button onClick={onRequestLoginQr} disabled={loginQr.loading}><LogIn size={16} />获取登录二维码</button>

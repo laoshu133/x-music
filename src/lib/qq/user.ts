@@ -13,6 +13,7 @@ export type QQLoginQrCheckResult =
   | {
       isOk: false
       refresh: boolean
+      status: 'pending' | 'scanned' | 'expired'
       message: string
     }
   | {
@@ -215,11 +216,16 @@ export async function checkQQLoginQr(input: {
     setCookies(cookieMap, loginResponse.headers.get('set-cookie'))
 
     if (!loginText.includes('登录成功')) {
-      const refresh = loginText.includes('已失效')
+      const status = parseLoginQrStatus(loginText)
       return {
         isOk: false,
-        refresh,
-        message: refresh ? '二维码已失效' : '未扫描二维码',
+        refresh: status === 'expired',
+        status,
+        message: status === 'expired'
+          ? '二维码已失效'
+          : status === 'scanned'
+            ? '已扫码，请在手机上确认登录'
+            : '等待扫码',
       }
     }
 
@@ -305,6 +311,13 @@ export async function checkQQLoginQr(input: {
       cause: error instanceof Error ? error.message : String(error),
     })
   }
+}
+
+function parseLoginQrStatus(loginText: string): 'pending' | 'scanned' | 'expired' {
+  const code = loginText.match(/ptuiCB\('([^']+)'/)?.[1]
+  if (code === '65' || loginText.includes('已失效')) return 'expired'
+  if (code === '67' || loginText.includes('认证中') || loginText.includes('确认')) return 'scanned'
+  return 'pending'
 }
 
 export function getQQUserAvatar(input: { k?: string; uin?: string; size?: number }) {

@@ -117,13 +117,9 @@ export async function handleLocalEmbyRequest(request: Request, embyPath: string)
 }
 
 async function handleAuthenticateByName(request: Request): Promise<Response> {
-  const body = await request.json().catch(() => undefined) as { Username?: unknown; Pw?: unknown; Password?: unknown } | undefined
-  const username = typeof body?.Username === 'string' ? body.Username.trim() : ''
-  const password = typeof body?.Pw === 'string'
-    ? body.Pw
-    : typeof body?.Password === 'string'
-      ? body.Password
-      : ''
+  const credentials = await readAuthenticateCredentials(request)
+  const username = credentials.username.trim()
+  const password = credentials.password
   const account = getAccountByEmbyUsername(username)
   if (!account || password !== account.embyPassword) {
     return Response.json({ error: 'Invalid username or password' }, { status: 401 })
@@ -146,6 +142,38 @@ async function handleAuthenticateByName(request: Request): Promise<Response> {
   }
   const accessToken = createLocalAccessToken(upstreamAccount)
   return localAuthenticateResponse(upstreamAccount, accessToken)
+}
+
+async function readAuthenticateCredentials(request: Request): Promise<{ username: string; password: string }> {
+  const body = await readRequestBodyValues(request)
+  return {
+    username: readFirstString(body, ['Username', 'username', 'UserName', 'Name', 'name']),
+    password: readFirstString(body, ['Pw', 'pw', 'Password', 'password']),
+  }
+}
+
+async function readRequestBodyValues(request: Request): Promise<Record<string, unknown>> {
+  const contentType = request.headers.get('content-type')?.toLowerCase() ?? ''
+  if (contentType.includes('application/x-www-form-urlencoded')) {
+    return Object.fromEntries((await request.formData().catch(() => new FormData())).entries())
+  }
+  if (contentType.includes('multipart/form-data')) {
+    return Object.fromEntries((await request.formData().catch(() => new FormData())).entries())
+  }
+  const parsed = await request.json().catch(() => undefined) as unknown
+  return isObject(parsed) ? parsed : {}
+}
+
+function readFirstString(values: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const value = values[key]
+    if (typeof value === 'string') return value
+  }
+  return ''
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function localAuthenticateResponse(account: AccountRecord, accessToken: string): Response {

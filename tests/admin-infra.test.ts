@@ -353,6 +353,39 @@ test('local emby authenticate by name succeeds and rejects bad credentials', asy
   }
 })
 
+test('local emby authenticate accepts mobile-compatible casing and form credentials', async () => {
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999025')
+    saveQQLoginCookie('uin=o999025; qm_keyst=test-key')
+    markAccountUpstreamBound('999025')
+    const account = getAccountByQQ('999025')
+    assert.ok(account)
+
+    const lowerJson = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: account.embyUsername.toLowerCase(), password: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(lowerJson?.status, 200)
+    assert.equal((await lowerJson!.json()).User.Name, account.embyUsername)
+
+    const form = new URLSearchParams({
+      Username: account.embyUsername.toLowerCase(),
+      Password: account.embyPassword,
+    })
+    const formResponse = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: form,
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(formResponse?.status, 200)
+    assert.equal((await formResponse!.json()).User.Name, account.embyUsername)
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999025')
+    clearQQLoginCookie()
+  }
+})
+
 test('local emby authenticate reports upstream binding failures', async () => {
   const originalFetch = globalThis.fetch
   const originalConsoleError = console.error
