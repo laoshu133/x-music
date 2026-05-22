@@ -1,4 +1,5 @@
-import { ensureTrack, getPlayableTrackFile, insertPlayEvent, listPlayHistory, upsertTrackFileStatus } from '@/lib/cache/store'
+import { ensureTrack, getPlayableTrackFile, hasActiveTrackFile, insertPlayEvent, listPlayHistory, upsertTrackFileStatus } from '@/lib/cache/store'
+import { getCachedResource, responseFromCachedResource } from '@/lib/cache/resources'
 import { createUpstreamTeeResponse, streamLocalFile } from '@/lib/cache/stream'
 import { qualityFallbacks, resolveMusicUrlWithFallback } from '@/lib/music-url/resolve'
 import {
@@ -286,17 +287,19 @@ async function handleImageRequest(request: Request, embyPath: string): Promise<R
   const imageUrl = virtualImageUrl(decoded)
   if (!imageUrl) return emptyImageResponse()
 
-  const response = await fetch(imageUrl, {
-    cache: 'no-store',
-    signal: AbortSignal.timeout(10_000),
+  const cached = await getCachedResource({
+    source: 'tx',
+    resourceType: 'image',
+    url: imageUrl,
+    headers: {
+      'user-agent': 'Mozilla/5.0',
+      referer: 'https://y.qq.com/',
+    },
+    timeoutMs: 10_000,
   }).catch(() => undefined)
-  if (!response?.ok) return emptyImageResponse()
+  if (!cached) return emptyImageResponse()
 
-  return markRequestSource(new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers: imageResponseHeaders(response.headers),
-  }), 'upstream')
+  return markRequestSource(responseFromCachedResource(cached), 'local')
 }
 
 async function handleItemsRequest(request: Request, embyPath: string): Promise<Response | undefined> {
@@ -555,6 +558,20 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
     return markRequestSource(await streamLocalFile(localPath, request), 'local')
   }
 
+  const waitedFile = await waitForActivePlayableFile(musicInfo, preferredQuality)
+  const waitedPath = waitedFile?.finalPath ?? waitedFile?.rawPath
+  if (waitedFile && waitedPath) {
+    const track = ensureTrack(musicInfo)
+    insertPlayEvent(track.id, waitedFile.quality)
+    enqueueEmbyTrackSync({
+      source: musicInfo.source,
+      songmid: musicInfo.songmid,
+      playlistId: decoded.playlistId ?? stored.playlistId,
+      musicInfo,
+    })
+    return markRequestSource(await streamLocalFile(waitedPath, request), 'local')
+  }
+
   const track = ensureTrack(musicInfo)
   upsertTrackFileStatus(track.id, preferredQuality, 'resolving_url')
   const resolved = await resolveMusicUrlWithFallback(musicInfo, preferredQuality)
@@ -578,6 +595,20 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
     })
   })
   return markRequestSource(response, 'upstream')
+}
+
+async function waitForActivePlayableFile(musicInfo: MusicInfo, preferredQuality: MusicQuality): Promise<ReturnType<typeof getPlayableTrackFile> | undefined> {
+  const qualities = qualityFallbacks(preferredQuality)
+  if (!hasActiveTrackFile(musicInfo.source, musicInfo.songmid, qualities)) return undefined
+
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    await new Promise(resolve => setTimeout(resolve, 250))
+    const file = qualities
+      .map((quality) => getPlayableTrackFile(musicInfo.source, musicInfo.songmid, quality))
+      .find((candidate) => candidate !== undefined)
+    if (file) return file
+  }
+  return undefined
 }
 
 function syncQQPlayHistoryFromStoredUrlBestEffort(request: Request, musicInfo: MusicInfo, quality: MusicQuality): void {
@@ -632,7 +663,7 @@ async function virtualAudioHeadHeaders(musicInfo: MusicInfo): Promise<Headers> {
   return new Headers({
     'content-type': 'audio/mpeg',
     'accept-ranges': 'none',
-    'cache-control': 'no-store',
+    'cache-control': 'max-age=30',
   })
 }
 
@@ -959,22 +990,11 @@ function virtualImageUrl(id: ReturnType<typeof decodeVirtualId>): string | undef
   return undefined
 }
 
-function imageResponseHeaders(headers: Headers): Headers {
-  const result = new Headers()
-  const contentType = headers.get('content-type')
-  const contentLength = headers.get('content-length')
-  const cacheControl = headers.get('cache-control')
-  if (contentType) result.set('content-type', contentType)
-  if (contentLength) result.set('content-length', contentLength)
-  if (cacheControl) result.set('cache-control', cacheControl)
-  return result
-}
-
-function songToEmbyItem(song: MusicInfo, playlistId?: string, isFavorite = false) {
+function songToEmbyItem(song: MusicInfo, _playlistId?: string, isFavorite = false) {
   return {
     Name: song.name,
     ServerId: LOCAL_SERVER_ID,
-    Id: songVirtualId(song, playlistId),
+    Id: songVirtualId(song),
     Type: 'Audio',
     MediaType: 'Audio',
     IsFolder: false,

@@ -1,5 +1,6 @@
 import vm from 'node:vm'
 import { appConfig } from '@/lib/config'
+import { getCachedTextResource } from '@/lib/cache/resources'
 import { getEffectiveSettings } from '@/lib/db/settings'
 import { isMusicQuality, preferredQualities } from '@/lib/quality'
 import type { MusicInfo, MusicQuality, ResolvedMusicUrl } from '@/lib/types'
@@ -100,18 +101,17 @@ const resolveLxApiConfig = async (scriptUrl: string): Promise<LxApiConfig> => {
     return lxScriptConfigCache.config
   }
 
-  const response = await fetch(scriptUrl, {
-    method: 'GET',
+  const body = await getCachedTextResource({
+    source: 'lx',
+    resourceType: 'lx-script',
+    url: scriptUrl,
     headers: {
       accept: 'application/javascript, text/plain, */*',
       'user-agent': 'XMusic/1.0',
     },
-    cache: 'no-store',
   })
-
-  const body = await response.text()
-  if (!response.ok) {
-    throw new MusicUrlConfigError(`LX music URL script returned ${response.status}: ${body.slice(0, 160)}`)
+  if (!body) {
+    throw new MusicUrlConfigError('LX music URL script could not be loaded')
   }
 
   const config = parseLxScriptConfig(body)

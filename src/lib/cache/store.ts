@@ -112,6 +112,24 @@ export const getPlayableTrackFile = (source: OnlineSource, songmid: string, qual
   return undefined
 }
 
+export const hasActiveTrackFile = (source: OnlineSource, songmid: string, qualities: MusicQuality[]): boolean => {
+  const rows = db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM track_files tf
+    INNER JOIN tracks t ON t.id = tf.track_id
+    WHERE t.source = @source
+      AND t.songmid = @songmid
+      AND tf.quality IN (${qualities.map((_, index) => `@quality${index}`).join(',')})
+      AND tf.status IN ('resolving_url', 'streaming_and_caching')
+  `).get({
+    source,
+    songmid,
+    ...Object.fromEntries(qualities.map((quality, index) => [`quality${index}`, quality])),
+  }) as { count: number }
+
+  return rows.count > 0
+}
+
 export const upsertTrackFileStatus = (
   trackId: number,
   quality: MusicQuality,

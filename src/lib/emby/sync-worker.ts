@@ -1,4 +1,5 @@
 import { db } from '@/lib/db'
+import { deleteCachedResourcesForTrack } from '@/lib/cache/resources'
 import { upsertRemoteMapping } from '@/lib/db/remote-mappings'
 import { claimNextJob, completeJob, failJob, requeueJob } from '@/lib/jobs'
 import {
@@ -32,7 +33,11 @@ export async function processOneEmbySyncJob(maxAttempts = 3): Promise<boolean> {
 
     const mediaPath = row?.finalPath ?? row?.rawPath
     if (!mediaPath) {
-      requeueJob(job.id, 'No cached file is ready for Emby sync yet')
+      if (job.attempts >= maxAttempts) {
+        failJob(job.id, 'No cached file is ready for Emby sync yet')
+      } else {
+        requeueJob(job.id, 'No cached file is ready for Emby sync yet')
+      }
       return true
     }
 
@@ -54,6 +59,12 @@ export async function processOneEmbySyncJob(maxAttempts = 3): Promise<boolean> {
           console.warn(`failed to update Emby playlist ${job.payload.playlistId}`, error)
         })
       }
+      await deleteCachedResourcesForTrack({
+        source: job.payload.source,
+        songmid: job.payload.songmid,
+        imageUrl: job.payload.musicInfo.img,
+        lyricsUrls: [qqLyricsUrl(job.payload.songmid)],
+      }).catch(() => undefined)
     }
 
     completeJob(job.id)
@@ -66,4 +77,19 @@ export async function processOneEmbySyncJob(maxAttempts = 3): Promise<boolean> {
   }
 
   return true
+}
+
+function qqLyricsUrl(songmid: string): string {
+  return `https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg?${new URLSearchParams({
+    g_tk: '5381',
+    format: 'json',
+    inCharset: 'utf-8',
+    outCharset: 'utf-8',
+    notice: '0',
+    platform: 'h5',
+    needNewCode: '1',
+    ct: '121',
+    cv: '0',
+    songmid,
+  })}`
 }

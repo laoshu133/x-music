@@ -6,6 +6,7 @@ import {
   Activity,
   CheckCircle2,
   Copy,
+  Database,
   ExternalLink,
   Home,
   KeyRound,
@@ -13,13 +14,15 @@ import {
   LogIn,
   LogOut,
   MonitorPlay,
+  PlayCircle,
   RefreshCw,
   Settings,
+  Workflow,
   UserRound,
 } from 'lucide-react'
 import { useRouter, useSearchParams } from 'next/navigation'
 
-type View = 'home' | 'player' | 'config' | 'status'
+type View = 'home' | 'player' | 'config' | 'status' | 'jobs'
 
 interface ApiState<T> {
   loading: boolean
@@ -79,9 +82,26 @@ interface HealthStatus {
   checkedAt: string
   database: { ok: boolean; tracks?: number; trackFiles?: number; playEvents?: number; error?: string }
   cache: Record<string, { path: string; exists: boolean; writable: boolean; isDirectory: boolean; entries: number; error?: string }>
-  jobs: { byStatus: Record<string, number>; queued: number; running: number; failed: number }
+  jobs: { byStatus: Record<string, number>; byType?: Record<string, Record<string, number>>; total: number; queued: number; running: number; completed: number; failed: number }
   favorites: { favoriteCount: number; pendingCount: number; failedCount: number }
+  resourceCache: { total: number; totalBytes: number; byType: Record<string, { count: number; bytes: number }> }
   config: { missing: string[]; lxMusicSourceScript: boolean }
+}
+
+interface JobsResult {
+  summary: HealthStatus['jobs']
+  items: JobItem[]
+}
+
+interface JobItem {
+  id: number
+  type: string
+  status: string
+  attempts: number
+  error: string | null
+  payload: unknown
+  createdAt: string
+  updatedAt: string
 }
 
 interface ConfigDraft {
@@ -114,6 +134,7 @@ const viewMeta: Record<View, { label: string; icon: ComponentType<{ size?: numbe
   player: { label: '播放器', icon: MonitorPlay },
   config: { label: '配置', icon: Settings },
   status: { label: '状态', icon: Activity },
+  jobs: { label: '任务', icon: Workflow },
 }
 
 const views = Object.keys(viewMeta) as View[]
@@ -134,6 +155,7 @@ export default function MusicClient() {
   const [accountEmbyConfig, setAccountEmbyConfig] = useState<ApiState<AccountEmbyConfig>>(emptyState)
   const [adminConfig, setAdminConfig] = useState<ApiState<AdminConfig>>(emptyState)
   const [health, setHealth] = useState<ApiState<HealthStatus>>(emptyState)
+  const [jobs, setJobs] = useState<ApiState<JobsResult>>(emptyState)
   const [message, setMessage] = useState('')
   const [browserOrigin, setBrowserOrigin] = useState('')
   const [configDraft, setConfigDraft] = useState<ConfigDraft>({
@@ -174,6 +196,7 @@ export default function MusicClient() {
     if (!body) throw new Error(`Request failed: ${response.status}`)
     return body
   })
+  const loadJobs = () => run(s => setJobs(s), () => fetchJson<JobsResult>('/api/jobs?limit=100'))
   const loadAdminConfig = () => run(s => setAdminConfig(s), async () => {
     const data = await fetchJson<AdminConfig>('/api/admin/config')
     setConfigDraft({
@@ -245,6 +268,7 @@ export default function MusicClient() {
     if (next === 'home' || next === 'player' || next === 'config') loadAdminConfig()
     if (next === 'config') loadAccountEmbyConfig()
     if (next === 'status') loadHealth()
+    if (next === 'jobs') loadJobs()
   }
 
   const saveAdminConfig = async () => {
@@ -390,10 +414,24 @@ export default function MusicClient() {
           <section className="workspace">
             <div className="section-head">
               <h3>运行状态</h3>
-              <IconButton label="刷新" onClick={loadHealth} disabled={health.loading}><RefreshCw size={16} /></IconButton>
+              <div className="toolbar">
+                <button className="secondary-button" onClick={() => openView('jobs')}><Workflow size={16} />查看任务</button>
+                <IconButton label="刷新" onClick={loadHealth} disabled={health.loading}><RefreshCw size={16} /></IconButton>
+              </div>
             </div>
             <Status state={health} />
-            {health.data ? <HealthPanel health={health.data} /> : null}
+            {health.data ? <HealthPanel health={health.data} onOpenJobs={() => openView('jobs')} /> : null}
+          </section>
+        )}
+
+        {view === 'jobs' && (
+          <section className="workspace">
+            <div className="section-head">
+              <h3>任务列表</h3>
+              <IconButton label="刷新" onClick={loadJobs} disabled={jobs.loading}><RefreshCw size={16} /></IconButton>
+            </div>
+            <Status state={jobs} />
+            {jobs.data ? <JobsPanel jobs={jobs.data} /> : null}
           </section>
         )}
       </section>
@@ -494,7 +532,7 @@ function HomePanel({
       </section>
       <section className="quick-grid">
         <InfoCard icon={Link2} title="对外 Emby 地址" value={embyUrl || '-'} copyValue={embyUrl} />
-        <InfoCard icon={UserRound} title="UserName" value="当前 QQ 号" />
+        <InfoCard icon={UserRound} title="UserName" value="QQ + 当前 QQ 号" />
         <InfoCard icon={KeyRound} title="PWD" value="配置页可查看和修改" />
         <InfoCard icon={MonitorPlay} title="ampcast" value="打开播放器测试服务" href={ampcastUrl} />
       </section>
@@ -502,7 +540,7 @@ function HomePanel({
         <h3>使用说明</h3>
         <ol>
           <li>登录后在配置页确认 XMusic 对外提供的 Emby Host、UserName 和 PWD。</li>
-          <li>UserName 默认使用当前 QQ 号，PWD 可在配置页修改。</li>
+          <li>UserName 默认使用 QQ + 当前 QQ 号，PWD 可在配置页修改。</li>
           <li>打开播放器页，用 ampcast 连接当前服务的 Emby 地址进行播放测试。</li>
           <li>在状态页确认数据库、缓存目录、后台任务和同步状态。</li>
         </ol>
@@ -518,7 +556,7 @@ function PlayerPanel({ config, embyUrl, ampcastUrl }: { config: AdminConfig | nu
       <section className="ampcast-panel">
         <div>
           <h3>ampcast 播放器</h3>
-          <p>使用 rekkyrosso/ampcast 连接当前服务对外提供的 Emby 地址。登录时选择 Emby，服务器填写下方地址，用户名使用当前 QQ 号，密码使用登录 XMusic 时自动生成的播放器密码。</p>
+          <p>使用 rekkyrosso/ampcast 连接当前服务对外提供的 Emby 地址。登录时选择 Emby，服务器填写下方地址，用户名使用 QQ + 当前 QQ 号，密码使用登录 XMusic 时自动生成的播放器密码。</p>
         </div>
         <div className="player-actions">
           <a className="primary-link" href={ampcastUrl} target="_blank" rel="noreferrer"><ExternalLink size={16} />打开 ampcast</a>
@@ -530,7 +568,7 @@ function PlayerPanel({ config, embyUrl, ampcastUrl }: { config: AdminConfig | nu
         <h3>连接参数</h3>
         <dl className="connection-list">
           <div><dt>服务器</dt><dd>{embyUrl || '-'}</dd></div>
-          <div><dt>用户名</dt><dd>{config?.gateway.accountMode === 'per-account' ? '当前 QQ 号' : '-'}</dd></div>
+          <div><dt>用户名</dt><dd>{config?.gateway.accountMode === 'per-account' ? 'QQ + 当前 QQ 号' : '-'}</dd></div>
           <div><dt>密码</dt><dd>账号首次登录时生成</dd></div>
         </dl>
       </section>
@@ -596,38 +634,138 @@ function ConfigPanel({
   )
 }
 
-function HealthPanel({ health }: { health: HealthStatus }) {
+function HealthPanel({ health, onOpenJobs }: { health: HealthStatus; onOpenJobs: () => void }) {
+  const blockedCache = Object.entries(health.cache).filter(([, item]) => !item.exists || !item.writable || !item.isDirectory)
   return (
-    <div className="health-grid">
-      <section>
-        <h3>{health.ok ? 'OK' : 'Needs Attention'}</h3>
-        <p>{formatDateTime(health.checkedAt)}</p>
+    <div className="ops-layout">
+      <section className={health.ok ? 'status-banner ok' : 'status-banner attention'}>
+        <div>
+          <span>{health.ok ? 'OK' : 'Needs Attention'}</span>
+          <h3>{health.ok ? '核心依赖可用' : '需要处理运行问题'}</h3>
+          <p>最后检查 {formatDateTime(health.checkedAt)}</p>
+        </div>
+        <button className="secondary-button" onClick={onOpenJobs}><Workflow size={16} />任务列表</button>
       </section>
-      <section>
-        <h3>Database</h3>
-        <p>tracks {health.database.tracks ?? 0} · files {health.database.trackFiles ?? 0} · plays {health.database.playEvents ?? 0}</p>
-        {health.database.error ? <p className="status error">{health.database.error}</p> : null}
+
+      <section className="metric-grid">
+        <MetricCard icon={Database} label="Database" value={health.database.ok ? 'ready' : 'error'} detail={`tracks ${health.database.tracks ?? 0} · files ${health.database.trackFiles ?? 0} · plays ${health.database.playEvents ?? 0}`} tone={health.database.ok ? 'ok' : 'bad'} />
+        <MetricCard icon={Workflow} label="Jobs" value={`${health.jobs.queued} queued`} detail={`running ${health.jobs.running} · failed ${health.jobs.failed} · completed ${health.jobs.completed}`} tone={health.jobs.failed ? 'bad' : health.jobs.queued ? 'warn' : 'ok'} />
+        <MetricCard icon={PlayCircle} label="Resource Cache" value={`${health.resourceCache.total} files`} detail={formatBytes(health.resourceCache.totalBytes)} tone="ok" />
+        <MetricCard icon={KeyRound} label="Config" value={health.config.missing.length ? 'missing' : 'ready'} detail={health.config.missing.length ? health.config.missing.join(', ') : 'LX source configured'} tone={health.config.missing.length ? 'bad' : 'ok'} />
       </section>
-      <section>
-        <h3>Jobs</h3>
-        <p>queued {health.jobs.queued} · running {health.jobs.running} · failed {health.jobs.failed}</p>
-      </section>
-      <section>
-        <h3>Favorites</h3>
-        <p>local {health.favorites.favoriteCount} · pending {health.favorites.pendingCount} · failed {health.favorites.failedCount}</p>
-      </section>
-      <section>
-        <h3>Config</h3>
-        <p>{health.config.missing.length ? `missing ${health.config.missing.join(', ')}` : 'required config present'}</p>
-      </section>
-      <section>
-        <h3>Cache</h3>
-        {Object.entries(health.cache).map(([name, item]) => (
-          <p key={name}>{name}: {item.writable ? 'writable' : 'blocked'} · {item.entries} entries</p>
-        ))}
+
+      <section className="ops-grid">
+        <article>
+          <h3>目录状态</h3>
+          <div className="status-table">
+            {Object.entries(health.cache).map(([name, item]) => (
+              <div key={name}>
+                <span>{name}</span>
+                <strong>{item.writable ? 'writable' : 'blocked'}</strong>
+                <small>{item.entries} entries</small>
+              </div>
+            ))}
+          </div>
+          {blockedCache.length ? <p className="status error">目录不可写：{blockedCache.map(([name]) => name).join(', ')}</p> : null}
+        </article>
+
+        <article>
+          <h3>资源缓存</h3>
+          <div className="status-table">
+            {Object.entries(health.resourceCache.byType).length ? Object.entries(health.resourceCache.byType).map(([type, item]) => (
+              <div key={type}>
+                <span>{type}</span>
+                <strong>{item.count}</strong>
+                <small>{formatBytes(item.bytes)}</small>
+              </div>
+            )) : <p>暂无资源缓存</p>}
+          </div>
+        </article>
+
+        <article>
+          <h3>任务类型</h3>
+          <div className="status-table">
+            {Object.entries(health.jobs.byType ?? {}).length ? Object.entries(health.jobs.byType ?? {}).map(([type, counts]) => (
+              <div key={type}>
+                <span>{type}</span>
+                <strong>{counts.running ?? 0} running</strong>
+                <small>{counts.queued ?? 0} queued · {counts.failed ?? 0} failed</small>
+              </div>
+            )) : <p>暂无任务</p>}
+          </div>
+        </article>
+
+        <article>
+          <h3>收藏同步</h3>
+          <p>local {health.favorites.favoriteCount} · pending {health.favorites.pendingCount} · failed {health.favorites.failedCount}</p>
+        </article>
       </section>
     </div>
   )
+}
+
+function JobsPanel({ jobs }: { jobs: JobsResult }) {
+  return (
+    <div className="jobs-layout">
+      <section className="metric-grid">
+        <MetricCard icon={Workflow} label="Total" value={String(jobs.summary.total)} detail="all jobs" tone="ok" />
+        <MetricCard icon={RefreshCw} label="Queued" value={String(jobs.summary.queued)} detail={`${jobs.summary.running} running`} tone={jobs.summary.queued ? 'warn' : 'ok'} />
+        <MetricCard icon={CheckCircle2} label="Completed" value={String(jobs.summary.completed)} detail="finished jobs" tone="ok" />
+        <MetricCard icon={Activity} label="Failed" value={String(jobs.summary.failed)} detail="needs action" tone={jobs.summary.failed ? 'bad' : 'ok'} />
+      </section>
+
+      <section className="jobs-table">
+        <div className="job-row header">
+          <span>ID</span>
+          <span>Type</span>
+          <span>Status</span>
+          <span>Attempts</span>
+          <span>Updated</span>
+          <span>Error</span>
+        </div>
+        {jobs.items.map(job => (
+          <div className="job-row" key={job.id}>
+            <span>#{job.id}</span>
+            <span>{job.type}</span>
+            <span><StatusBadge status={job.status} /></span>
+            <span>{job.attempts}</span>
+            <span>{formatDateTime(job.updatedAt)}</span>
+            <span title={job.error ?? ''}>{job.error ?? payloadSummary(job.payload)}</span>
+          </div>
+        ))}
+        {!jobs.items.length ? <p>暂无任务记录</p> : null}
+      </section>
+    </div>
+  )
+}
+
+function MetricCard({
+  icon: Icon,
+  label,
+  value,
+  detail,
+  tone,
+}: {
+  icon: ComponentType<{ size?: number }>
+  label: string
+  value: string
+  detail: string
+  tone: 'ok' | 'warn' | 'bad'
+}) {
+  return (
+    <article className={`metric-card ${tone}`}>
+      <Icon size={18} />
+      <div>
+        <span>{label}</span>
+        <strong>{value}</strong>
+        <small>{detail}</small>
+      </div>
+    </article>
+  )
+}
+
+function StatusBadge({ status }: { status: string }) {
+  return <span className={`status-badge ${status}`}>{status}</span>
 }
 
 function InfoCard({
@@ -708,6 +846,7 @@ function headingFor(view: View): string {
   if (view === 'home') return '产品说明与连接信息'
   if (view === 'player') return '使用 ampcast 测试 Emby 服务'
   if (view === 'config') return '配置上游与对外帐号'
+  if (view === 'jobs') return '后台任务队列'
   return '系统运行状态'
 }
 
@@ -720,4 +859,24 @@ function formatDateTime(value: string): string {
     hour: '2-digit',
     minute: '2-digit',
   })
+}
+
+function formatBytes(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB']
+  let next = value
+  let unit = 0
+  while (next >= 1024 && unit < units.length - 1) {
+    next /= 1024
+    unit += 1
+  }
+  return `${next.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`
+}
+
+function payloadSummary(payload: unknown): string {
+  if (!payload || typeof payload !== 'object') return ''
+  const record = payload as Record<string, unknown>
+  return [record.source, record.songmid, record.quality, record.playlistId]
+    .filter(value => typeof value === 'string' || typeof value === 'number')
+    .join(' · ')
 }

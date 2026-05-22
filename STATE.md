@@ -4,36 +4,37 @@ Last updated: 2026-05-22
 
 - Project name: XMusic
 - Code name: `x-music`
+- Previous name: `miXmusic`
 - Default server port: `8098`
+- Working directory: `/Users/xiaomi/projects/x-music`
+- Current branch: `master`
+- Current upstream: `origin/master`
 
-## Goal
+## Product Goal
 
-Build a private QQ Music to Emby gateway with:
+XMusic is a private QQ Music to Emby gateway. It lets Emby-compatible players, especially ampcast, browse and play a merged music library backed by an upstream Emby server plus QQ Music virtual content.
 
-- QQ Music login, metadata, favorites, playlists, recommendations, and play-history integration.
-- LX custom-source compatible playback URL resolution.
-- Local playback cache, tagging, lyrics/cover sidecars, and Emby-scannable file output.
-- Emby-compatible gateway endpoints so ampcast can browse and play a merged upstream Emby + QQ Music library.
-- Per-QQ gateway accounts, with safe upstream Emby user binding and restricted permissions.
+The project is for personal/private deployment. Do not optimize for public multi-tenant operation.
 
-This remains a personal/private application. Do not optimize for public multi-tenant operation.
+## Migration Status
 
-## Current Branch / Repository
-
-- Working directory: `/Users/xiaomi/projects/XMusic`
-- Historical branch: `codex/x-music-initial`
-- Current rename target: XMusic / `x-music`
-- Current working tree contains uncommitted feature work and docs/config updates.
+- The active product name is `XMusic`.
+- The active package/code name is `x-music`.
+- The canonical Emby gateway route is `/x-music/emby`.
+- Legacy `/mixmusic/emby` compatibility is intentionally not maintained.
+- The virtual music library ID is `x-music-music`.
+- The account session cookie is `x_music_account`.
+- The gateway source response header is `x-x-music-source`.
+- Default local, Docker, and compose web port is `8098`.
+- Source scan after migration found no old `mixmusic`/`miXmusic` naming in tracked app source or docs.
 
 ## Implemented
 
 - Next.js 16 + React 19 application shell.
-- Default local and container web port changed to `8098`.
-- Package name changed to `x-music`.
-- Docker image name changed to `x-music-app:latest`.
+- Docker image name is `x-music-app:latest`.
 - XMusic branding is reflected in UI, metadata, Emby server info, worker logs, README, and `.env.example`.
-- Canonical Emby gateway path is `/x-music/emby`.
-- Fallback Emby-style route rewriting now targets `/x-music/emby`.
+- Fallback Emby-style route rewriting targets `/x-music/emby`.
+- Management UI is focused on QQ login, Emby connection details, runtime config, ampcast launch, and status checks.
 
 ## Emby Gateway Progress
 
@@ -61,37 +62,46 @@ This remains a personal/private application. Do not optimize for public multi-te
 - Cookie import and logout are implemented.
 - Account state summary and avatar lookup are implemented.
 - QQ song search, playlist search/detail, user playlists, recommendations, favorite songs, favorite albums, and play-history sync wrappers exist.
-- QQ list fetches have been audited to use `StartIndex + Limit` windows and capped upstream page sizes:
+- QQ list fetches use `StartIndex + Limit` windows and capped upstream page sizes:
   - QQ song page size cap: `100`;
   - QQ playlist page size cap: `50`;
   - Emby-facing list cap: `1000`.
 - My Songs can page beyond the earlier 200-song cap.
-- The local database was cleaned of `History Test`; latest verified count was `0`.
 
 ## Playback / Cache / Tagging Progress
 
 - `/api/play` can resolve LX music URLs, stream to the client, and tee to local cache.
 - Playback quality fallback order is `flac -> 320k -> 128k`.
 - Cache reuse checks ready, tagging, cached raw, and failed-tag-but-playable files before resolving a new upstream URL.
+- Concurrent virtual-audio requests wait briefly for an active cache write before resolving and pulling the source again.
 - Cached local playback supports Range requests.
+- QQ/LX-derived resource fetches for artwork, lyrics, metadata, and LX source scripts are cached as local files under `data/resources`.
+- QQ virtual artwork requests through the Emby gateway are served from the resource cache after the first source fetch.
 - Local play events are recorded.
 - QQ play-history sync is best-effort and non-blocking.
 - Worker can claim, complete, fail, and retry SQLite jobs.
+- Emby sync jobs fail after max attempts when no cached media file becomes available instead of staying queued forever.
+- Emby sync success removes related cached QQ artwork and lyric source files once the track is mapped to Emby.
 - Built-in tagging writes deterministic final paths, metadata tags where supported, lyrics, and cover sidecars.
 - Emby sync jobs are queued after QQ virtual audio playback and tagging/cache events where applicable.
 
 ## API / UI Progress
 
-- Management UI is focused on QQ login, Emby connection details, runtime config, ampcast launch, and health/status.
 - Health endpoint reports database counts, cache directory access, job counts, favorite sync counts, and missing config.
+- Health/status UI was refactored into an operations dashboard with dependency, job, resource-cache, directory, and sync summaries.
+- `/api/jobs` exposes job summary and recent job records.
+- The UI includes a dedicated task list page reachable from the status page and sidebar.
 - Runtime config supports QQ feature toggles while keeping upstream Emby credentials environment-owned.
 - Account Emby password can be viewed/updated through account-specific config.
+- UI copy now describes gateway usernames as `QQ + 当前 QQ 号`, matching the `QQ${QQ_UID}` implementation.
+- QQ song virtual IDs are now stable across My Songs, My Albums, and Playlists to reduce duplicate virtual tracks in clients.
 
 ## Verified
 
-- `npm run typecheck` passed after the latest account-binding work.
-- `npm test` passed after the latest account-binding work: 50 tests passed.
-- `git diff --check` passed after the latest account-binding work.
+- `npm test` passed on 2026-05-22: 53 tests passed.
+- `npm run build` passed on 2026-05-22.
+- Current build output includes `/api/jobs`, `/x-music/emby`, and `/x-music/emby/[...path]`.
+- `git status --short --branch` was clean before this state-update task.
 - Tests cover:
   - QQ login account creation with `QQ${QQ_UID}`;
   - upstream Emby user creation, rename, and restricted policy;
@@ -103,35 +113,58 @@ This remains a personal/private application. Do not optimize for public multi-te
   - virtual playlist expansion;
   - virtual item details/audio/playback reports;
   - image proxying;
+  - resource cache hits for QQ virtual artwork;
+  - stable QQ song virtual IDs across playlists;
   - cache, job, LX URL, QQ favorite/history, and tagging behavior.
 
 ## Known Risks
 
 - QQ private endpoints are unstable and require live-account validation.
-- QR login success does not guarantee all private QQ endpoints receive every key they need; favorites may require encrypted UIN fields.
+- QR login success does not guarantee all private QQ endpoints receive every key they need; favorites may require encrypted UIN fields such as `euin` or `enc_host_uin`.
 - Real end-to-end playback depends on a valid `LX_MUSIC_SOURCE_SCRIPT`.
 - Emby library refresh/sync requires the upstream Emby server to scan the same organized music directory or an equivalent mounted path.
-- The local `.env` file is intentionally ignored and may still contain old display names or local-only values.
+- The local `.env` file is intentionally ignored and may contain local-only values.
 
-## Immediate TODO
+## TODO
 
-1. Verify the renamed service on `http://localhost:8098`.
-2. In ampcast, connect to `http://localhost:8098` or `http://localhost:8098/x-music/emby`.
-3. Confirm login with username `QQ${QQ_UID}` and generated account password.
-4. Re-check My Songs, My Albums, Most Played, Recently Played, playlists, search, and image loading after the XMusic rename.
-5. Verify one real QQ virtual song playback end-to-end:
-   - audio starts;
-   - local cache file is written;
-   - play event is recorded;
-   - Emby sync job is queued;
-   - upstream Emby eventually sees the transferred/tagged file after scan.
-6. Validate upstream Emby user permissions in the Emby admin UI:
-   - only the music library is visible;
-   - channel access is off;
-   - remote control permissions are off.
+### P0 - Real Environment Acceptance
 
-## Later TODO
+- Verify the renamed service on `http://localhost:8098`.
+- In ampcast, connect to `http://localhost:8098` or `http://localhost:8098/x-music/emby`.
+- Confirm login with username `QQ${QQ_UID}` and generated account password.
+- Re-check My Songs, My Albums, Most Played, Recently Played, playlists, search, and image loading after the XMusic rename.
+- Verify one real QQ virtual song playback end-to-end:
+  - audio starts;
+  - local cache file is written;
+  - play event is recorded;
+  - Emby sync job is queued;
+  - upstream Emby eventually sees the transferred/tagged file after scan.
+- Verify end-to-end local audio and resource cache reuse with real browser playback and the real `LX_MUSIC_SOURCE_SCRIPT`.
+- Verify built-in tagging against real MP3/FLAC playback files and an Emby scan.
+- Validate upstream Emby user permissions in the Emby admin UI:
+  - only the music library is visible;
+  - channel access is off;
+  - remote control permissions are off.
 
-- Add a visible admin page for job retry and failed cache cleanup.
-- Verify QQ favorites write, play-history write, and recommendation endpoints with a current live QQ account.
+### P1 - QQ Account Validation
+
+- Verify QQ account APIs with a real logged-in `QQ_MUSIC_COOKIE` including `euin` or `enc_host_uin`.
+- Verify QR login end-to-end with a real QQ scan and confirm the returned cookie has the keys required by favorites.
+- Verify QQ user playlists with a real logged-in account and private/created playlist variants.
+- Verify local pending favorite/unfavorite actions sync back to QQ Music with a real cookie.
+- Verify QQ play-history write sync with a real logged-in account and captured QQ Music player traffic.
+- Verify reconciliation: QQ remote favorite state wins and local pending operations are replayed.
+- Verify QQ recommendations with a current live QQ account.
+
+### P2 - Product Hardening
+
+- Add failed job retry controls and failed cache cleanup actions to the task/status UI.
 - Verify Docker deployment with real mounts and upstream Emby scan paths.
+
+### Reference API Coverage Gaps
+
+- Music detail APIs from `sansenjian/qq-music-api`: lyric, song info, batch song info, MV play/detail.
+- Discovery APIs: hot key, smartbox, radio lists, new disks, playlist categories/tags, batch playlist detail.
+- Singer APIs: singer list, singer detail/description, hot songs, albums, MV, similar singers, star count.
+- Album/comment/digital album APIs.
+- Compatibility routes using the upstream naming style such as `/getQQLoginQr`, `/checkQQLoginQr`, and `/user/getUserPlaylists`.

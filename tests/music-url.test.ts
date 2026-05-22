@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { db } from '@/lib/db'
 import { parseRequestedQuality, qualityFallbacks, resolveMusicUrl } from '@/lib/music-url/resolve'
 import type { MusicInfo } from '@/lib/types'
 
@@ -14,6 +15,7 @@ const song: MusicInfo = {
 
 test.afterEach(() => {
   globalThis.fetch = originalFetch
+  db.prepare("DELETE FROM resource_cache WHERE source = 'lx'").run()
   delete process.env.LX_MUSIC_SOURCE_SCRIPT
 })
 

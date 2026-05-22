@@ -29,7 +29,8 @@ export function decodeVirtualId(id: string): VirtualId | undefined {
 }
 
 export function songVirtualId(song: MusicInfo, playlistId?: string): string {
-  return encodeVirtualId({ kind: 'qq-song', songmid: song.songmid, playlistId })
+  void playlistId
+  return encodeVirtualId({ kind: 'qq-song', songmid: song.songmid })
 }
 
 export function playlistVirtualId(id: string): string {

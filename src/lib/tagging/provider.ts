@@ -6,6 +6,7 @@ import Metaflac from 'metaflac-js'
 import NodeID3 from 'node-id3'
 import { z } from 'zod'
 import { appConfig } from '@/lib/config'
+import { getCachedResource, getCachedTextResource } from '@/lib/cache/resources'
 import type { TagTrackFileJobPayload } from '@/lib/tagging/types'
 
 export type TaggingMode = 'builtin'
@@ -226,12 +227,16 @@ function mergeOnlineMetadata(base: NormalizedMetadata, online?: NormalizedMetada
 }
 
 async function fetchJson<T>(url: string, init: RequestInit = {}): Promise<T | undefined> {
-  const response = await fetch(url, {
-    ...init,
-    signal: AbortSignal.timeout(taggingEnv.TAGGING_FETCH_TIMEOUT_MS),
+  const text = await getCachedTextResource({
+    source: 'tx',
+    resourceType: 'metadata',
+    url,
+    headers: init.headers,
+    method: init.method,
+    body: init.body,
+    timeoutMs: taggingEnv.TAGGING_FETCH_TIMEOUT_MS,
   })
-  if (!response.ok) return undefined
-  return await response.json() as T
+  return text ? JSON.parse(text) as T : undefined
 }
 
 function mapQQSong(song: QQSearchSong): QQMusicApiSong | undefined {
@@ -332,8 +337,7 @@ async function searchQQSongs(query: string): Promise<QQMusicApiSong[]> {
 }
 
 async function fetchQQLyrics(songmid: string): Promise<string | undefined> {
-  const data = await fetchJson<{ lyric?: string }>(
-    `https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg?${new URLSearchParams({
+  const url = `https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg?${new URLSearchParams({
       g_tk: '5381',
       format: 'json',
       inCharset: 'utf-8',
@@ -344,17 +348,23 @@ async function fetchQQLyrics(songmid: string): Promise<string | undefined> {
       ct: '121',
       cv: '0',
       songmid,
-    })}`,
-    {
-      headers: {
-        referer: 'https://y.qq.com/',
-        'user-agent': 'Mozilla/5.0',
-      },
+    })}`
+  const text = await getCachedTextResource({
+    source: 'tx',
+    resourceType: 'lyrics',
+    url,
+    headers: {
+      referer: 'https://y.qq.com/',
+      'user-agent': 'Mozilla/5.0',
     },
-  ).catch(() => undefined)
+    timeoutMs: taggingEnv.TAGGING_FETCH_TIMEOUT_MS,
+    transform: (value) => {
+      const data = JSON.parse(value) as { lyric?: string }
+      return data.lyric ? normalizeLyrics(Buffer.from(data.lyric, 'base64').toString('utf8')) : ''
+    },
+  }).catch(() => undefined)
 
-  if (!data?.lyric) return undefined
-  return normalizeLyrics(Buffer.from(data.lyric, 'base64').toString('utf8'))
+  return text?.trim() ? text : undefined
 }
 
 function normalizeLyrics(value: string): string {
@@ -363,15 +373,18 @@ function normalizeLyrics(value: string): string {
 
 async function fetchCover(url: string | undefined): Promise<CoverImage | undefined> {
   if (!url) return undefined
-  const response = await fetch(url, {
+  const cached = await getCachedResource({
+    source: 'tx',
+    resourceType: 'image',
+    url,
     headers: { 'user-agent': 'Mozilla/5.0' },
-    signal: AbortSignal.timeout(taggingEnv.TAGGING_FETCH_TIMEOUT_MS),
+    timeoutMs: taggingEnv.TAGGING_FETCH_TIMEOUT_MS,
   }).catch(() => undefined)
-  if (!response?.ok) return undefined
-  const mime = response.headers.get('content-type')?.split(';', 1)[0] ?? 'image/jpeg'
+  if (!cached) return undefined
+  const mime = cached.contentType ?? 'image/jpeg'
   if (mime !== 'image/jpeg' && mime !== 'image/png') return undefined
   return {
-    data: Buffer.from(await response.arrayBuffer()),
+    data: await fs.readFile(cached.filePath),
     mime,
   }
 }

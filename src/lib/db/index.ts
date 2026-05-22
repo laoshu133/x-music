@@ -23,6 +23,7 @@ for (const statement of [
   'ALTER TABLE track_files ADD COLUMN tagged_at TEXT',
   'ALTER TABLE accounts ADD COLUMN emby_user_id TEXT',
   'ALTER TABLE accounts ADD COLUMN emby_access_token TEXT',
+  'ALTER TABLE resource_cache ADD COLUMN last_accessed_at TEXT',
 ]) {
   try {
     db.exec(statement)

@@ -12,7 +12,7 @@ import { handleLocalEmbyRequest } from '@/lib/emby/local-handlers'
 import { normalizeEmbyPath, stripOptionalEmbyPrefix } from '@/lib/emby/paths'
 import { proxyToUpstreamEmby } from '@/lib/emby/upstream-proxy'
 import { readEmbyAccessToken } from '@/lib/emby/tokens'
-import { decodeVirtualId, encodeVirtualId } from '@/lib/emby/virtual-ids'
+import { decodeVirtualId, encodeVirtualId, songVirtualId } from '@/lib/emby/virtual-ids'
 
 test('settings store persists typed values and merges effective defaults', () => {
   deleteSetting('qq.enabled')
@@ -1063,7 +1063,7 @@ test('local emby virtual song item details and audio HEAD stay local', async () 
     assert.equal(details.status, 200)
     const detailsPayload = await details.json()
     assert.equal(detailsPayload.Name, 'QQ Play Song')
-    assert.equal(detailsPayload.Id, songId)
+    assert.equal(detailsPayload.Id, encodeVirtualId({ kind: 'qq-song', songmid: 'qq-play-song-1' }))
 
     const head = await dispatchEmbyRequest(
       new Request(`http://local/emby/Audio/${encodeURIComponent(songId)}/universal?api_key=${authPayload.AccessToken}`, {
@@ -1330,6 +1330,9 @@ test('local emby image requests fetch cached QQ virtual artwork', async () => {
       })
     }) as typeof fetch
 
+    db.prepare('DELETE FROM resource_cache WHERE url = ?').run('https://img.example/qq-image.jpg')
+    rmSync(join(process.env.MUSIC_DATA_DIR ?? './data', 'resources', 'image'), { recursive: true, force: true })
+
     const response = await dispatchEmbyRequest(
       new Request(`http://local/emby/Items/${encodeURIComponent(virtualId)}/Images/Primary?maxWidth=480&maxHeight=480`),
       stripOptionalEmbyPrefix(`/emby/Items/${encodeURIComponent(virtualId)}/Images/Primary`),
@@ -1339,8 +1342,17 @@ test('local emby image requests fetch cached QQ virtual artwork', async () => {
     assert.equal(response.headers.get('content-type'), 'image/png')
     assert.equal(await response.text(), 'qq-image-bytes')
     assert.deepEqual(imageRequests, ['https://img.example/qq-image.jpg'])
+
+    const cached = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Items/${encodeURIComponent(virtualId)}/Images/Primary?maxWidth=480&maxHeight=480`),
+      stripOptionalEmbyPrefix(`/emby/Items/${encodeURIComponent(virtualId)}/Images/Primary`),
+    )
+    assert.equal(cached.status, 200)
+    assert.equal(await cached.text(), 'qq-image-bytes')
+    assert.equal(imageRequests.length, 1)
   } finally {
     db.prepare('DELETE FROM app_settings WHERE key = ?').run('virtual.song.qq-image-song')
+    db.prepare('DELETE FROM resource_cache WHERE url = ?').run('https://img.example/qq-image.jpg')
     globalThis.fetch = originalFetch
   }
 })
@@ -1446,4 +1458,15 @@ test('local emby library exploration endpoints proxy upstream and fall back to e
 test('virtual emby ids round-trip structured ids', () => {
   const id = encodeVirtualId({ kind: 'qq-song', songmid: 'abc', playlistId: 'list1' })
   assert.deepEqual(decodeVirtualId(id), { kind: 'qq-song', songmid: 'abc', playlistId: 'list1' })
+})
+
+test('QQ song virtual ids are stable across playlists by default', () => {
+  const song = {
+    source: 'tx' as const,
+    songmid: 'stable-song',
+    name: 'Stable Song',
+    singer: 'Artist',
+  }
+  assert.equal(songVirtualId(song), songVirtualId(song, encodeVirtualId({ kind: 'qq-playlist', id: 'playlist-a' })))
+  assert.deepEqual(decodeVirtualId(songVirtualId(song)), { kind: 'qq-song', songmid: 'stable-song' })
 })

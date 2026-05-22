@@ -1,8 +1,10 @@
 import fs from 'node:fs'
 import { NextResponse } from 'next/server'
 import { appConfig } from '@/lib/config'
+import { listResourceCacheSummary } from '@/lib/cache/resources'
 import { db } from '@/lib/db'
 import { getFavoriteSummary } from '@/lib/db/favorites'
+import { getJobSummary } from '@/lib/jobs/status'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -21,6 +23,7 @@ export async function GET() {
   }
   const jobs = getJobStatus()
   const favorites = getFavoriteSummary()
+  const resourceCache = listResourceCacheSummary()
   const config = {
     missing: [
       ...(!appConfig.lxMusicSourceScript ? ['LX_MUSIC_SOURCE_SCRIPT'] : []),
@@ -39,6 +42,7 @@ export async function GET() {
     cache,
     jobs,
     favorites,
+    resourceCache,
     config,
   }, { status: ok ? 200 : 503 })
 }
@@ -90,26 +94,24 @@ const checkDirectory = (dirPath: string) => {
 }
 
 const getJobStatus = () => {
-  const rows = db.prepare(`
-    SELECT status, COUNT(*) AS count
-    FROM jobs
-    GROUP BY status
-  `).all() as Array<{ status: string; count: number }>
-
+  const summary = getJobSummary()
   return {
-    byStatus: Object.fromEntries(rows.map(row => [row.status, row.count])),
-    queued: jobCount('queued'),
-    running: jobCount('running'),
-    failed: jobCount('failed'),
+    byStatus: {
+      queued: summary.queued,
+      running: summary.running,
+      completed: summary.completed,
+      failed: summary.failed,
+    },
+    byType: summary.byType,
+    total: summary.total,
+    queued: summary.queued,
+    running: summary.running,
+    completed: summary.completed,
+    failed: summary.failed,
   }
 }
 
 const count = (tableName: string): number => {
   const row = db.prepare(`SELECT COUNT(*) AS count FROM ${tableName}`).get() as CountRow
-  return row.count
-}
-
-const jobCount = (status: string): number => {
-  const row = db.prepare('SELECT COUNT(*) AS count FROM jobs WHERE status = ?').get(status) as CountRow
   return row.count
 }

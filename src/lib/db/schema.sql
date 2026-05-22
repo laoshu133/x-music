@@ -123,3 +123,20 @@ CREATE TABLE IF NOT EXISTS sync_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_sync_events_status_type ON sync_events(status, type, updated_at);
+
+CREATE TABLE IF NOT EXISTS resource_cache (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  cache_key TEXT NOT NULL UNIQUE,
+  source TEXT NOT NULL,
+  resource_type TEXT NOT NULL,
+  url TEXT NOT NULL,
+  file_path TEXT NOT NULL,
+  content_type TEXT,
+  size_bytes INTEGER,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_accessed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_resource_cache_source_type
+  ON resource_cache(source, resource_type, updated_at);

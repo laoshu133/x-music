@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { db } from '@/lib/db'
+import { processOneEmbySyncJob } from '@/lib/emby/sync-worker'
 import { claimNextJob, completeJob, createJob, failJob, getJob, requeueJob } from '@/lib/jobs'
+import { getJobSummary, listJobs } from '@/lib/jobs/status'
 
 test('job lifecycle claim complete and retry states', () => {
   db.prepare("DELETE FROM jobs WHERE type = 'tag_track_file'").run()
@@ -31,4 +33,46 @@ test('job lifecycle claim complete and retry states', () => {
   completeJob(created.id)
   assert.equal(getJob(created.id)?.status, 'completed')
   assert.equal(getJob(created.id)?.error, null)
+})
+
+test('job status helpers list jobs and summarize states', () => {
+  db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track'").run()
+
+  const queued = createJob({
+    type: 'sync_emby_track',
+    payload: { source: 'tx', songmid: `JOB_${Date.now()}`, musicInfo: { source: 'tx', songmid: 'a', name: 'A', singer: 'B' } },
+  })
+  const failed = createJob({
+    type: 'sync_emby_track',
+    payload: { source: 'tx', songmid: `JOB_FAIL_${Date.now()}`, musicInfo: { source: 'tx', songmid: 'c', name: 'C', singer: 'D' } },
+  })
+  failJob(failed.id, 'no file')
+
+  const summary = getJobSummary()
+  assert.ok(summary.queued >= 1)
+  assert.ok(summary.failed >= 1)
+  assert.ok(summary.byType.sync_emby_track)
+
+  const listed = listJobs({ type: 'sync_emby_track', limit: 10 })
+  assert.ok(listed.some(job => job.id === queued.id))
+  assert.ok(listed.some(job => job.id === failed.id))
+})
+
+test('emby sync job fails after max attempts when no cached file exists', async () => {
+  const songmid = `SYNC_MISSING_${Date.now()}`
+  db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track'").run()
+
+  const created = createJob({
+    type: 'sync_emby_track',
+    payload: {
+      source: 'tx',
+      songmid,
+      musicInfo: { source: 'tx', songmid, name: 'Missing Sync', singer: 'Tester' },
+    },
+  })
+
+  assert.equal(await processOneEmbySyncJob(1), true)
+  const job = getJob(created.id)
+  assert.equal(job?.status, 'failed')
+  assert.equal(job?.error, 'No cached file is ready for Emby sync yet')
 })
