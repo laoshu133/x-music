@@ -1312,7 +1312,7 @@ test('local emby favorite songs pages through QQ results beyond 200', async () =
     )
     assert.equal(cachedSongs.status, 200)
     assert.equal((await cachedSongs.json()).TotalRecordCount, 450)
-    assert.equal(favoriteRequests.length, 5)
+    assert.equal(favoriteRequests.length, 6)
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999012')
     clearQQLoginCookie()
@@ -1378,6 +1378,151 @@ test('local emby favorite songs include QQ songs without media mid', async () =>
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999023')
     clearQQLoginCookie()
     db.prepare("DELETE FROM app_settings WHERE key = 'virtual.song.qq-favorite-no-media-mid'").run()
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('local emby favorite songs uses estimated total before QQ calibration', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999025')
+    saveQQLoginCookie('uin=o999025; euin=encrypted999025; qm_keyst=test-key')
+    markAccountUpstreamBound('999025')
+    const account = getAccountByQQ('999025')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const authHeader = `MediaBrowser Client="ampcast", Version="0.9.28", Device="PC", Token="${authPayload.AccessToken}"`
+
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'u.y.qq.com') {
+        return Response.json({ code: 500, req: { code: 500 } })
+      }
+
+      return Response.json({ Items: [], TotalRecordCount: 0 })
+    }) as typeof fetch
+
+    const failed = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio&ParentId=x-music-music&Filters=IsFavorite&Limit=100&StartIndex=0`, {
+        headers: { 'X-Emby-Authorization': authHeader },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/Items`),
+    )
+    assert.equal(failed.status, 200)
+    assert.equal((await failed.json()).TotalRecordCount, 999)
+
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'u.y.qq.com') {
+        return Response.json({
+          code: 0,
+          req: {
+            code: 0,
+            data: {
+              songlist: [{
+                id: 1,
+                mid: 'qq-favorite-calibrated-1',
+                title: 'QQ Favorite Calibrated',
+                interval: 188,
+                singer: [{ name: 'QQ Artist', mid: 'qq-artist-1' }],
+                album: { name: 'QQ Favorite Album', mid: 'qq-album-1' },
+                file: { media_mid: 'qq-media-calibrated-1', size_320mp3: 1024 },
+              }],
+              total_song_num: 1,
+            },
+          },
+        })
+      }
+
+      return Response.json({ Items: [], TotalRecordCount: 0 })
+    }) as typeof fetch
+
+    const calibrated = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio&ParentId=x-music-music&Filters=IsFavorite&Limit=100&StartIndex=0`, {
+        headers: { 'X-Emby-Authorization': authHeader },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/Items`),
+    )
+    assert.equal(calibrated.status, 200)
+    assert.equal((await calibrated.json()).TotalRecordCount, 1)
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999025')
+    clearQQLoginCookie()
+    db.prepare("DELETE FROM app_settings WHERE key LIKE 'virtual.song.qq-favorite-calibrated-%'").run()
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('local emby favorite songs keeps estimated total for partial deduped windows', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999026')
+    saveQQLoginCookie('uin=o999026; euin=encrypted999026; qm_keyst=test-key')
+    markAccountUpstreamBound('999026')
+    const account = getAccountByQQ('999026')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const authHeader = `MediaBrowser Client="ampcast", Version="0.9.28", Device="PC", Token="${authPayload.AccessToken}"`
+
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'u.y.qq.com') {
+        const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {}
+        const begin = Number(body.req?.param?.song_begin ?? 0)
+        const count = Number(body.req?.param?.song_num ?? 0)
+        const total = 383
+        return Response.json({
+          code: 0,
+          req: {
+            code: 0,
+            data: {
+              songlist: Array.from({ length: Math.max(0, Math.min(count, total - begin)) }, (_, index) => {
+                const duplicateGroup = Math.trunc((begin + index) / 2)
+                return {
+                  id: begin + index + 1,
+                  mid: `qq-favorite-partial-${duplicateGroup}`,
+                  title: `QQ Favorite Partial ${duplicateGroup}`,
+                  interval: 188,
+                  singer: [{ name: 'QQ Artist', mid: 'qq-artist-1' }],
+                  album: { name: 'QQ Favorite Album', mid: 'qq-album-1' },
+                  file: { media_mid: `qq-media-partial-${duplicateGroup}`, size_320mp3: 1024 },
+                }
+              }),
+              total_song_num: total,
+            },
+          },
+        })
+      }
+
+      return Response.json({ Items: [], TotalRecordCount: 0 })
+    }) as typeof fetch
+
+    const response = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio&ParentId=x-music-music&Filters=IsFavorite&Limit=100&StartIndex=100`, {
+        headers: { 'X-Emby-Authorization': authHeader },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/Items`),
+    )
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.TotalRecordCount, 999)
+    assert.ok(payload.Items.length < 100)
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999026')
+    clearQQLoginCookie()
+    db.prepare("DELETE FROM app_settings WHERE key LIKE 'virtual.song.qq-favorite-partial-%'").run()
     globalThis.fetch = originalFetch
   }
 })
@@ -2989,6 +3134,8 @@ test('local emby library exploration endpoints proxy upstream and fall back to e
       if (query.includes('Filters=IsPlayed')) {
         assert.ok(Array.isArray(payload.Items))
         assert.equal(typeof payload.TotalRecordCount, 'number')
+      } else if (query.includes('Filters=IsFavorite') && query.includes('IncludeItemTypes=Audio')) {
+        assert.deepEqual(payload, { Items: [], TotalRecordCount: 999 })
       } else {
         assert.deepEqual(payload, { Items: [], TotalRecordCount: 0 })
       }

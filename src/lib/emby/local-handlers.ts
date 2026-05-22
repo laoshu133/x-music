@@ -48,8 +48,8 @@ const MAX_EMBY_LIST_LIMIT = 1000
 const QQ_SONG_PAGE_SIZE = 100
 const QQ_SEARCH_SONG_PAGE_SIZE = 50
 const QQ_PLAYLIST_PAGE_SIZE = 50
-const QQ_FAVORITES_CACHE_TTL_MS = 60_000
 const QQ_FAVORITES_MAX_CONCURRENCY = 4
+const QQ_FAVORITES_DEFAULT_TOTAL = 999
 const VIRTUAL_RECOMMENDATION_PLAYLIST_PLAY_COUNT = '999999999'
 const QQ_FAVORITE_ORDER_BASE_MS = Date.UTC(2099, 0, 1)
 const FAVORITE_SORT_TIME = Symbol('favoriteSortTime')
@@ -62,10 +62,12 @@ type PageParams = {
 type WindowResult<T> = {
   items: T[]
   total: number
+  totalReliable?: boolean
+  rawCount?: number
+  complete?: boolean
 }
 
-const favoriteSongsCache = new Map<string, { expiresAt: number; result: WindowResult<MusicInfo> }>()
-const favoriteSongsInflight = new Map<string, Promise<WindowResult<MusicInfo>>>()
+const favoriteTotalCache = new Map<string, number>()
 
 export async function handleLocalEmbyRequest(request: Request, embyPath: string): Promise<Response | undefined> {
   if (request.method === 'GET' && pathEquals(embyPath, '/System/Info/Public')) {
@@ -539,7 +541,7 @@ async function handleItemsRequest(request: Request, embyPath: string): Promise<R
   if (filters.has('isfavorite') && shouldIncludeType(requestedTypes, 'audio')) {
     const [upstream, favorites] = await Promise.all([
       tryReadItemsResponse(request, embyPath, { startIndex: 0, limit: MAX_EMBY_LIST_LIMIT }),
-      listQQFavoriteSongs(request, Number.POSITIVE_INFINITY),
+      listQQFavoriteSongs(request, desiredCount),
     ])
     const upstreamItems = filterItemsByTypes(upstream?.Items ?? [], requestedTypes)
     const virtualItems = favorites.items
@@ -549,7 +551,8 @@ async function handleItemsRequest(request: Request, embyPath: string): Promise<R
         return favoriteSongToEmbyItem(song, index)
     })
     const merged = sortFavoriteItems([...upstreamItems, ...virtualItems])
-    return pagedItemsResponse(merged, page)
+    const total = calibrateFavoriteTotal(request, page, merged.length, filteredUpstreamTotal(upstream, upstreamItems), favorites.rawCount, favorites.complete === true)
+    return pagedItemsResponse(merged, page, total)
   }
 
   if (isMusicLibraryId(parentId) && requestedTypes.has('musicalbum')) {
@@ -1223,49 +1226,15 @@ async function listQQUserPlaylistsWindow(request: Request, limit: number): Promi
 
 async function listQQFavoriteSongs(request: Request, limit: number): Promise<WindowResult<MusicInfo>> {
   const cookie = qqCookieForRequest(request)
-  const cacheKey = favoriteCacheKey(cookie)
-  const cached = favoriteSongsCache.get(cacheKey)
-  if (cached && cached.expiresAt > Date.now()) {
-    return {
-      items: sliceToFetchLimit(cached.result.items, limit),
-      total: cached.result.total,
-    }
-  }
-
-  const inflight = favoriteSongsInflight.get(cacheKey)
-  if (inflight) {
-    const result = await inflight
-    return {
-      items: sliceToFetchLimit(result.items, limit),
-      total: result.total,
-    }
-  }
-
-  const pending = loadAllQQFavoriteSongs(cookie)
-  favoriteSongsInflight.set(cacheKey, pending)
-  try {
-    const result = await pending
-    favoriteSongsCache.set(cacheKey, {
-      expiresAt: Date.now() + QQ_FAVORITES_CACHE_TTL_MS,
-      result,
-    })
-    return {
-      items: sliceToFetchLimit(result.items, limit),
-      total: result.total,
-    }
-  } finally {
-    favoriteSongsInflight.delete(cacheKey)
-  }
-}
-
-async function loadAllQQFavoriteSongs(cookie?: string): Promise<WindowResult<MusicInfo>> {
   const pageSize = QQ_SONG_PAGE_SIZE
   const first = await getQQFavoriteSongs({ cookie, page: 1, limit: pageSize }).catch(() => undefined)
-  if (!first) return { items: [], total: 0 }
+  if (!first) return { items: [], total: 0, totalReliable: false, complete: false }
 
   const total = first.total
   const allPage = first.allPage ?? Math.ceil(total / first.limit)
-  const remainingPages = Array.from({ length: Math.max(allPage - 1, 0) }, (_, index) => index + 2)
+  const requestedPages = Math.min(allPage, Math.ceil(finiteFetchCount(limit, total) / pageSize))
+  const complete = !Number.isFinite(limit) || requestedPages >= allPage
+  const remainingPages = Array.from({ length: Math.max(requestedPages - 1, 0) }, (_, index) => index + 2)
   const pageResults = await mapWithConcurrency(remainingPages, QQ_FAVORITES_MAX_CONCURRENCY, async (page) => {
     return getQQFavoriteSongs({ cookie, page, limit: pageSize }).catch(() => undefined)
   })
@@ -1277,7 +1246,7 @@ async function loadAllQQFavoriteSongs(cookie?: string): Promise<WindowResult<Mus
   ]
 
   const deduped = dedupeSongs(songs)
-  return { items: deduped, total: deduped.length }
+  return { items: sliceToFetchLimit(deduped, limit), total: total || deduped.length, totalReliable: true, rawCount: songs.length, complete }
 }
 
 async function searchQQMusicWindow(query: string, limit: number): Promise<WindowResult<MusicInfo>> {
@@ -1451,6 +1420,29 @@ function parseTimeMs(value: unknown): number {
 function normalizeTimestampMs(value: number): number {
   if (value <= 0) return 0
   return value < 100_000_000_000 ? value * 1000 : value
+}
+
+function calibrateFavoriteTotal(
+  request: Request,
+  page: PageParams,
+  visibleCount: number,
+  upstreamTotal: number | undefined,
+  qqRawCount: number | undefined,
+  qqComplete: boolean,
+): number {
+  const cacheKey = favoriteCacheKey(qqCookieForRequest(request))
+  const realTotal = Number.isFinite(upstreamTotal) ? Math.max(upstreamTotal ?? 0, 0) : 0
+  const previous = favoriteTotalCache.get(cacheKey)
+  let total = previous ?? QQ_FAVORITES_DEFAULT_TOTAL
+
+  if (qqComplete) {
+    total = visibleCount
+  } else if (qqRawCount !== undefined && previous === undefined && realTotal + qqRawCount > 0) {
+    total = Math.max(total, realTotal + qqRawCount)
+  }
+
+  favoriteTotalCache.set(cacheKey, Math.max(total, visibleCount))
+  return total
 }
 
 function favoriteSongsToAlbumItems(songs: MusicInfo[]) {
