@@ -6,7 +6,7 @@ import { db } from '@/lib/db'
 import { appConfig } from '@/lib/config'
 import { ensureTrack, upsertTrackFileStatus } from '@/lib/cache/store'
 import { processOneEmbySyncJob } from '@/lib/emby/sync-worker'
-import { claimNextJob, completeJob, createJob, failJob, getJob, recoverStaleRunningJobs, requeueJob } from '@/lib/jobs'
+import { claimNextJob, clearStaleRunningJobs, completeJob, createJob, failJob, getJob, requeueJob } from '@/lib/jobs'
 import { getJobSummary, listJobs } from '@/lib/jobs/status'
 import { processWorkerTick } from '@/worker/index'
 
@@ -63,27 +63,25 @@ test('job status helpers list jobs and summarize states', () => {
   assert.ok(listed.some(job => job.id === failed.id))
 })
 
-test('stale running jobs are recovered for retry or terminal failure', () => {
+test('stale running jobs are cleared as failed', () => {
   db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track'").run()
 
-  const retryable = createJob({
+  const stale = createJob({
     type: 'sync_emby_track',
     status: 'running',
-    payload: { source: 'tx', songmid: `STALE_RETRY_${Date.now()}`, musicInfo: { source: 'tx', songmid: 'a', name: 'A', singer: 'B' } },
+    payload: { source: 'tx', songmid: `STALE_${Date.now()}`, musicInfo: { source: 'tx', songmid: 'a', name: 'A', singer: 'B' } },
   })
-  const terminal = createJob({
+  const fresh = createJob({
     type: 'sync_emby_track',
     status: 'running',
-    payload: { source: 'tx', songmid: `STALE_FAIL_${Date.now()}`, musicInfo: { source: 'tx', songmid: 'c', name: 'C', singer: 'D' } },
+    payload: { source: 'tx', songmid: `FRESH_${Date.now()}`, musicInfo: { source: 'tx', songmid: 'c', name: 'C', singer: 'D' } },
   })
-  db.prepare("UPDATE jobs SET attempts = 1, updated_at = datetime('now', '-1 hour') WHERE id = ?").run(retryable.id)
-  db.prepare("UPDATE jobs SET attempts = 3, updated_at = datetime('now', '-1 hour') WHERE id = ?").run(terminal.id)
+  db.prepare("UPDATE jobs SET attempts = 1, updated_at = datetime('now', '-1 hour') WHERE id = ?").run(stale.id)
 
-  assert.equal(recoverStaleRunningJobs({ olderThanSeconds: 60, maxAttempts: 3 }), 2)
-  assert.equal(getJob(retryable.id)?.status, 'queued')
-  assert.equal(getJob(retryable.id)?.error, 'Recovered stale running job')
-  assert.equal(getJob(terminal.id)?.status, 'failed')
-  assert.equal(getJob(terminal.id)?.error, 'Recovered stale running job exceeded max attempts')
+  assert.equal(clearStaleRunningJobs({ olderThanSeconds: 60 }), 1)
+  assert.equal(getJob(stale.id)?.status, 'failed')
+  assert.equal(getJob(stale.id)?.error, 'Cleared stale running job')
+  assert.equal(getJob(fresh.id)?.status, 'running')
 })
 
 test('emby sync job fails after max attempts when no cached file exists', async () => {

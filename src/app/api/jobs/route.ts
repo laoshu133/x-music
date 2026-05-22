@@ -1,10 +1,14 @@
 import { listJobs, getJobDetail, getJobSummary } from '@/lib/jobs/status'
 import type { JobRow } from '@/lib/jobs'
+import { requireAdmin } from '@/lib/admin'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 export async function GET(request: Request): Promise<Response> {
+  const forbidden = await requireAdmin()
+  if (forbidden) return forbidden
+
   const url = new URL(request.url)
   const status = url.searchParams.get('status') ?? undefined
   const type = url.searchParams.get('type') ?? undefined

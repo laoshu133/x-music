@@ -7,7 +7,7 @@ import {
   completeJob,
   ensureJobsTable,
   failJob,
-  recoverStaleRunningJobs,
+  clearStaleRunningJobs,
   requeueJob,
 } from '@/lib/jobs'
 import { processOneEmbySyncJob } from '@/lib/emby/sync-worker'
@@ -175,15 +175,14 @@ export async function processWorkerTick(processors: WorkerTickProcessors = {}): 
 
 async function main(): Promise<void> {
   ensureJobsTable()
-  const recovered = recoverStaleRunningJobs({
+  const cleared = clearStaleRunningJobs({
     olderThanSeconds: staleRunningJobSeconds,
-    maxAttempts,
   })
 
   console.log('XMusic worker started')
   console.log(`data dir: ${appConfig.dataDir}`)
   console.log(`poll interval: ${pollIntervalMs}ms`)
-  if (recovered) console.log(`recovered ${recovered} stale running jobs`)
+  if (cleared) console.log(`cleared ${cleared} stale running jobs`)
 
   while (!stopping) {
     const didWork = await processWorkerTick()

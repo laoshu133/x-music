@@ -1,6 +1,6 @@
 import { getEffectiveSettings } from '@/lib/db/settings'
 import { markRequestSource } from '@/lib/request-log'
-import { listAccounts } from '@/lib/db/accounts'
+import { listAccounts, markAccountActive } from '@/lib/db/accounts'
 import { embyAuthorizationHeader, getDefaultUpstreamMusicLibraryId, getEmbyAccessToken } from './auth'
 import { createLocalAccessToken, readEmbyAccessToken } from './tokens'
 
@@ -76,7 +76,9 @@ function responseHeadersForDecodedBody(headers: Headers): Headers {
 function findAccountForRequest(request: Request) {
   const token = readEmbyAccessToken(request)
   if (!token) return undefined
-  return listAccounts().find(account => token === createLocalAccessToken(account))
+  const account = listAccounts().find(account => token === createLocalAccessToken(account))
+  if (account) markAccountActive(account.qqUin)
+  return account
 }
 
 function applyToken(url: URL, headers: Headers, token: string | undefined): void {

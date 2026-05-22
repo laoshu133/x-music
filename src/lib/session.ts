@@ -1,12 +1,14 @@
 import { cookies } from 'next/headers'
-import { getAccountByQQ, type AccountRecord } from '@/lib/db/accounts'
+import { getAccountByQQ, markAccountActive, type AccountRecord } from '@/lib/db/accounts'
 
 const sessionCookieName = 'x_music_account'
 
 export async function getCurrentAccount(): Promise<AccountRecord | undefined> {
   const store = await cookies()
   const qqUin = store.get(sessionCookieName)?.value
-  return qqUin ? getAccountByQQ(qqUin) : undefined
+  if (!qqUin) return undefined
+  markAccountActive(qqUin)
+  return getAccountByQQ(qqUin)
 }
 
 export async function setCurrentAccount(qqUin: string): Promise<void> {

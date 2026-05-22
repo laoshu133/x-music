@@ -5,6 +5,7 @@ import { listResourceCacheSummary } from '@/lib/cache/resources'
 import { db } from '@/lib/db'
 import { getFavoriteSummary } from '@/lib/db/favorites'
 import { getJobSummary } from '@/lib/jobs/status'
+import { getCurrentAdminAccount } from '@/lib/admin'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -14,6 +15,7 @@ interface CountRow {
 }
 
 export async function GET() {
+  const isAdmin = Boolean(await getCurrentAdminAccount())
   const database = checkDatabase()
   const cache = {
     dataDir: checkDirectory(appConfig.dataDir),
@@ -21,7 +23,7 @@ export async function GET() {
     inboxDir: checkDirectory(appConfig.inboxDir),
     musicDir: checkDirectory(appConfig.musicDir),
   }
-  const jobs = getJobStatus()
+  const jobs = isAdmin ? getJobStatus() : emptyJobStatus()
   const favorites = getFavoriteSummary()
   const resourceCache = listResourceCacheSummary()
   const config = {
@@ -44,6 +46,7 @@ export async function GET() {
     favorites,
     resourceCache,
     config,
+    permissions: { isAdmin },
   }, { status: ok ? 200 : 503 })
 }
 
@@ -110,6 +113,21 @@ const getJobStatus = () => {
     failed: summary.failed,
   }
 }
+
+const emptyJobStatus = () => ({
+  byStatus: {
+    queued: 0,
+    running: 0,
+    completed: 0,
+    failed: 0,
+  },
+  byType: {},
+  total: 0,
+  queued: 0,
+  running: 0,
+  completed: 0,
+  failed: 0,
+})
 
 const count = (tableName: string): number => {
   const row = db.prepare(`SELECT COUNT(*) AS count FROM ${tableName}`).get() as CountRow

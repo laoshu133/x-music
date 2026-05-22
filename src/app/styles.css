@@ -848,7 +848,8 @@ a {
 }
 
 .ops-layout,
-.jobs-layout {
+.jobs-layout,
+.users-layout {
   display: grid;
   gap: 12px;
 }
@@ -953,15 +954,16 @@ a {
   grid-column: 1 / -1;
 }
 
-.jobs-table {
+.jobs-table,
+.users-table {
   display: grid;
   gap: 0;
   overflow-x: auto;
 }
 
-.job-row {
+.job-row,
+.user-row {
   display: grid;
-  grid-template-columns: 72px minmax(150px, 1fr) 110px 90px 130px;
   gap: 10px;
   align-items: center;
   min-width: 620px;
@@ -976,7 +978,16 @@ a {
   border-bottom: 0;
 }
 
-.job-row.header {
+.job-row {
+  grid-template-columns: 72px minmax(150px, 1fr) 110px 90px 130px;
+}
+
+.user-row {
+  grid-template-columns: 120px minmax(150px, 1fr) 90px 140px 140px;
+}
+
+.job-row.header,
+.user-row.header {
   border-top: 0;
   color: var(--muted);
   font-weight: 600;
@@ -991,7 +1002,8 @@ button.job-row.active {
   background: var(--surface-2);
 }
 
-.job-row span {
+.job-row span,
+.user-row span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

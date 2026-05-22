@@ -1,6 +1,7 @@
 import crypto from 'node:crypto'
 import { db } from '@/lib/db'
 import { buildQQLoginState, summarizeQQLoginState, type QQLoginState } from '@/lib/qq/account'
+import { appConfig } from '@/lib/config'
 
 export interface AccountRecord {
   qqUin: string
@@ -11,8 +12,21 @@ export interface AccountRecord {
   embyUsername: string
   embyPassword: string
   embyAccessToken?: string
+  lastLoginAt?: string
+  lastActiveAt?: string
   createdAt: string
   updatedAt: string
+}
+
+export interface AccountListItem {
+  qqUin: string
+  embyUsername: string
+  embyUserId?: string
+  isAdmin: boolean
+  createdAt: string
+  updatedAt: string
+  lastLoginAt?: string
+  lastActiveAt?: string
 }
 
 export interface AccountUpsertResult {
@@ -29,6 +43,8 @@ interface AccountRow {
   emby_username: string
   emby_password: string
   emby_access_token: string | null
+  last_login_at: string | null
+  last_active_at: string | null
   created_at: string
   updated_at: string
 }
@@ -50,6 +66,8 @@ export function upsertAccountFromQQCookie(cookieText: string): AccountUpsertResu
       emby_username,
       emby_password,
       emby_access_token,
+      last_login_at,
+      last_active_at,
       updated_at
     )
     VALUES (
@@ -61,6 +79,8 @@ export function upsertAccountFromQQCookie(cookieText: string): AccountUpsertResu
       @embyUsername,
       @embyPassword,
       @embyAccessToken,
+      CURRENT_TIMESTAMP,
+      CURRENT_TIMESTAMP,
       CURRENT_TIMESTAMP
     )
     ON CONFLICT(qq_uin) DO UPDATE SET
@@ -69,6 +89,8 @@ export function upsertAccountFromQQCookie(cookieText: string): AccountUpsertResu
       qqmusic_key = excluded.qqmusic_key,
       emby_username = excluded.emby_username,
       emby_password = excluded.emby_password,
+      last_login_at = CURRENT_TIMESTAMP,
+      last_active_at = CURRENT_TIMESTAMP,
       updated_at = CURRENT_TIMESTAMP
   `).run({
     qqUin: state.uin,
@@ -105,6 +127,32 @@ export function getAccountByEmbyUserId(userId: string): AccountRecord | undefine
 export function listAccounts(): AccountRecord[] {
   const rows = db.prepare('SELECT * FROM accounts ORDER BY updated_at DESC').all() as AccountRow[]
   return rows.map(rowToAccount)
+}
+
+export function listAccountSummaries(): AccountListItem[] {
+  return listAccounts().map(account => ({
+    qqUin: account.qqUin,
+    embyUsername: account.embyUsername,
+    embyUserId: account.embyUserId,
+    isAdmin: isAdminQQ(account.qqUin),
+    createdAt: account.createdAt,
+    updatedAt: account.updatedAt,
+    lastLoginAt: account.lastLoginAt,
+    lastActiveAt: account.lastActiveAt,
+  }))
+}
+
+export function isAdminQQ(qqUin: string | undefined): boolean {
+  if (!qqUin) return false
+  return appConfig.adminQQUins.includes(qqUin.replace(/^o/i, ''))
+}
+
+export function markAccountActive(qqUin: string): void {
+  db.prepare(`
+    UPDATE accounts
+    SET last_active_at = CURRENT_TIMESTAMP
+    WHERE qq_uin = ?
+  `).run(qqUin)
 }
 
 export function updateAccountEmbyAuth(input: {
@@ -157,6 +205,7 @@ export function accountToQQLoginState(account: AccountRecord): QQLoginState {
 export function summarizeAccount(account: AccountRecord) {
   return {
     ...summarizeQQLoginState(accountToQQLoginState(account)),
+    isAdmin: isAdminQQ(account.qqUin),
     emby: {
       username: account.embyUsername,
       hasPassword: Boolean(account.embyPassword),
@@ -176,6 +225,8 @@ function rowToAccount(row: AccountRow): AccountRecord {
     embyUsername: row.emby_username,
     embyPassword: row.emby_password,
     embyAccessToken: row.emby_access_token ?? undefined,
+    lastLoginAt: row.last_login_at ?? undefined,
+    lastActiveAt: row.last_active_at ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }

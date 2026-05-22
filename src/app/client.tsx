@@ -25,11 +25,12 @@ import {
   Settings,
   Sparkles,
   Workflow,
+  UsersRound,
   UserRound,
 } from 'lucide-react'
 import { useRouter, useSearchParams } from 'next/navigation'
 
-type View = 'home' | 'player' | 'config' | 'status' | 'jobs'
+type View = 'home' | 'player' | 'config' | 'status' | 'users' | 'jobs'
 
 interface ApiState<T> {
   loading: boolean
@@ -43,6 +44,7 @@ interface AccountState {
   loggedIn: boolean
   source?: 'env' | 'request' | 'stored'
   uin?: string
+  isAdmin?: boolean
   hasEncryptedUin?: boolean
   hasQQMusicKey?: boolean
   actionable?: string
@@ -95,11 +97,27 @@ interface HealthStatus {
   favorites: { favoriteCount: number; pendingCount: number; failedCount: number }
   resourceCache: { total: number; totalBytes: number; byType: Record<string, { count: number; bytes: number }> }
   config: { missing: string[]; lxMusicSourceScript: boolean }
+  permissions?: { isAdmin: boolean }
 }
 
 interface JobsResult {
   summary: HealthStatus['jobs']
   items: JobItem[]
+}
+
+interface UsersResult {
+  items: UserItem[]
+}
+
+interface UserItem {
+  qqUin: string
+  embyUsername: string
+  embyUserId?: string
+  isAdmin: boolean
+  createdAt: string
+  updatedAt: string
+  lastLoginAt?: string
+  lastActiveAt?: string
 }
 
 interface JobItem {
@@ -155,6 +173,7 @@ const viewMeta: Record<View, { label: string; icon: ComponentType<{ size?: numbe
   player: { label: '播放器', icon: MonitorPlay },
   config: { label: '配置', icon: Settings },
   status: { label: '状态', icon: Activity },
+  users: { label: '用户管理', icon: UsersRound },
   jobs: { label: '任务', icon: Workflow },
 }
 
@@ -178,6 +197,7 @@ export default function MusicClient() {
   const [adminConfig, setAdminConfig] = useState<ApiState<AdminConfig>>(emptyState)
   const [health, setHealth] = useState<ApiState<HealthStatus>>(emptyState)
   const [jobs, setJobs] = useState<ApiState<JobsResult>>(emptyState)
+  const [users, setUsers] = useState<ApiState<UsersResult>>(emptyState)
   const [message, setMessage] = useState('')
   const [browserOrigin, setBrowserOrigin] = useState('')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
@@ -221,6 +241,7 @@ export default function MusicClient() {
     return body
   })
   const loadJobs = () => run(s => setJobs(s), () => fetchJson<JobsResult>('/api/jobs?limit=100'))
+  const loadUsers = () => run(s => setUsers(s), () => fetchJson<UsersResult>('/api/admin/users'))
   const loadAdminConfig = () => run(s => setAdminConfig(s), async () => {
     const data = await fetchJson<AdminConfig>('/api/admin/config')
     setConfigDraft({
@@ -303,7 +324,8 @@ export default function MusicClient() {
     if (next === 'home' || next === 'player' || next === 'config') loadAdminConfig()
     if (next === 'home' || next === 'player' || next === 'config') loadAccountEmbyConfig()
     if (next === 'status') loadHealth()
-    if (next === 'jobs') loadJobs()
+    if (next === 'users' && account.data?.isAdmin) loadUsers()
+    if (next === 'jobs' && account.data?.isAdmin) loadJobs()
   }
 
   const saveAdminConfig = async () => {
@@ -344,6 +366,11 @@ export default function MusicClient() {
     setView(routeView)
     if (account.data?.loggedIn) loadViewData(routeView)
   }, [routeView, account.data?.loggedIn])
+
+  useEffect(() => {
+    if (!account.data?.loggedIn) return
+    if (!isViewAllowed(view, account.data)) openView('home')
+  }, [account.data?.loggedIn, account.data?.isAdmin, view])
 
   useEffect(() => {
     if (account.data?.loggedIn) void loadAccountEmbyConfig()
@@ -416,7 +443,7 @@ export default function MusicClient() {
           </button>
         </div>
         <nav className="tabs" aria-label="主导航">
-          {views.map(key => {
+          {views.filter(key => isViewAllowed(key, account.data)).map(key => {
             const Icon = viewMeta[key].icon
             return (
               <button key={key} className={view === key ? 'active' : ''} onClick={() => openView(key)}>
@@ -484,7 +511,7 @@ export default function MusicClient() {
               </div>
             </div>
             <Status state={health} />
-            {health.data ? <HealthPanel health={health.data} /> : null}
+            {health.data ? <HealthPanel health={health.data} isAdmin={Boolean(account.data?.isAdmin)} /> : null}
           </section>
         )}
 
@@ -498,9 +525,25 @@ export default function MusicClient() {
             {jobs.data ? <JobsPanel jobs={jobs.data} /> : null}
           </section>
         )}
+
+        {view === 'users' && (
+          <section className="workspace">
+            <div className="section-head">
+              <h3>用户列表</h3>
+              <IconButton label="刷新" onClick={loadUsers} disabled={users.loading}><RefreshCw size={16} /></IconButton>
+            </div>
+            <Status state={users} />
+            {users.data ? <UsersPanel users={users.data} /> : null}
+          </section>
+        )}
       </section>
     </main>
   )
+}
+
+function isViewAllowed(view: View, account?: AccountState | null): boolean {
+  if (view === 'users' || view === 'jobs') return Boolean(account?.isAdmin)
+  return true
 }
 
 function LoginPage({
@@ -760,7 +803,7 @@ function ConfigPanel({
   )
 }
 
-function HealthPanel({ health }: { health: HealthStatus }) {
+function HealthPanel({ health, isAdmin }: { health: HealthStatus; isAdmin: boolean }) {
   const cacheEntries = Object.entries(health.resourceCache.byType)
   return (
     <div className="ops-layout">
@@ -774,7 +817,7 @@ function HealthPanel({ health }: { health: HealthStatus }) {
 
       <section className="metric-grid">
         <MetricCard icon={Database} label="曲库" value={String(health.database.tracks ?? 0)} detail={`${health.database.trackFiles ?? 0} 个文件 · ${health.database.playEvents ?? 0} 次播放`} tone={health.database.ok ? 'ok' : 'bad'} />
-        <MetricCard icon={Workflow} label="任务" value={String(health.jobs.total)} detail={`${health.jobs.queued} 等待 · ${health.jobs.failed} 失败`} tone={health.jobs.failed ? 'bad' : health.jobs.queued ? 'warn' : 'ok'} />
+        {isAdmin ? <MetricCard icon={Workflow} label="任务" value={String(health.jobs.total)} detail={`${health.jobs.queued} 等待 · ${health.jobs.failed} 失败`} tone={health.jobs.failed ? 'bad' : health.jobs.queued ? 'warn' : 'ok'} /> : null}
         <MetricCard icon={PlayCircle} label="资源缓存" value={`${health.resourceCache.total}`} detail={formatBytes(health.resourceCache.totalBytes)} tone="ok" />
         <MetricCard icon={KeyRound} label="配置" value={health.config.missing.length ? '缺少配置' : '可用'} detail={health.config.missing.length ? health.config.missing.join(', ') : '音源已就绪'} tone={health.config.missing.length ? 'bad' : 'ok'} />
       </section>
@@ -854,6 +897,32 @@ function JobsPanel({ jobs }: { jobs: JobsResult }) {
         {!jobs.items.length ? <p>暂无任务记录</p> : null}
       </section>
       {selectedJob ? <JobDetailDialog job={selectedJob} onClose={() => setSelectedJob(null)} /> : null}
+    </div>
+  )
+}
+
+function UsersPanel({ users }: { users: UsersResult }) {
+  return (
+    <div className="users-layout">
+      <section className="users-table">
+        <div className="user-row header">
+          <span>QQ</span>
+          <span>播放器帐号</span>
+          <span>权限</span>
+          <span>最近登录</span>
+          <span>最近使用</span>
+        </div>
+        {users.items.map(user => (
+          <div className="user-row" key={user.qqUin}>
+            <span>{user.qqUin}</span>
+            <span>{user.embyUsername}</span>
+            <span>{user.isAdmin ? '管理员' : '用户'}</span>
+            <span>{formatOptionalDateTime(user.lastLoginAt)}</span>
+            <span>{formatOptionalDateTime(user.lastActiveAt)}</span>
+          </div>
+        ))}
+        {!users.items.length ? <p>暂无用户</p> : null}
+      </section>
     </div>
   )
 }
@@ -1007,8 +1076,13 @@ function headingFor(view: View): string {
   if (view === 'home') return '连接你的音乐生活'
   if (view === 'player') return '打开播放器收听'
   if (view === 'config') return '管理播放器连接'
+  if (view === 'users') return '用户管理'
   if (view === 'jobs') return '后台任务队列'
   return '系统运行状态'
+}
+
+function formatOptionalDateTime(value?: string): string {
+  return value ? formatDateTime(value) : '-'
 }
 
 function formatDateTime(value: string): string {

@@ -86,6 +86,8 @@ CREATE TABLE IF NOT EXISTS accounts (
   emby_username TEXT NOT NULL,
   emby_password TEXT NOT NULL,
   emby_access_token TEXT,
+  last_login_at TEXT,
+  last_active_at TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

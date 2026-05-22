@@ -35,7 +35,7 @@ import {
 import { getRemoteMapping, upsertRemoteMapping } from '@/lib/db/remote-mappings'
 import { deleteEmbyItems, fetchEmbyJson, searchEmbyAudioByName, searchEmbyPlaylistByName } from './upstream-api'
 import { proxyToUpstreamEmby } from './upstream-proxy'
-import { getAccountByEmbyUsername, getAccountByEmbyUserId, listAccounts, type AccountRecord } from '@/lib/db/accounts'
+import { getAccountByEmbyUsername, getAccountByEmbyUserId, listAccounts, markAccountActive, type AccountRecord } from '@/lib/db/accounts'
 import { ensureUpstreamEmbyUserForAccount, getDefaultUpstreamMusicLibraryId } from './auth'
 import crypto from 'node:crypto'
 import { stat } from 'node:fs/promises'
@@ -257,7 +257,9 @@ function localAuthenticateResponse(account: AccountRecord, accessToken: string):
 function authorizedLocalAccount(request: Request): AccountRecord | undefined {
   const token = readEmbyAccessToken(request)
   if (!token) return undefined
-  return listAccounts().find(account => token === createLocalAccessToken(account))
+  const account = listAccounts().find(account => token === createLocalAccessToken(account))
+  if (account) markAccountActive(account.qqUin)
+  return account
 }
 
 function isAuthorizedLocalRequest(request: Request): boolean {

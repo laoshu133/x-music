@@ -37,9 +37,8 @@ export interface ClaimJobOptions {
   maxAttempts?: number
 }
 
-export interface RecoverStaleJobsOptions {
+export interface ClearStaleJobsOptions {
   olderThanSeconds: number
-  maxAttempts?: number
 }
 
 const parseJobRecord = <TPayload>(record: JobRecord): JobRow<TPayload> => ({
@@ -168,44 +167,19 @@ export function requeueJob(id: number, error: unknown): void {
   })
 }
 
-export function recoverStaleRunningJobs(options: RecoverStaleJobsOptions): number {
+export function clearStaleRunningJobs(options: ClearStaleJobsOptions): number {
   ensureJobsTable()
 
-  const maxAttempts = options.maxAttempts ?? 3
-  const staleRows = db.prepare(`
-    SELECT id, attempts
-    FROM jobs
-    WHERE status = 'running'
-      AND updated_at < datetime('now', @age)
-  `).all({
-    age: `-${Math.max(1, Math.trunc(options.olderThanSeconds))} seconds`,
-  }) as Array<{ id: number; attempts: number }>
-
-  const requeue = db.prepare(`
-    UPDATE jobs
-    SET status = 'queued',
-        error = 'Recovered stale running job',
-        updated_at = CURRENT_TIMESTAMP
-    WHERE id = ?
-  `)
-  const fail = db.prepare(`
+  const result = db.prepare(`
     UPDATE jobs
     SET status = 'failed',
-        error = 'Recovered stale running job exceeded max attempts',
+        error = 'Cleared stale running job',
         updated_at = CURRENT_TIMESTAMP
-    WHERE id = ?
-  `)
-
-  const update = db.transaction((rows: Array<{ id: number; attempts: number }>) => {
-    for (const row of rows) {
-      if (row.attempts >= maxAttempts) {
-        fail.run(row.id)
-      } else {
-        requeue.run(row.id)
-      }
-    }
+    WHERE status = 'running'
+      AND updated_at < datetime('now', @age)
+  `).run({
+    age: `-${Math.max(1, Math.trunc(options.olderThanSeconds))} seconds`,
   })
-  update(staleRows)
 
-  return staleRows.length
+  return result.changes
 }

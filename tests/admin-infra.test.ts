@@ -4,7 +4,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { db } from '@/lib/db'
 import { deleteSetting, getEffectiveSettings, getSetting, setSetting, updateEffectiveSettings } from '@/lib/db/settings'
-import { getAccountByQQ } from '@/lib/db/accounts'
+import { getAccountByQQ, isAdminQQ, listAccountSummaries, markAccountActive } from '@/lib/db/accounts'
 import { clearQQLoginCookie, saveQQLoginCookie } from '@/lib/db/qq-session'
 import { dispatchEmbyRequest } from '@/lib/emby/dispatch'
 import { ensureUpstreamEmbyUserForAccount } from '@/lib/emby/auth'
@@ -32,6 +32,35 @@ test('settings store persists typed values and merges effective defaults', () =>
   assert.equal(getEffectiveSettings().qq.enabled, false)
 
   deleteSetting('qq.enabled')
+})
+
+test('admin QQ env controls account permissions and summaries', () => {
+  const previous = process.env.ADMIN_QQ_UINS
+  try {
+    process.env.ADMIN_QQ_UINS = '123456, 999777'
+    db.prepare('DELETE FROM accounts WHERE qq_uin IN (?, ?)').run('123456', '999777')
+
+    saveQQLoginCookie('uin=o123456; qm_keyst=test-key')
+    saveQQLoginCookie('uin=o999777; qm_keyst=test-key')
+    markAccountActive('123456')
+
+    assert.equal(isAdminQQ('123456'), true)
+    assert.equal(isAdminQQ('999777'), true)
+    assert.equal(isAdminQQ('555000'), false)
+
+    const users = listAccountSummaries().filter(user => user.qqUin === '123456' || user.qqUin === '999777')
+    assert.equal(users.length, 2)
+    assert.ok(users.every(user => user.isAdmin))
+    assert.ok(users.find(user => user.qqUin === '123456')?.lastActiveAt)
+  } finally {
+    if (previous === undefined) {
+      delete process.env.ADMIN_QQ_UINS
+    } else {
+      process.env.ADMIN_QQ_UINS = previous
+    }
+    db.prepare('DELETE FROM accounts WHERE qq_uin IN (?, ?)').run('123456', '999777')
+    clearQQLoginCookie()
+  }
 })
 
 test('QQ login creates a per-account Emby gateway account', () => {

@@ -13,6 +13,7 @@ const envSchema = z.object({
   EMBY_PROXY_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),
   EMBY_SOURCE_WEBDAV_DSN: z.string().url().optional(),
   AMPCAST_URL: z.string().url().default('https://ampcast.app/'),
+  ADMIN_QQ_UINS: z.string().default(''),
 })
 
 const env = envSchema.parse(process.env)
@@ -43,7 +44,17 @@ export const appConfig = {
   get ampcastUrl() {
     return currentEnv().AMPCAST_URL
   },
+  get adminQQUins() {
+    return parseAdminQQUins(currentEnv().ADMIN_QQ_UINS)
+  },
 } as const
+
+function parseAdminQQUins(value: string): string[] {
+  return value
+    .split(/[,\s;]+/)
+    .map(item => item.trim().replace(/^o/i, ''))
+    .filter(Boolean)
+}
 
 function loadDotEnv(): void {
   const filePath = path.resolve(process.cwd(), '.env')
