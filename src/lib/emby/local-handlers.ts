@@ -5,6 +5,7 @@ import { MusicUrlConfigError, MusicUrlResolveError, qualityFallbacks, resolveMus
 import {
   getQQPlaylistDetail,
   getQQFavoriteSongs,
+  getQQDailyRecommendations,
   getQQLoginState,
   getQQRecommendations,
   getQQUserPlaylists,
@@ -44,6 +45,7 @@ const QQ_SEARCH_SONG_PAGE_SIZE = 50
 const QQ_PLAYLIST_PAGE_SIZE = 50
 const QQ_FAVORITES_CACHE_TTL_MS = 60_000
 const QQ_FAVORITES_MAX_CONCURRENCY = 4
+const VIRTUAL_RECOMMENDATION_PLAYLIST_PLAY_COUNT = '999999999'
 
 type PageParams = {
   startIndex: number
@@ -498,7 +500,9 @@ async function handleItemsRequest(request: Request, embyPath: string): Promise<R
     const virtualItems = playlists
       .filter(playlist => !hasEquivalentEmbyPlaylist(upstreamItems, playlist.name))
       .map(playlistToEmbyItem)
-    const merged = [...upstreamItems, ...virtualItems]
+    const pinnedVirtualItems = virtualItems.filter(isPinnedRecommendationPlaylistItem)
+    const otherVirtualItems = virtualItems.filter(item => !isPinnedRecommendationPlaylistItem(item))
+    const merged = [...pinnedVirtualItems, ...upstreamItems, ...otherVirtualItems]
     return pagedItemsResponse(merged, page)
   }
 
@@ -823,7 +827,7 @@ async function handleVirtualPlaylistItemsRequest(request: Request, decoded: Virt
     songs = result.items
     total = result.total
   } else if (decoded.kind === 'qq-daily') {
-    const result = await getQQRecommendationsWindow(request, desiredCount)
+    const result = await getQQDailyRecommendationsWindow(desiredCount)
     songs = result.items
     total = result.total
   } else {
@@ -1054,7 +1058,7 @@ async function listVirtualPlaylists(request: Request, limit: number): Promise<QQ
     // User playlists require a valid QQ login; dynamic recommendation playlists still remain available.
   }
 
-  result.push(defaultVirtualPlaylist('__daily__'), defaultVirtualPlaylist('__guess__'))
+  result.unshift(defaultVirtualPlaylist('__daily__'), defaultVirtualPlaylist('__guess__'))
 
   const deduped = new Map<string, QQPlaylistInfo>()
   for (const playlist of result) {
@@ -1064,17 +1068,34 @@ async function listVirtualPlaylists(request: Request, limit: number): Promise<QQ
       deduped.set(key, playlist)
     }
   }
-  return [...deduped.values()]
+  return [...deduped.values()].sort(compareVirtualPlaylists)
 }
 
 function defaultVirtualPlaylist(id: '__daily__' | '__guess__'): QQPlaylistInfo {
+  const now = new Date().toISOString()
   return {
     source: 'tx',
     id,
     name: id === '__daily__' ? 'QQ 每日推荐' : 'QQ 猜你喜欢',
     author: 'QQ 音乐',
     total: 30,
+    playCount: VIRTUAL_RECOMMENDATION_PLAYLIST_PLAY_COUNT,
+    time: now,
   }
+}
+
+function compareVirtualPlaylists(a: QQPlaylistInfo, b: QQPlaylistInfo): number {
+  const pinned = pinnedPlaylistRank(a) - pinnedPlaylistRank(b)
+  if (pinned !== 0) return pinned
+  const time = playlistTimeMs(b) - playlistTimeMs(a)
+  if (time !== 0) return time
+  return a.name.localeCompare(b.name)
+}
+
+function pinnedPlaylistRank(playlist: Pick<QQPlaylistInfo, 'id'>): number {
+  if (playlist.id === '__daily__') return 0
+  if (playlist.id === '__guess__') return 1
+  return 2
 }
 
 async function listQQUserPlaylistsWindow(request: Request, limit: number): Promise<QQPlaylistInfo[]> {
@@ -1203,6 +1224,12 @@ async function getQQRecommendationsWindow(request: Request, limit: number): Prom
 
   const deduped = dedupeSongs(songs)
   return { items: sliceToFetchLimit(deduped, limit), total: deduped.length }
+}
+
+async function getQQDailyRecommendationsWindow(limit: number): Promise<WindowResult<MusicInfo>> {
+  const result = await getQQDailyRecommendations({ limit: finiteFetchCount(limit) }).catch(() => undefined)
+  const deduped = dedupeSongs(result?.list ?? [])
+  return { items: sliceToFetchLimit(deduped, limit), total: result?.total ?? deduped.length }
 }
 
 function localPlayHistoryToEmbyItems(limit: number): any[] {
@@ -1357,6 +1384,7 @@ function playlistToEmbyItem(playlist: QQPlaylistInfo) {
     : playlist.id === '__guess__'
       ? encodeVirtualId({ kind: 'qq-guess' })
       : playlistVirtualId(playlist.id)
+  const updatedAt = playlistUpdatedAt(playlist)
   return {
     Name: playlist.name,
     ServerId: LOCAL_SERVER_ID,
@@ -1364,10 +1392,47 @@ function playlistToEmbyItem(playlist: QQPlaylistInfo) {
     Type: 'Playlist',
     MediaType: 'Audio',
     IsFolder: true,
+    DateCreated: updatedAt,
+    PremiereDate: updatedAt,
+    DateLastMediaAdded: updatedAt,
     RecursiveItemCount: playlist.total ?? 0,
     Overview: playlist.desc,
     ImageTags: playlist.img ? { Primary: playlist.id } : {},
+    UserData: {
+      PlaybackPositionTicks: 0,
+      PlayCount: playlistPlayCountNumber(playlist),
+      LastPlayedDate: updatedAt,
+      IsFavorite: false,
+      Played: playlistPlayCountNumber(playlist) > 0,
+    },
   }
+}
+
+function isPinnedRecommendationPlaylistItem(item: { Id?: string }): boolean {
+  const decoded = decodeVirtualId(item.Id ?? '')
+  return decoded?.kind === 'qq-daily' || decoded?.kind === 'qq-guess'
+}
+
+function playlistUpdatedAt(playlist: QQPlaylistInfo): string {
+  if (playlist.id === '__daily__' || playlist.id === '__guess__') return new Date().toISOString()
+  const time = playlistTimeMs(playlist)
+  return time > 0 ? new Date(time).toISOString() : '2000-01-01T00:00:00.000Z'
+}
+
+function playlistTimeMs(playlist: Pick<QQPlaylistInfo, 'time'>): number {
+  if (!playlist.time) return 0
+  const time = Date.parse(playlist.time)
+  return Number.isFinite(time) ? time : 0
+}
+
+function playlistPlayCountNumber(playlist: Pick<QQPlaylistInfo, 'playCount'>): number {
+  const raw = playlist.playCount ?? ''
+  const normalized = raw.endsWith('亿')
+    ? Number.parseFloat(raw) * 100000000
+    : raw.endsWith('万')
+      ? Number.parseFloat(raw) * 10000
+      : Number.parseFloat(raw)
+  return Number.isFinite(normalized) ? Math.floor(normalized) : 0
 }
 
 function virtualImageUrl(id: ReturnType<typeof decodeVirtualId>): string | undefined {

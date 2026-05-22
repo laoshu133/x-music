@@ -1304,24 +1304,37 @@ test('local emby query parent id expands QQ virtual playlist items', async () =>
 
     globalThis.fetch = (async (url: string | URL | Request) => {
       const requestUrl = new URL(String(url))
-      if (requestUrl.hostname === 'u.y.qq.com') {
+      if (requestUrl.hostname === 'c.y.qq.com' && requestUrl.pathname.includes('client_music_search_songlist')) {
         return Response.json({
           code: 0,
-          toplist: {
-            code: 0,
-            data: {
-              songInfoList: [{
-                id: 123,
-                mid: 'qq-daily-song-1',
-                title: 'QQ Daily Song',
-                interval: 188,
-                singer: [{ name: 'QQ Artist', mid: 'qq-artist-1' }],
-                album: { name: 'QQ Album', mid: 'qq-album-1' },
-                file: { media_mid: 'qq-media-1', size_320mp3: 1024 },
-              }],
-              totalNum: 1,
-            },
+          data: {
+            sum: 1,
+            list: [{
+              dissid: '123456789',
+              dissname: 'QQ音乐 Daily 30',
+              creator: { name: 'QQ Music' },
+              song_count: 1,
+            }],
           },
+        })
+      }
+
+      if (requestUrl.hostname === 'c.y.qq.com' && requestUrl.pathname.includes('fcg_ucc_getcdinfo_byids_cp')) {
+        return Response.json({
+          code: 0,
+          cdlist: [{
+            disstid: '123456789',
+            dissname: 'QQ音乐 Daily 30',
+            songlist: [{
+              id: 123,
+              mid: 'qq-daily-song-1',
+              title: 'QQ Daily Song',
+              interval: 188,
+              singer: [{ name: 'QQ Artist', mid: 'qq-artist-1' }],
+              album: { name: 'QQ Album', mid: 'qq-album-1' },
+              file: { media_mid: 'qq-media-1', size_320mp3: 1024 },
+            }],
+          }],
         })
       }
 
@@ -1367,7 +1380,7 @@ test('local emby recommendation playlists cap QQ recommendation limit', async ()
     }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
     assert.equal(auth?.status, 200)
     const authPayload = await auth!.json()
-    const dailyId = encodeVirtualId({ kind: 'qq-daily' })
+    const guessId = encodeVirtualId({ kind: 'qq-guess' })
 
     const recommendationLimits: number[] = []
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
@@ -1404,7 +1417,7 @@ test('local emby recommendation playlists cap QQ recommendation limit', async ()
     }) as typeof fetch
 
     const response = await dispatchEmbyRequest(
-      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio%2CMusicVideo&ParentId=${encodeURIComponent(dailyId)}&Limit=250&StartIndex=0`, {
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio%2CMusicVideo&ParentId=${encodeURIComponent(guessId)}&Limit=250&StartIndex=0`, {
         headers: {
           'X-Emby-Authorization': `MediaBrowser Client="ampcast", Version="0.9.28", Device="PC", Token="${authPayload.AccessToken}"`,
         },
@@ -2364,7 +2377,14 @@ test('local emby library exploration endpoints proxy upstream and fall back to e
     assert.equal(playlists.status, 200)
     const playlistsPayload = await playlists.json()
     assert.equal(playlistsPayload.TotalRecordCount, 2)
-    assert.deepEqual(playlistsPayload.Items.map((item: { Name: string }) => item.Name).sort(), ['QQ 每日推荐', 'QQ 猜你喜欢'])
+    assert.deepEqual(playlistsPayload.Items.map((item: { Name: string }) => item.Name), ['QQ 每日推荐', 'QQ 猜你喜欢'])
+    for (const item of playlistsPayload.Items) {
+      assert.equal(typeof item.DateCreated, 'string')
+      assert.equal(typeof item.DateLastMediaAdded, 'string')
+      assert.equal(typeof item.UserData.LastPlayedDate, 'string')
+      assert.ok(Date.parse(item.DateCreated) > Date.now() - 60_000)
+      assert.ok(item.UserData.PlayCount > 0)
+    }
 
     const image = await dispatchEmbyRequest(
       new Request('http://local/emby/Items/x-music-music/Images/Primary', { headers: { 'X-Emby-Authorization': authHeader } }),

@@ -4,6 +4,8 @@ import { getQQLoginState } from './account'
 import { QQMusicError, qqSignedPost } from './http'
 import { getQQFavoriteSongs } from './favorites'
 import { getQQToplistDetail } from './toplists'
+import { getQQPlaylistDetail } from './playlists'
+import { searchQQPlaylists } from './search'
 
 type QQRecommendationsResponse = {
   code: number
@@ -22,6 +24,8 @@ export type RecommendationResult = PagedResult<MusicInfo> & {
   strategy: string
   personalized: boolean
 }
+
+const DAILY_30_QUERIES = ['daily 30', '每日30', '每日推荐30', 'QQ音乐每日30首']
 
 function buildRecommendationsPayload(uin: string, limit: number) {
   return {
@@ -99,6 +103,24 @@ export async function getQQRecommendations(input: {
   return favoriteSeededFallback({ cookie: login.cookie, limit })
 }
 
+export async function getQQDailyRecommendations(input: {
+  limit?: number
+} = {}): Promise<RecommendationResult> {
+  const limit = input.limit ?? 30
+
+  for (const query of DAILY_30_QUERIES) {
+    const found = await searchQQPlaylists(query, 1, 10).catch(() => undefined)
+    const playlist = found?.list.find(isDaily30Playlist) ?? found?.list[0]
+    if (!playlist?.id) continue
+
+    const detail = await getQQPlaylistDetail(playlist.id).catch(() => undefined)
+    const list = detail?.list.slice(0, limit) ?? []
+    if (list.length) return paged(list, limit, `qq-playlist:${playlist.id}`, true)
+  }
+
+  return fallbackRecommendations(limit, 'toplist-daily-fallback')
+}
+
 async function favoriteSeededFallback(input: { cookie?: string; limit: number }): Promise<RecommendationResult> {
   try {
     const favorites = await getQQFavoriteSongs({ cookie: input.cookie, limit: 12 })
@@ -120,6 +142,11 @@ async function favoriteSeededFallback(input: { cookie?: string; limit: number })
 async function fallbackRecommendations(limit: number, strategy: string): Promise<RecommendationResult> {
   const result = await getQQToplistDetail('62', 1, limit).catch(() => getQQToplistDetail('26', 1, limit))
   return paged(result.list.slice(0, limit), limit, strategy, false)
+}
+
+function isDaily30Playlist(playlist: { name?: string; desc?: string }): boolean {
+  const text = `${playlist.name ?? ''} ${playlist.desc ?? ''}`.toLowerCase()
+  return (text.includes('daily') && text.includes('30')) || text.includes('每日30') || text.includes('每日 30')
 }
 
 function paged(list: MusicInfo[], limit: number, strategy: string, personalized: boolean): RecommendationResult {
