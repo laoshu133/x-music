@@ -46,13 +46,14 @@ export async function proxyToUpstreamEmby(request: Request, embyPath: string): P
   const token = await getEmbyAccessToken(account)
   applyToken(upstreamUrl, headers, token)
   const method = request.method.toUpperCase()
+  const body = method === 'GET' || method === 'HEAD' ? undefined : request.body ?? undefined
   const init = {
     method,
     headers,
-    body: method === 'GET' || method === 'HEAD' ? undefined : request.body,
+    body,
     cache: 'no-store',
     signal: AbortSignal.timeout(settings.emby.proxyTimeoutMs),
-    duplex: method === 'GET' || method === 'HEAD' ? undefined : 'half',
+    duplex: body ? 'half' : undefined,
   } as RequestInit & { duplex?: 'half' }
   const response = await fetch(upstreamUrl, init)
 

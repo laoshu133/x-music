@@ -305,6 +305,28 @@ test('upstream proxy strips decoded-body compression headers', async () => {
   }
 })
 
+test('upstream proxy omits empty request body for body-capable methods', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    let forwardedInit: RequestInit | undefined
+    globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      forwardedInit = init
+      return Response.json({ ok: true })
+    }) as typeof fetch
+
+    const response = await proxyToUpstreamEmby(new Request('http://local/Sessions/Capabilities/Full', {
+      method: 'POST',
+    }), '/Sessions/Capabilities/Full')
+
+    assert.equal(response.status, 200)
+    assert.equal(forwardedInit?.method, 'POST')
+    assert.equal(forwardedInit?.body, undefined)
+    assert.equal((forwardedInit as RequestInit & { duplex?: string } | undefined)?.duplex, undefined)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('emby token parser accepts ampcast authorization header', () => {
   const request = new Request('http://local/emby/System/Endpoint', {
     headers: {
@@ -370,6 +392,14 @@ test('local emby authenticate accepts mobile-compatible casing and form credenti
     }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
     assert.equal(lowerJson?.status, 200)
     assert.equal((await lowerJson!.json()).User.Name, account.embyUsername)
+
+    const lowerPath = await handleLocalEmbyRequest(new Request('http://local/emby/Users/authenticatebyname', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ Username: account.embyUsername.toLowerCase(), Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/authenticatebyname'))
+    assert.equal(lowerPath?.status, 200)
+    assert.equal((await lowerPath!.json()).User.Name, account.embyUsername)
 
     const form = new URLSearchParams({
       Username: account.embyUsername.toLowerCase(),

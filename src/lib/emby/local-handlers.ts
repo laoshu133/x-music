@@ -58,7 +58,7 @@ type WindowResult<T> = {
 const favoriteSongsCache = new Map<string, { expiresAt: number; result: WindowResult<MusicInfo> }>()
 
 export async function handleLocalEmbyRequest(request: Request, embyPath: string): Promise<Response | undefined> {
-  if (request.method === 'GET' && embyPath === '/System/Info/Public') {
+  if (request.method === 'GET' && pathEquals(embyPath, '/System/Info/Public')) {
     return Response.json({
       LocalAddress: '',
       ServerName: 'XMusic',
@@ -69,15 +69,15 @@ export async function handleLocalEmbyRequest(request: Request, embyPath: string)
     })
   }
 
-  if (request.method === 'POST' && embyPath === '/Users/AuthenticateByName') {
+  if (request.method === 'POST' && pathEquals(embyPath, '/Users/AuthenticateByName')) {
     return handleAuthenticateByName(request)
   }
 
-  if (request.method === 'GET' && embyPath === '/Users/Public') {
+  if (request.method === 'GET' && pathEquals(embyPath, '/Users/Public')) {
     return handlePublicUsers()
   }
 
-  if (request.method === 'GET' && embyPath === '/System/Endpoint') {
+  if (request.method === 'GET' && pathEquals(embyPath, '/System/Endpoint')) {
     return Response.json({ IsLocal: true, IsInNetwork: true })
   }
 
@@ -91,7 +91,7 @@ export async function handleLocalEmbyRequest(request: Request, embyPath: string)
     return handleUserViewsRequest(embyPath)
   }
 
-  if (request.method === 'GET' && embyPath === '/x-music/health') {
+  if (request.method === 'GET' && pathEquals(embyPath, '/x-music/health')) {
     return Response.json({ ok: true, service: 'x-music-emby-gateway' })
   }
 
@@ -249,6 +249,10 @@ function isAuthorizedLocalRequest(request: Request): boolean {
 
 function unauthorizedResponse(): Response {
   return Response.json({ error: 'Unauthorized' }, { status: 401 })
+}
+
+function pathEquals(path: string, expected: string): boolean {
+  return path.toLowerCase() === expected.toLowerCase()
 }
 
 function localUserId(account: AccountRecord): string {
