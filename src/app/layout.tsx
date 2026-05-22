@@ -2,8 +2,8 @@ import type { Metadata } from 'next'
 import './styles.css'
 
 export const metadata: Metadata = {
-  title: 'XMusic',
-  description: 'Private music player with QQ Music metadata and local cache.',
+  title: 'XMusic | 把 QQ 音乐装进自己口袋',
+  description: '把 QQ 音乐收藏、歌单和播放记录带到自己的播放器。',
   icons: {
     icon: '/favicon.ico',
     shortcut: '/favicon.ico',

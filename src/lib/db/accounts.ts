@@ -144,6 +144,10 @@ export function updateAccountEmbyPassword(qqUin: string, password: string): Acco
   return getAccountByQQ(qqUin)
 }
 
+export function regenerateAccountEmbyPassword(qqUin: string): AccountRecord | undefined {
+  return updateAccountEmbyPassword(qqUin, generateAccountPassword())
+}
+
 export function accountToQQLoginState(account: AccountRecord): QQLoginState {
   return {
     cookie: account.qqCookie,

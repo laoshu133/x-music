@@ -59,6 +59,16 @@ export function listJobs(input: {
   return rows.map(parseJobRecord)
 }
 
+export function getJobDetail(id: number): JobRow | null {
+  const row = db.prepare(`
+    SELECT *
+    FROM jobs
+    WHERE id = ?
+  `).get(id) as JobRecord | undefined
+
+  return row ? parseJobRecord(row) : null
+}
+
 export function getJobSummary(): JobSummary {
   const rows = db.prepare(`
     SELECT type, status, COUNT(*) AS count
