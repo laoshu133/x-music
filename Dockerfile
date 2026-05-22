@@ -8,7 +8,11 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN mkdir -p public
-RUN DATABASE_URL=file:/tmp/x-music-build.sqlite MUSIC_DATA_DIR=/tmp/x-music-build-data npm run build
+RUN DATABASE_URL=file:/tmp/x-music-build.sqlite \
+    MUSIC_DATA_DIR=/tmp/x-music-build-data \
+    EMBY_UPSTREAM_URL=http://127.0.0.1:8096 \
+    EMBY_API_KEY=x-music-build-placeholder \
+    npm run build
 
 FROM node:24-alpine AS runner
 WORKDIR /app
