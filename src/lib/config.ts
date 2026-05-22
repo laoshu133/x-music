@@ -11,6 +11,7 @@ const envSchema = z.object({
   EMBY_UPSTREAM_URL: z.string().url(),
   EMBY_API_KEY: z.string().min(1),
   EMBY_PROXY_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),
+  EMBY_SOURCE_WEBDAV_DSN: z.string().url().optional(),
   AMPCAST_URL: z.string().url().default('https://ampcast.app/'),
 })
 
@@ -35,6 +36,9 @@ export const appConfig = {
   },
   get embyProxyTimeoutMs() {
     return currentEnv().EMBY_PROXY_TIMEOUT_MS
+  },
+  get embySourceWebdavDsn() {
+    return currentEnv().EMBY_SOURCE_WEBDAV_DSN
   },
   get ampcastUrl() {
     return currentEnv().AMPCAST_URL

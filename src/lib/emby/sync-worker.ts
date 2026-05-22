@@ -8,7 +8,9 @@ import {
   refreshEmbyLibrary,
   searchEmbyAudioByName,
 } from './upstream-api'
+import { getDefaultUpstreamMusicLibraryLocation } from './auth'
 import type { SyncEmbyTrackJobPayload } from './sync'
+import { syncMediaFilesToEmbyWebdav } from './webdav'
 
 export async function processOneEmbySyncJob(maxAttempts = 3): Promise<boolean> {
   const job = claimNextJob<SyncEmbyTrackJobPayload>({
@@ -20,7 +22,12 @@ export async function processOneEmbySyncJob(maxAttempts = 3): Promise<boolean> {
 
   try {
     const row = db.prepare(`
-      SELECT tf.final_path AS finalPath, tf.raw_path AS rawPath, tf.status
+      SELECT
+        tf.final_path AS finalPath,
+        tf.raw_path AS rawPath,
+        tf.lyrics_path AS lyricsPath,
+        tf.cover_path AS coverPath,
+        tf.status
       FROM track_files tf
       INNER JOIN tracks t ON t.id = tf.track_id
       WHERE t.source = ? AND t.songmid = ?
@@ -29,7 +36,13 @@ export async function processOneEmbySyncJob(maxAttempts = 3): Promise<boolean> {
         CASE tf.status WHEN 'ready' THEN 0 WHEN 'tagging' THEN 1 WHEN 'cached_raw' THEN 2 ELSE 3 END,
         tf.updated_at DESC
       LIMIT 1
-    `).get(job.payload.source, job.payload.songmid) as { finalPath?: string; rawPath?: string; status?: string } | undefined
+    `).get(job.payload.source, job.payload.songmid) as {
+      finalPath?: string
+      rawPath?: string
+      lyricsPath?: string
+      coverPath?: string
+      status?: string
+    } | undefined
 
     const mediaPath = row?.finalPath ?? row?.rawPath
     if (!mediaPath) {
@@ -41,7 +54,17 @@ export async function processOneEmbySyncJob(maxAttempts = 3): Promise<boolean> {
       return true
     }
 
-    await notifyEmbyMediaUpdated(mediaPath).catch(() => refreshEmbyLibrary())
+    const syncedMedia = row?.finalPath
+      ? await syncMediaFilesToEmbyWebdav({
+          finalPath: row.finalPath,
+          lyricsPath: row.lyricsPath,
+          coverPath: row.coverPath,
+        })
+      : undefined
+    const scanPath = syncedMedia
+      ? joinEmbyPath(await getDefaultUpstreamMusicLibraryLocation(), syncedMedia.embyPath)
+      : mediaPath
+    await notifyEmbyMediaUpdated(scanPath).catch(() => refreshEmbyLibrary())
     const embyItemId = await searchEmbyAudioByName(job.payload.musicInfo)
     if (!embyItemId) {
       const message = `Emby scan triggered but item was not found for ${job.payload.musicInfo.name}`
@@ -85,6 +108,11 @@ export async function processOneEmbySyncJob(maxAttempts = 3): Promise<boolean> {
   }
 
   return true
+}
+
+function joinEmbyPath(root: string | undefined, relativePath: string): string {
+  if (!root) return relativePath
+  return `${root.replace(/\/+$/g, '')}/${relativePath.replace(/^\/+/g, '')}`
 }
 
 function qqLyricsUrl(songmid: string): string {

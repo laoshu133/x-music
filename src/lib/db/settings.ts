@@ -14,6 +14,7 @@ export interface EffectiveAppSettings {
     baseUrl: string
     apiKey: string
     proxyTimeoutMs: number
+    sourceWebdavDsn?: string
   }
   qq: {
     enabled: boolean
@@ -70,6 +71,7 @@ export function getEffectiveSettings(): EffectiveAppSettings {
       baseUrl: appConfig.embyUpstreamUrl,
       apiKey: appConfig.embyApiKey,
       proxyTimeoutMs: appConfig.embyProxyTimeoutMs,
+      sourceWebdavDsn: appConfig.embySourceWebdavDsn,
     },
     qq: {
       enabled: booleanSetting('qq.enabled', true),

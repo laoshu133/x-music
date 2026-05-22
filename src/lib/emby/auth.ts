@@ -23,6 +23,7 @@ interface EmbyLibraryCandidate {
 interface UpstreamMusicLibraryMapping {
   parentIds: string[]
   policyIds: string[]
+  locations: string[]
 }
 
 interface EmbyUserPolicy {
@@ -88,6 +89,10 @@ export async function getDefaultUpstreamMusicLibraryId(): Promise<string | undef
   return readCachedMusicLibraryMapping().parentIds[0]
 }
 
+export async function getDefaultUpstreamMusicLibraryLocation(): Promise<string | undefined> {
+  return (await getUpstreamMusicLibraryMapping()).locations[0]
+}
+
 async function getUpstreamMusicLibraryMapping(options: { refresh?: boolean } = {}): Promise<UpstreamMusicLibraryMapping> {
   if (!options.refresh) {
     const cached = readCachedMusicLibraryMapping()
@@ -108,6 +113,7 @@ async function discoverMusicLibraryMapping(): Promise<UpstreamMusicLibraryMappin
   return {
     parentIds: unique(musicLibraries.flatMap(readParentLibraryIds)),
     policyIds: unique(musicLibraries.flatMap(readPolicyLibraryIds)),
+    locations: unique(musicLibraries.flatMap(readLibraryLocations)),
   }
 }
 
@@ -121,6 +127,7 @@ function readCachedMusicLibraryMapping(): UpstreamMusicLibraryMapping {
     return {
       parentIds: stringArray((value as { parentIds?: unknown }).parentIds),
       policyIds: stringArray((value as { policyIds?: unknown }).policyIds),
+      locations: stringArray((value as { locations?: unknown }).locations),
     }
   } catch {
     return fallback
@@ -129,12 +136,12 @@ function readCachedMusicLibraryMapping(): UpstreamMusicLibraryMapping {
 
 function readLegacyCachedMusicLibraryMapping(): UpstreamMusicLibraryMapping {
   const row = db.prepare('SELECT value_json FROM app_settings WHERE key = ?').get(LEGACY_UPSTREAM_MUSIC_LIBRARY_IDS_KEY) as { value_json: string } | undefined
-  if (!row) return { parentIds: [], policyIds: [] }
+  if (!row) return { parentIds: [], policyIds: [], locations: [] }
   try {
     const ids = stringArray(JSON.parse(row.value_json) as unknown)
-    return { parentIds: ids, policyIds: ids }
+    return { parentIds: ids, policyIds: ids, locations: [] }
   } catch {
-    return { parentIds: [], policyIds: [] }
+    return { parentIds: [], policyIds: [], locations: [] }
   }
 }
 
@@ -185,6 +192,10 @@ function readPolicyLibraryIds(item: EmbyLibraryCandidate): string[] {
     item.LibraryOptions?.ItemId,
     item.Id,
   ].filter((id): id is string => Boolean(id))
+}
+
+function readLibraryLocations(item: EmbyLibraryCandidate): string[] {
+  return item.Locations ?? []
 }
 
 function unique(ids: string[]): string[] {
