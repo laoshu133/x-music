@@ -554,12 +554,7 @@ async function handleItemsRequest(request: Request, embyPath: string): Promise<R
 
   if (isMusicLibraryId(parentId) && requestedTypes.has('musicalbum')) {
     const upstream = await tryReadItemsResponse(request, embyPath)
-    const upstreamItems = filterItemsByTypes(upstream?.Items ?? [], requestedTypes)
-    const favorites = await listQQFavoriteSongs(request, desiredCount)
-    const virtualAlbums = favoriteSongsToAlbumItems(favorites.items)
-      .filter(album => !hasEquivalentEmbyAlbum(upstreamItems, album.Name))
-    const merged = [...upstreamItems, ...virtualAlbums]
-    return pagedItemsResponse(merged, page)
+    return upstream ? Response.json(upstream) : emptyItemsResponse()
   }
 
   if (requestedTypes.has('playlist')) {

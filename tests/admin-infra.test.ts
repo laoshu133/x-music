@@ -1124,7 +1124,7 @@ test('musiver single item delete clears virtual items locally', async () => {
   }
 })
 
-test('local emby favorites merge QQ songs and virtual albums', async () => {
+test('local emby favorites merge QQ songs without deriving favorite albums', async () => {
   const originalFetch = globalThis.fetch
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999011')
@@ -1141,9 +1141,11 @@ test('local emby favorites merge QQ songs and virtual albums', async () => {
     const authPayload = await auth!.json()
     const authHeader = `MediaBrowser Client="ampcast", Version="0.9.28", Device="PC", Token="${authPayload.AccessToken}"`
 
+    let qqFavoriteRequests = 0
     globalThis.fetch = (async (url: string | URL | Request) => {
       const requestUrl = new URL(String(url))
       if (requestUrl.hostname === 'u.y.qq.com') {
+        qqFavoriteRequests += 1
         return Response.json({
           code: 0,
           req: {
@@ -1165,8 +1167,8 @@ test('local emby favorites merge QQ songs and virtual albums', async () => {
       }
 
       return Response.json({
-        Items: [],
-        TotalRecordCount: 0,
+        Items: [{ Id: 'emby-favorite-album-1', Name: 'Emby Favorite Album', Type: 'MusicAlbum' }],
+        TotalRecordCount: 1,
       })
     }) as typeof fetch
 
@@ -1191,19 +1193,9 @@ test('local emby favorites merge QQ songs and virtual albums', async () => {
     assert.equal(albums.status, 200)
     const albumsPayload = await albums.json()
     assert.equal(albumsPayload.TotalRecordCount, 1)
-    assert.equal(albumsPayload.Items[0].Name, 'QQ Favorite Album')
-    assert.equal(decodeVirtualId(albumsPayload.Items[0].Id)?.kind, 'qq-album')
-
-    const albumSongs = await dispatchEmbyRequest(
-      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio&ParentId=${encodeURIComponent(albumsPayload.Items[0].Id)}&Limit=500&StartIndex=0`, {
-        headers: { 'X-Emby-Authorization': authHeader },
-      }),
-      stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/Items`),
-    )
-    assert.equal(albumSongs.status, 200)
-    const albumSongsPayload = await albumSongs.json()
-    assert.equal(albumSongsPayload.TotalRecordCount, 1)
-    assert.equal(albumSongsPayload.Items[0].Name, 'QQ Favorite Song')
+    assert.equal(albumsPayload.Items[0].Name, 'Emby Favorite Album')
+    assert.equal(decodeVirtualId(albumsPayload.Items[0].Id), undefined)
+    assert.equal(qqFavoriteRequests, 1)
 
     const musiverFavoriteSongs = await dispatchEmbyRequest(
       new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio&Recursive=true&Fields=AudioInfo%2CSortName%2CMediaSources%2CDateCreated%2CProductionYear%2CCanDelete&StartIndex=0&Limit=100&ImageTypeLimit=1&EnableImageTypes=Primary&SortBy=SortName&SortOrder=Descending&isFavorite=true&ParentId=x-music-music`, {
