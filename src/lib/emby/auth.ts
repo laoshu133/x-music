@@ -4,6 +4,18 @@ import { updateAccountEmbyAuth, type AccountRecord } from '@/lib/db/accounts'
 const MUSIC_COLLECTION_TYPE = 'music'
 const MUSIC_LIBRARY_NAME = '音乐'
 
+interface EmbyLibraryCandidate {
+  Id?: string
+  ItemId?: string
+  Name?: string
+  CollectionType?: string
+  Type?: string
+  LibraryOptions?: {
+    ItemId?: string
+  }
+  Locations?: string[]
+}
+
 export function embyAuthorizationHeader(token?: string): string {
   const parts = [
     'MediaBrowser Client="XMusic"',
@@ -41,6 +53,9 @@ export async function ensureUpstreamEmbyUserForAccount(account: AccountRecord): 
 
 async function applyRestrictedUserPolicy(userId: string): Promise<void> {
   const musicLibraryIds = await findMusicLibraryIds()
+  if (!musicLibraryIds.length) {
+    throw new Error('Unable to find upstream Emby music library id for restricted user policy')
+  }
   await adminEmbyFetch(`/Users/${encodeURIComponent(userId)}/Policy`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -49,20 +64,47 @@ async function applyRestrictedUserPolicy(userId: string): Promise<void> {
 }
 
 async function findMusicLibraryIds(): Promise<string[]> {
-  const views = await adminEmbyFetch<
-    Array<{ Id?: string; ItemId?: string; Name?: string; CollectionType?: string }>
-    | { Items?: Array<{ Id?: string; ItemId?: string; Name?: string; CollectionType?: string }> }
-  >('/Library/VirtualFolders')
-    .catch(() => undefined)
-  const items = Array.isArray(views) ? views : views?.Items ?? []
-  return items
-    .filter(item => (
-      item.CollectionType === MUSIC_COLLECTION_TYPE
-      || item.Name === MUSIC_LIBRARY_NAME
-      || String(item.Name ?? '').toLowerCase() === 'music'
-    ))
-    .map(item => item.ItemId ?? item.Id)
+  const candidates = [
+    ...await findMusicLibrariesFromVirtualFolders(),
+    ...await findMusicLibrariesFromCollectionFolders(),
+  ]
+  const ids = candidates
+    .filter(isMusicLibrary)
+    .flatMap(readLibraryIds)
     .filter((id): id is string => Boolean(id))
+  return [...new Set(ids)]
+}
+
+async function findMusicLibrariesFromVirtualFolders(): Promise<EmbyLibraryCandidate[]> {
+  const views = await adminEmbyFetch<
+    EmbyLibraryCandidate[]
+    | { Items?: EmbyLibraryCandidate[] }
+  >('/Library/VirtualFolders').catch(() => undefined)
+  return Array.isArray(views) ? views : views?.Items ?? []
+}
+
+async function findMusicLibrariesFromCollectionFolders(): Promise<EmbyLibraryCandidate[]> {
+  const data = await adminEmbyFetch<{ Items?: EmbyLibraryCandidate[] }>(`/Items?${new URLSearchParams({
+    IncludeItemTypes: 'CollectionFolder',
+    Recursive: 'false',
+    Limit: '100',
+  })}`).catch(() => undefined)
+  return data?.Items ?? []
+}
+
+function isMusicLibrary(item: EmbyLibraryCandidate): boolean {
+  const name = String(item.Name ?? '').trim()
+  return item.CollectionType === MUSIC_COLLECTION_TYPE
+    || name === MUSIC_LIBRARY_NAME
+    || name.toLowerCase() === 'music'
+}
+
+function readLibraryIds(item: EmbyLibraryCandidate): string[] {
+  return [
+    item.ItemId,
+    item.LibraryOptions?.ItemId,
+    item.Id,
+  ].filter((id): id is string => Boolean(id))
 }
 
 function restrictedUserPolicy(enabledFolders: string[]) {
@@ -139,7 +181,7 @@ async function adminEmbyFetch<T = unknown>(path: string, init: RequestInit = {})
   }
 
   const url = new URL(settings.emby.baseUrl)
-  url.pathname = joinPaths(url.pathname, path)
+  applyPathAndSearch(url, path)
   url.searchParams.set('api_key', settings.emby.apiKey)
 
   const headers = new Headers(init.headers)
@@ -158,6 +200,12 @@ async function adminEmbyFetch<T = unknown>(path: string, init: RequestInit = {})
   }
   if (!text) return undefined as T
   return JSON.parse(text) as T
+}
+
+function applyPathAndSearch(url: URL, path: string): void {
+  const [pathname, search = ''] = path.split('?')
+  url.pathname = joinPaths(url.pathname, pathname ?? '/')
+  url.search = search ? `?${search}` : ''
 }
 
 function joinPaths(basePath: string, childPath: string): string {

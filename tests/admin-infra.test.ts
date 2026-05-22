@@ -94,6 +94,54 @@ test('upstream emby account creation uses QQ-prefixed username and restricts acc
   }
 })
 
+test('upstream emby account policy falls back to collection folder music id', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999021')
+    saveQQLoginCookie('uin=o999021; qm_keyst=test-key')
+    const account = getAccountByQQ('999021')
+    assert.ok(account)
+
+    const requests: Array<{ url: URL; init?: RequestInit; body?: Record<string, unknown> }> = []
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = new URL(String(url))
+      const body = typeof init?.body === 'string' ? JSON.parse(init.body) as Record<string, unknown> : undefined
+      requests.push({ url: requestUrl, init, body })
+
+      if (requestUrl.pathname.endsWith('/Users')) return Response.json([])
+      if (requestUrl.pathname.endsWith('/Users/New')) return Response.json({ Id: 'emby-user-999021', Name: body?.Name })
+      if (requestUrl.pathname.endsWith('/Library/VirtualFolders')) {
+        return Response.json([
+          { Name: 'Music', CollectionType: 'music' },
+          { ItemId: 'movie-folder-id', Name: '电影', CollectionType: 'movies' },
+        ])
+      }
+      if (requestUrl.pathname.endsWith('/Items') && requestUrl.searchParams.get('IncludeItemTypes') === 'CollectionFolder') {
+        return Response.json({
+          Items: [
+            { Id: '11696830', Name: 'Music', Type: 'CollectionFolder', CollectionType: 'music' },
+            { Id: 'movie-folder-id', Name: 'Movies', Type: 'CollectionFolder', CollectionType: 'movies' },
+          ],
+        })
+      }
+      if (requestUrl.pathname.endsWith('/Users/emby-user-999021/Policy')) return new Response(null, { status: 204 })
+
+      return Response.json({ error: 'unexpected request' }, { status: 500 })
+    }) as typeof fetch
+
+    await ensureUpstreamEmbyUserForAccount(account)
+
+    const policy = requests.find(request => request.url.pathname.endsWith('/Users/emby-user-999021/Policy'))?.body
+    assert.ok(policy)
+    assert.equal(policy.EnableAllFolders, false)
+    assert.deepEqual(policy.EnabledFolders, ['11696830'])
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999021')
+    clearQQLoginCookie()
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('upstream emby account binding normalizes existing username and reapplies restricted policy', async () => {
   const originalFetch = globalThis.fetch
   try {

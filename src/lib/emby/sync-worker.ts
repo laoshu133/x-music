@@ -43,29 +43,37 @@ export async function processOneEmbySyncJob(maxAttempts = 3): Promise<boolean> {
 
     await notifyEmbyMediaUpdated(mediaPath).catch(() => refreshEmbyLibrary())
     const embyItemId = await searchEmbyAudioByName(job.payload.musicInfo)
-    if (embyItemId) {
-      upsertRemoteMapping({
-        localType: 'track',
-        localKey: `${job.payload.source}:${job.payload.songmid}`,
-        remote: 'emby',
-        remoteId: embyItemId,
-        raw: job.payload.musicInfo,
-      })
-      if (job.payload.playlistId) {
-        await createOrUpdateEmbyPlaylist({
-          name: `QQ ${job.payload.playlistId}`,
-          itemIds: [embyItemId],
-        }).catch((error: unknown) => {
-          console.warn(`failed to update Emby playlist ${job.payload.playlistId}`, error)
-        })
+    if (!embyItemId) {
+      const message = `Emby scan triggered but item was not found for ${job.payload.musicInfo.name}`
+      if (job.attempts >= maxAttempts) {
+        failJob(job.id, message)
+      } else {
+        requeueJob(job.id, message)
       }
-      await deleteCachedResourcesForTrack({
-        source: job.payload.source,
-        songmid: job.payload.songmid,
-        imageUrl: job.payload.musicInfo.img,
-        lyricsUrls: [qqLyricsUrl(job.payload.songmid)],
-      }).catch(() => undefined)
+      return true
     }
+
+    upsertRemoteMapping({
+      localType: 'track',
+      localKey: `${job.payload.source}:${job.payload.songmid}`,
+      remote: 'emby',
+      remoteId: embyItemId,
+      raw: job.payload.musicInfo,
+    })
+    if (job.payload.playlistId) {
+      await createOrUpdateEmbyPlaylist({
+        name: `QQ ${job.payload.playlistId}`,
+        itemIds: [embyItemId],
+      }).catch((error: unknown) => {
+        console.warn(`failed to update Emby playlist ${job.payload.playlistId}`, error)
+      })
+    }
+    await deleteCachedResourcesForTrack({
+      source: job.payload.source,
+      songmid: job.payload.songmid,
+      imageUrl: job.payload.musicInfo.img,
+      lyricsUrls: [qqLyricsUrl(job.payload.songmid)],
+    }).catch(() => undefined)
 
     completeJob(job.id)
   } catch (error) {

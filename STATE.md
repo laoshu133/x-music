@@ -52,6 +52,8 @@ The project is for personal/private deployment. Do not optimize for public multi
   - shared device control disabled;
   - all folders disabled except the music library;
   - music library detection supports `CollectionType=music`, `音乐`, and `Music`.
+- Music library permission detection now falls back from `/Library/VirtualFolders` to Emby `CollectionFolder` items, covering sources where the music library id appears as a URL parentId such as `11696830`.
+- Applying a restricted upstream user policy fails fast if no music library id can be found, instead of saving a user with no folder permissions.
 - Local user views expose the XMusic virtual music collection as `x-music-music`.
 - Search/list/favorites/recent/played endpoints merge upstream Emby items with QQ virtual items.
 - QQ virtual playlist, album, genre, image, item-detail, audio, and playback-report paths are handled locally.
@@ -83,6 +85,7 @@ The project is for personal/private deployment. Do not optimize for public multi
 - QQ play-history sync is best-effort and non-blocking.
 - Worker can claim, complete, fail, and retry SQLite jobs.
 - Emby sync jobs fail after max attempts when no cached media file becomes available instead of staying queued forever.
+- Emby sync jobs no longer complete successfully when a library scan is triggered but the synced track cannot be found in upstream Emby; they requeue or fail with a visible error.
 - Emby sync success removes related cached QQ artwork and lyric source files once the track is mapped to Emby.
 - Built-in tagging writes deterministic final paths, metadata tags where supported, lyrics, and cover sidecars.
 - Emby sync jobs are queued after QQ virtual audio playback and tagging/cache events where applicable.
@@ -100,13 +103,14 @@ The project is for personal/private deployment. Do not optimize for public multi
 
 ## Verified
 
-- `npm test` passed on 2026-05-22: 53 tests passed.
+- `npm test` passed on 2026-05-22: 55 tests passed.
 - `npm run build` passed on 2026-05-22.
 - Current build output includes `/api/jobs`, `/x-music/emby`, and `/x-music/emby/[...path]`.
 - `git status --short --branch` was clean before this state-update task.
 - Tests cover:
   - QQ login account creation with `QQ${QQ_UID}`;
   - upstream Emby user creation, rename, and restricted policy;
+  - upstream Emby music library permission fallback through CollectionFolder ids;
   - local Emby authentication;
   - CORS;
   - upstream proxy header cleanup;
@@ -118,6 +122,7 @@ The project is for personal/private deployment. Do not optimize for public multi
   - resource cache hits for QQ virtual artwork;
   - stable QQ song virtual IDs across playlists;
   - cache, job, LX URL, QQ favorite/history, and tagging behavior.
+  - Emby sync failure when scan completes but no upstream item is found.
 
 ## Known Risks
 
