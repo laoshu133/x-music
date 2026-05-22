@@ -1,7 +1,7 @@
 import { ensureTrack, getPlayableTrackFile, hasActiveTrackFile, insertPlayEvent, listPlayHistory, upsertTrackFileStatus } from '@/lib/cache/store'
 import { getCachedResource, responseFromCachedResource } from '@/lib/cache/resources'
 import { createUpstreamTeeResponse, streamLocalFile } from '@/lib/cache/stream'
-import { qualityFallbacks, resolveMusicUrlWithFallback } from '@/lib/music-url/resolve'
+import { MusicUrlConfigError, MusicUrlResolveError, qualityFallbacks, resolveMusicUrlWithFallback } from '@/lib/music-url/resolve'
 import {
   getQQPlaylistDetail,
   getQQFavoriteSongs,
@@ -556,7 +556,8 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
       raw: musicInfo,
     })
     const action = embyPath.split('/')[3] ?? 'universal'
-    return proxyToUpstreamEmby(request, `/Audio/${encodeURIComponent(mapped)}/${action}`)
+    const proxied = await proxyToUpstreamEmby(request, `/Audio/${encodeURIComponent(mapped)}/${action}`).catch(() => undefined)
+    if (proxied?.ok || proxied?.status === 206) return proxied
   }
 
   const preferredQuality: MusicQuality = 'flac'
@@ -594,27 +595,33 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
 
   const track = ensureTrack(musicInfo)
   upsertTrackFileStatus(track.id, preferredQuality, 'resolving_url')
-  const resolved = await resolveMusicUrlWithFallback(musicInfo, preferredQuality)
-  insertPlayEvent(track.id, resolved.quality)
-  syncQQPlayHistoryBestEffort({
-    cookie: qqCookieForRequest(request),
-    musicInfo,
-    quality: resolved.quality,
-    playUrl: resolved.url,
-  })
-  enqueueEmbyTrackSync({
-    source: musicInfo.source,
-    songmid: musicInfo.songmid,
-    playlistId: decoded.playlistId ?? stored.playlistId,
-    musicInfo,
-  })
-  const { response, completion } = await createUpstreamTeeResponse(resolved.url, track, resolved.quality, request)
-  completion.catch((error: unknown) => {
-    upsertTrackFileStatus(track.id, resolved.quality, 'failed', {
-      error: error instanceof Error ? error.message : String(error),
+  try {
+    const resolved = await resolveMusicUrlWithFallback(musicInfo, preferredQuality)
+    insertPlayEvent(track.id, resolved.quality)
+    syncQQPlayHistoryBestEffort({
+      cookie: qqCookieForRequest(request),
+      musicInfo,
+      quality: resolved.quality,
+      playUrl: resolved.url,
     })
-  })
-  return markRequestSource(response, 'upstream')
+    enqueueEmbyTrackSync({
+      source: musicInfo.source,
+      songmid: musicInfo.songmid,
+      playlistId: decoded.playlistId ?? stored.playlistId,
+      musicInfo,
+    })
+    const { response, completion } = await createUpstreamTeeResponse(resolved.url, track, resolved.quality, request)
+    completion.catch((error: unknown) => {
+      upsertTrackFileStatus(track.id, resolved.quality, 'failed', {
+        error: error instanceof Error ? error.message : String(error),
+      })
+    })
+    return markRequestSource(response, 'upstream')
+  } catch (error) {
+    const message = playbackErrorMessage(error)
+    upsertTrackFileStatus(track.id, preferredQuality, 'failed', { error: message })
+    return Response.json({ error: message }, { status: 502 })
+  }
 }
 
 async function waitForActivePlayableFile(musicInfo: MusicInfo, preferredQuality: MusicQuality): Promise<ReturnType<typeof getPlayableTrackFile> | undefined> {
@@ -698,6 +705,19 @@ function audioContentTypeFromPath(filePath: string): string {
   if (ext === '.m4a' || ext === '.mp4') return 'audio/mp4'
   if (ext === '.ogg') return 'audio/ogg'
   return 'audio/mpeg'
+}
+
+function playbackErrorMessage(error: unknown): string {
+  if (error instanceof MusicUrlConfigError) {
+    return `${error.message}. Set LX_MUSIC_SOURCE_SCRIPT to the LX source script URL; XMusic will simulate the source request handler and call the captured API shape directly.`
+  }
+
+  if (error instanceof MusicUrlResolveError) {
+    const detail = error.attempts.map((attempt) => `${attempt.quality}: ${attempt.error}`).join('; ')
+    return `Unable to resolve a playable music URL. ${detail}`
+  }
+
+  return error instanceof Error ? error.message : 'Unable to play track'
 }
 
 async function listVirtualPlaylists(request: Request, limit: number): Promise<QQPlaylistInfo[]> {

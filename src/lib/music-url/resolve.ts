@@ -1,6 +1,6 @@
 import vm from 'node:vm'
 import { appConfig } from '@/lib/config'
-import { getCachedTextResource } from '@/lib/cache/resources'
+import { cacheKeyFor, deleteCachedResourceKeys, getCachedTextResource } from '@/lib/cache/resources'
 import { getEffectiveSettings } from '@/lib/db/settings'
 import { isMusicQuality, preferredQualities } from '@/lib/quality'
 import type { MusicInfo, MusicQuality, ResolvedMusicUrl } from '@/lib/types'
@@ -101,20 +101,13 @@ const resolveLxApiConfig = async (scriptUrl: string): Promise<LxApiConfig> => {
     return lxScriptConfigCache.config
   }
 
-  const body = await getCachedTextResource({
-    source: 'lx',
-    resourceType: 'lx-script',
-    url: scriptUrl,
-    headers: {
-      accept: 'application/javascript, text/plain, */*',
-      'user-agent': 'XMusic/1.0',
-    },
-  })
-  if (!body) {
-    throw new MusicUrlConfigError('LX music URL script could not be loaded')
+  const body = await loadLxScriptText(scriptUrl)
+  let config = body ? parseLxScriptConfig(body) : undefined
+  if (!config && body) {
+    await deleteCachedResourceKeys([cacheKeyFor('lx', 'lx-script', scriptUrl)])
+    const refreshedBody = await loadLxScriptText(scriptUrl)
+    config = refreshedBody ? parseLxScriptConfig(refreshedBody) : undefined
   }
-
-  const config = parseLxScriptConfig(body)
   if (!config) {
     throw new MusicUrlConfigError('LX music source script did not register a music URL request handler or expose API_URL/API_KEY')
   }
@@ -125,6 +118,18 @@ const resolveLxApiConfig = async (scriptUrl: string): Promise<LxApiConfig> => {
     expiresAt: Date.now() + lxScriptConfigTtlMs,
   }
   return config
+}
+
+const loadLxScriptText = async (scriptUrl: string): Promise<string | undefined> => {
+  return getCachedTextResource({
+    source: 'lx',
+    resourceType: 'lx-script',
+    url: scriptUrl,
+    headers: {
+      accept: 'application/javascript, text/plain, */*',
+      'user-agent': 'XMusic/1.0',
+    },
+  })
 }
 
 const resolveThroughLxApi = async (
@@ -255,8 +260,6 @@ const createLxSandboxBootstrap = (): string => `
     },
     request(input, init, callback) {
       globalThis.__state.captured = { input, init }
-      if (typeof init === 'function') init(new Error('Captured LX source request'))
-      if (typeof callback === 'function') callback(new Error('Captured LX source request'))
       return function cancelRequest() {}
     },
     send() {},
