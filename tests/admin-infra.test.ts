@@ -15,8 +15,8 @@ import { readEmbyAccessToken } from '@/lib/emby/tokens'
 import { decodeVirtualId, encodeVirtualId, songVirtualId } from '@/lib/emby/virtual-ids'
 import { updateAccountEmbyPassword } from '@/lib/db/accounts'
 
-function markAccountUpstreamBound(qqUin: string, embyUserId = `emby-user-${qqUin}`): void {
-  db.prepare('UPDATE accounts SET emby_user_id = ? WHERE qq_uin = ?').run(embyUserId, qqUin)
+function markAccountUpstreamBound(qqUin: string, embyUserId = `emby-user-${qqUin}`, embyAccessToken?: string): void {
+  db.prepare('UPDATE accounts SET emby_user_id = ?, emby_access_token = COALESCE(?, emby_access_token) WHERE qq_uin = ?').run(embyUserId, embyAccessToken ?? null, qqUin)
 }
 
 function clearUpstreamMusicLibraryCache(): void {
@@ -84,13 +84,16 @@ test('upstream emby account creation uses QQ-prefixed username and restricts acc
         ])
       }
       if (requestUrl.pathname.endsWith('/Users/emby-user-999019/Policy')) return new Response(null, { status: 204 })
+      if (requestUrl.pathname.endsWith('/Users/AuthenticateByName')) return Response.json({ AccessToken: 'upstream-token-999019' })
 
       return Response.json({ error: 'unexpected request' }, { status: 500 })
     }) as typeof fetch
 
     const updated = await ensureUpstreamEmbyUserForAccount(account)
     assert.equal(updated.embyUserId, 'emby-user-999019')
+    assert.equal(updated.embyAccessToken, 'upstream-token-999019')
     assert.equal(getAccountByQQ('999019')?.embyUserId, 'emby-user-999019')
+    assert.equal(getAccountByQQ('999019')?.embyAccessToken, 'upstream-token-999019')
 
     const createUser = requests.find(request => request.url.pathname.endsWith('/Users/New'))
     assert.equal(createUser?.body?.Name, 'QQ999019')
@@ -103,6 +106,8 @@ test('upstream emby account creation uses QQ-prefixed username and restricts acc
     assert.deepEqual(policy.EnabledChannels, [])
     assert.equal(policy.EnableRemoteControlOfOtherUsers, false)
     assert.equal(policy.EnableSharedDeviceControl, false)
+    assert.equal(policy.EnableContentDeletion, true)
+    assert.deepEqual(policy.EnableContentDeletionFromFolders, ['music-library-guid', 'music-folder-id'])
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999019')
     clearUpstreamMusicLibraryCache()
@@ -149,6 +154,7 @@ test('upstream emby account policy falls back to collection folder music id', as
         })
       }
       if (requestUrl.pathname.endsWith('/Users/emby-user-999021/Policy')) return new Response(null, { status: 204 })
+      if (requestUrl.pathname.endsWith('/Users/AuthenticateByName')) return Response.json({ AccessToken: 'upstream-token-999021' })
 
       return Response.json({ error: 'unexpected request' }, { status: 500 })
     }) as typeof fetch
@@ -159,6 +165,8 @@ test('upstream emby account policy falls back to collection folder music id', as
     assert.ok(policy)
     assert.equal(policy.EnableAllFolders, false)
     assert.deepEqual(policy.EnabledFolders, ['music-library-guid', '11696830'])
+    assert.equal(policy.EnableContentDeletion, true)
+    assert.deepEqual(policy.EnableContentDeletionFromFolders, ['music-library-guid', '11696830'])
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999021')
     clearUpstreamMusicLibraryCache()
@@ -238,6 +246,7 @@ test('upstream emby account binding normalizes existing username and reapplies r
         return Response.json({ Items: [{ Guid: 'music-library-guid', Id: 'music-folder-id', Name: 'Music', CollectionType: 'music' }] })
       }
       if (requestUrl.pathname.endsWith('/Users/emby-user-999020/Policy')) return new Response(null, { status: 204 })
+      if (requestUrl.pathname.endsWith('/Users/AuthenticateByName')) return Response.json({ AccessToken: 'upstream-token-999020' })
 
       return Response.json({ error: 'unexpected request' }, { status: 500 })
     }) as typeof fetch
@@ -255,6 +264,8 @@ test('upstream emby account binding normalizes existing username and reapplies r
     assert.equal(policy.EnableAllChannels, false)
     assert.equal(policy.EnableRemoteControlOfOtherUsers, false)
     assert.equal(policy.EnableSharedDeviceControl, false)
+    assert.equal(policy.EnableContentDeletion, true)
+    assert.deepEqual(policy.EnableContentDeletionFromFolders, ['music-library-guid', 'music-folder-id'])
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999020')
     clearUpstreamMusicLibraryCache()
@@ -872,7 +883,7 @@ test('musiver items delete converts batch post to upstream delete calls', async 
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999033')
     saveQQLoginCookie('uin=o999033; qm_keyst=test-key')
-    markAccountUpstreamBound('999033')
+    markAccountUpstreamBound('999033', 'emby-user-999033', 'upstream-user-token-999033')
     const account = getAccountByQQ('999033')
     assert.ok(account)
 
@@ -884,11 +895,13 @@ test('musiver items delete converts batch post to upstream delete calls', async 
     const authPayload = await auth!.json()
     const authHeader = `MediaBrowser Client="Musiver", Version="1.3.9", Token="${authPayload.AccessToken}"`
 
-    const upstreamDeletes: string[] = []
+    const upstreamDeletes: Array<{ pathname: string; method?: string; ids: string | null }> = []
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       const requestUrl = new URL(String(url))
-      if (init?.method === 'DELETE') {
-        upstreamDeletes.push(requestUrl.pathname)
+      if (requestUrl.pathname === '/Items/Delete' && init?.method === 'POST') {
+        assert.equal(requestUrl.searchParams.get('api_key'), 'upstream-user-token-999033')
+        assert.equal(new Headers(init.headers).get('X-Emby-Token'), 'upstream-user-token-999033')
+        upstreamDeletes.push({ pathname: requestUrl.pathname, method: init.method, ids: requestUrl.searchParams.get('Ids') })
         return new Response(null, { status: 204 })
       }
       return Response.json({ error: 'unexpected upstream request' }, { status: 500 })
@@ -902,9 +915,121 @@ test('musiver items delete converts batch post to upstream delete calls', async 
       stripOptionalEmbyPrefix('/emby/Items/Delete'),
     )
     assert.equal(response.status, 204)
-    assert.deepEqual(upstreamDeletes, ['/Items/11740781', '/Items/11740782'])
+    assert.deepEqual(upstreamDeletes, [
+      { pathname: '/Items/Delete', method: 'POST', ids: '11740781,11740782' },
+    ])
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999033')
+    clearQQLoginCookie()
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('musiver item delete converts single delete to upstream batch delete', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999035')
+    saveQQLoginCookie('uin=o999035; qm_keyst=test-key')
+    markAccountUpstreamBound('999035', 'emby-user-999035', 'upstream-user-token-999035')
+    const account = getAccountByQQ('999035')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const authHeader = `MediaBrowser Client="Musiver", Version="1.3.9", Token="${authPayload.AccessToken}"`
+
+    const upstreamDeletes: Array<{ pathname: string; method?: string; ids: string | null }> = []
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.pathname === '/Items/Delete' && init?.method === 'POST') {
+        assert.equal(requestUrl.searchParams.get('api_key'), 'upstream-user-token-999035')
+        assert.equal(new Headers(init.headers).get('X-Emby-Token'), 'upstream-user-token-999035')
+        upstreamDeletes.push({ pathname: requestUrl.pathname, method: init.method, ids: requestUrl.searchParams.get('Ids') })
+        return new Response(null, { status: 204 })
+      }
+      return Response.json({ error: 'unexpected upstream request' }, { status: 500 })
+    }) as typeof fetch
+
+    const response = await dispatchEmbyRequest(
+      new Request('http://local/emby/Items/11740781', {
+        method: 'DELETE',
+        headers: { authorization: authHeader },
+      }),
+      stripOptionalEmbyPrefix('/emby/Items/11740781'),
+    )
+    assert.equal(response.status, 204)
+    assert.deepEqual(upstreamDeletes, [
+      { pathname: '/Items/Delete', method: 'POST', ids: '11740781' },
+    ])
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999035')
+    clearQQLoginCookie()
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('musiver items delete hides upstream playlist locally when upstream rejects delete', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999038')
+    db.prepare("DELETE FROM app_settings WHERE key = 'emby.deletedItem.11740781'").run()
+    saveQQLoginCookie('uin=o999038; qm_keyst=test-key')
+    markAccountUpstreamBound('999038')
+    const account = getAccountByQQ('999038')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const authHeader = `MediaBrowser Client="Musiver", Version="1.3.9", Token="${authPayload.AccessToken}"`
+
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.pathname === '/Items/Delete' && init?.method === 'POST') {
+        return new Response("Value cannot be null. (Parameter 'user')", { status: 400 })
+      }
+      if (requestUrl.pathname.endsWith(`/Users/${authPayload.User.Id}/Items`) || requestUrl.pathname.endsWith('/Items')) {
+        return Response.json({
+          Items: [
+            { Id: '11740781', Name: 'Rejected Delete Playlist', Type: 'Playlist' },
+            { Id: '11740782', Name: 'Visible Playlist', Type: 'Playlist' },
+          ],
+          TotalRecordCount: 2,
+        })
+      }
+      return Response.json({ error: 'unexpected upstream request' }, { status: 500 })
+    }) as typeof fetch
+
+    const deleted = await dispatchEmbyRequest(
+      new Request('http://local/emby/Items/Delete?Ids=11740781', {
+        method: 'POST',
+        headers: { authorization: authHeader },
+      }),
+      stripOptionalEmbyPrefix('/emby/Items/Delete'),
+    )
+    assert.equal(deleted.status, 204)
+
+    const items = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Playlist&ParentId=x-music-music&Limit=10&StartIndex=0`, {
+        headers: { authorization: authHeader },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/Items`),
+    )
+    assert.equal(items.status, 200)
+    const payload = await items.json()
+    const itemIds = payload.Items.map((item: { Id: string }) => item.Id)
+    assert.equal(itemIds.includes('11740781'), false)
+    assert.equal(itemIds.includes('11740782'), true)
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999038')
+    db.prepare("DELETE FROM app_settings WHERE key = 'emby.deletedItem.11740781'").run()
     clearQQLoginCookie()
     globalThis.fetch = originalFetch
   }
@@ -959,6 +1084,59 @@ test('musiver items delete clears virtual items locally', async () => {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999034')
     clearQQLoginCookie()
     db.prepare('DELETE FROM app_settings WHERE key = ?').run('virtual.playlist.virtual-delete-playlist')
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('musiver single item delete clears virtual items locally', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999036')
+    saveQQLoginCookie('uin=o999036; qm_keyst=test-key')
+    markAccountUpstreamBound('999036')
+    const account = getAccountByQQ('999036')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const authHeader = `MediaBrowser Client="Musiver", Version="1.3.9", Token="${authPayload.AccessToken}"`
+    const virtualId = encodeVirtualId({ kind: 'qq-playlist', id: 'virtual-single-delete-playlist' })
+
+    db.prepare(`
+      INSERT INTO app_settings (key, value_json, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP
+    `).run('virtual.playlist.virtual-single-delete-playlist', JSON.stringify({
+      source: 'tx',
+      id: 'virtual-single-delete-playlist',
+      name: 'Virtual Single Delete Playlist',
+    }))
+
+    const upstreamRequests: string[] = []
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      upstreamRequests.push(String(url))
+      return Response.json({ error: 'virtual delete leaked upstream' }, { status: 500 })
+    }) as typeof fetch
+
+    const response = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Items/${encodeURIComponent(virtualId)}`, {
+        method: 'DELETE',
+        headers: { authorization: authHeader },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Items/${encodeURIComponent(virtualId)}`),
+    )
+    assert.equal(response.status, 204)
+    const row = db.prepare('SELECT value_json FROM app_settings WHERE key = ?').get('virtual.playlist.virtual-single-delete-playlist')
+    assert.equal(row, undefined)
+    assert.deepEqual(upstreamRequests, [])
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999036')
+    clearQQLoginCookie()
+    db.prepare('DELETE FROM app_settings WHERE key = ?').run('virtual.playlist.virtual-single-delete-playlist')
     globalThis.fetch = originalFetch
   }
 })
@@ -2117,6 +2295,76 @@ test('musiver virtual song detail and artist filter keep lyrics and cover metada
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999031')
     clearQQLoginCookie()
     db.prepare("DELETE FROM app_settings WHERE key = 'virtual.song.0017Zt260lV7ll'").run()
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('musiver virtual song detail fetches QQ metadata when cache is missing', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999037')
+    saveQQLoginCookie('uin=o999037; qm_keyst=test-key')
+    markAccountUpstreamBound('999037')
+    const account = getAccountByQQ('999037')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const songId = encodeVirtualId({ kind: 'qq-song', songmid: 'qq-missing-cache-song' })
+    const authHeader = `MediaBrowser Client="Musiver", Device="Mi-Mini-M2", Version="1.3.9", Token="${authPayload.AccessToken}"`
+
+    const upstreamRequests: string[] = []
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'u.y.qq.com') {
+        const body = typeof init?.body === 'string' ? JSON.parse(init.body) as { songinfo?: { param?: { song_mid?: string } } } : {}
+        assert.equal(body.songinfo?.param?.song_mid, 'qq-missing-cache-song')
+        return Response.json({
+          code: 0,
+          songinfo: {
+            code: 0,
+            data: {
+              track_info: {
+                id: 123,
+                mid: 'qq-missing-cache-song',
+                title: 'QQ Missing Cache Song',
+                interval: 201,
+                singer: [{ name: 'QQ Detail Artist', mid: 'qq-detail-artist' }],
+                album: { name: 'QQ Detail Album', mid: 'qq-detail-album', time_public: '2026-01-01' },
+                file: { media_mid: 'qq-detail-media', size_128mp3: 1024, size_320mp3: 2048 },
+              },
+            },
+          },
+        })
+      }
+      upstreamRequests.push(String(url))
+      return Response.json({ error: 'virtual request leaked upstream' }, { status: 500 })
+    }) as typeof fetch
+
+    const detail = await dispatchEmbyRequest(
+      new Request(`http://local/Users/${authPayload.User.Id}/Items/${encodeURIComponent(songId)}`, {
+        headers: { authorization: authHeader, 'user-agent': 'musiver/1.3.9 (Macintosh)' },
+      }),
+      stripOptionalEmbyPrefix(`/Users/${authPayload.User.Id}/Items/${encodeURIComponent(songId)}`),
+    )
+    assert.equal(detail.status, 200)
+    const payload = await detail.json()
+    assert.equal(payload.Name, 'QQ Missing Cache Song')
+    assert.equal(payload.ImageTags.Primary, 'qq-detail-album')
+    assert.equal(payload.AlbumPrimaryImageTag, 'qq-detail-album')
+    assert.equal(payload.HasLyrics, true)
+    assert.equal(payload.MediaSources[0].MediaStreams[1].Codec, 'lrc')
+    assert.deepEqual(upstreamRequests, [])
+    const cached = db.prepare('SELECT value_json FROM app_settings WHERE key = ?').get('virtual.song.qq-missing-cache-song') as { value_json: string } | undefined
+    assert.ok(cached)
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999037')
+    clearQQLoginCookie()
+    db.prepare("DELETE FROM app_settings WHERE key = 'virtual.song.qq-missing-cache-song'").run()
     globalThis.fetch = originalFetch
   }
 })

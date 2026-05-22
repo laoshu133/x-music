@@ -65,10 +65,12 @@ export async function ensureUpstreamEmbyUserForAccount(account: AccountRecord): 
     await updateUpstreamUserName(userId, account.embyUsername).catch(() => undefined)
   }
   if (userId) await applyRestrictedUserPolicy(userId)
-  updateAccountEmbyAuth({ qqUin: account.qqUin, embyUserId: userId })
+  const accessToken = userId ? await authenticateUpstreamUser(account.embyUsername).catch(() => undefined) : undefined
+  updateAccountEmbyAuth({ qqUin: account.qqUin, embyUserId: userId, embyAccessToken: accessToken })
   return {
     ...account,
     embyUserId: userId,
+    embyAccessToken: accessToken ?? account.embyAccessToken,
   }
 }
 
@@ -226,8 +228,8 @@ function restrictedUserPolicy(enabledFolders: string[]) {
     EnableAudioPlaybackTranscoding: true,
     EnableVideoPlaybackTranscoding: false,
     EnablePlaybackRemuxing: false,
-    EnableContentDeletion: false,
-    EnableContentDeletionFromFolders: [],
+    EnableContentDeletion: true,
+    EnableContentDeletionFromFolders: enabledFolders,
     EnableContentDownloading: false,
     EnableSyncTranscoding: false,
     EnableMediaConversion: false,
@@ -292,6 +294,15 @@ async function updateUpstreamUserName(userId: string, username: string): Promise
       Name: username,
     }),
   })
+}
+
+async function authenticateUpstreamUser(username: string): Promise<string | undefined> {
+  const result = await adminEmbyFetch<{ AccessToken?: string }>('/Users/AuthenticateByName', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ Username: username, Pw: '' }),
+  })
+  return result.AccessToken
 }
 
 async function adminEmbyFetch<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {

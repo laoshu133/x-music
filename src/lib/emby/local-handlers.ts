@@ -8,6 +8,7 @@ import {
   getQQDailyRecommendations,
   getQQLoginState,
   getQQRecommendations,
+  getQQSongDetail,
   getQQUserPlaylists,
   searchQQMusic,
   searchQQPlaylists,
@@ -23,11 +24,13 @@ import {
   forgetVirtualAlbum,
   forgetVirtualPlaylist,
   forgetVirtualSong,
+  isDeletedEmbyItem,
   loadVirtualAlbumSongs,
   listVirtualSongs,
   loadVirtualPlaylist,
   loadVirtualSong,
   rememberVirtualAlbumSongs,
+  rememberDeletedEmbyItem,
   rememberVirtualPlaylist,
   rememberVirtualSong,
 } from './virtual-store'
@@ -87,9 +90,9 @@ export async function handleLocalEmbyRequest(request: Request, embyPath: string)
     return Response.json({ IsLocal: true, IsInNetwork: true })
   }
 
-  if (request.method === 'POST' && pathEquals(embyPath, '/Items/Delete')) {
+  if ((request.method === 'POST' && pathEquals(embyPath, '/Items/Delete')) || (request.method === 'DELETE' && isItemRequest(embyPath))) {
     if (!isAuthorizedLocalRequest(request)) return unauthorizedResponse()
-    return handleItemsDeleteRequest(request)
+    return handleItemsDeleteRequest(request, embyPath)
   }
 
   if (request.method === 'GET' && isUserRequest(embyPath)) {
@@ -274,34 +277,38 @@ function handlePublicUsers(): Response {
   return Response.json(listAccounts().map(localUser))
 }
 
-async function handleItemsDeleteRequest(request: Request): Promise<Response> {
-  const ids = deleteRequestIds(request)
+async function handleItemsDeleteRequest(request: Request, embyPath: string): Promise<Response> {
+  const ids = deleteRequestIds(request, embyPath)
   if (ids.length === 0) {
     return Response.json({ error: 'Missing item ids' }, { status: 400 })
   }
 
   const upstreamIds: string[] = []
+  const locallyDeletedIds: string[] = []
   for (const id of ids) {
     const decoded = decodeVirtualId(id)
     if (decoded) {
       forgetVirtualItem(decoded)
     } else {
       upstreamIds.push(id)
+      locallyDeletedIds.push(id)
     }
   }
 
   try {
-    await deleteEmbyItems(upstreamIds)
+    await deleteEmbyItems(upstreamIds, { token: authorizedLocalAccount(request)?.embyAccessToken })
   } catch (error) {
-    return Response.json({
-      error: error instanceof Error ? error.message : 'Failed to delete upstream Emby items',
-    }, { status: 502 })
+    for (const id of locallyDeletedIds) rememberDeletedEmbyItem(id)
   }
 
   return new Response(null, { status: 204 })
 }
 
-function deleteRequestIds(request: Request): string[] {
+function deleteRequestIds(request: Request, embyPath: string): string[] {
+  if (request.method === 'DELETE') {
+    const itemId = extractItemId(embyPath)
+    return itemId ? [itemId] : []
+  }
   const url = new URL(request.url)
   const raw = url.searchParams.get('Ids') ?? url.searchParams.get('ids') ?? ''
   return raw.split(',').map(id => id.trim()).filter(Boolean)
@@ -488,7 +495,7 @@ async function handleItemsRequest(request: Request, embyPath: string): Promise<R
 
   if (searchTerm?.trim()) {
     const upstream = await tryReadItemsResponse(request, embyPath)
-    const upstreamItems = filterItemsByTypes(upstream?.Items ?? [], requestedTypes)
+    const upstreamItems = filterVisibleItems(filterItemsByTypes(upstream?.Items ?? [], requestedTypes))
     const virtualItems: any[] = []
 
     if (shouldIncludeType(requestedTypes, 'audio')) {
@@ -513,7 +520,7 @@ async function handleItemsRequest(request: Request, embyPath: string): Promise<R
 
   if (filters.has('isplayed') && shouldIncludeType(requestedTypes, 'audio')) {
     const upstream = await tryReadItemsResponse(request, embyPath)
-    const upstreamItems = filterItemsByTypes(upstream?.Items ?? [], requestedTypes)
+    const upstreamItems = filterVisibleItems(filterItemsByTypes(upstream?.Items ?? [], requestedTypes))
     const localItems = localPlayHistoryToEmbyItems(desiredCount)
       .filter(item => !hasEquivalentEmbyItem(upstreamItems, item))
     const merged = sortPlayedItems([...upstreamItems, ...localItems], url.searchParams.get('SortBy') ?? url.searchParams.get('sortBy') ?? '')
@@ -525,7 +532,7 @@ async function handleItemsRequest(request: Request, embyPath: string): Promise<R
       tryReadItemsResponse(request, embyPath),
       listQQFavoriteSongs(request, desiredCount),
     ])
-    const upstreamItems = filterItemsByTypes(upstream?.Items ?? [], requestedTypes)
+    const upstreamItems = filterVisibleItems(filterItemsByTypes(upstream?.Items ?? [], requestedTypes))
     const virtualItems = favorites.items
       .filter(song => !hasEquivalentEmbySong(upstreamItems, song))
       .map(song => {
@@ -537,7 +544,7 @@ async function handleItemsRequest(request: Request, embyPath: string): Promise<R
 
   if (isMusicLibraryId(parentId) && requestedTypes.has('musicalbum')) {
     const upstream = await tryReadItemsResponse(request, embyPath)
-    const upstreamItems = filterItemsByTypes(upstream?.Items ?? [], requestedTypes)
+    const upstreamItems = filterVisibleItems(filterItemsByTypes(upstream?.Items ?? [], requestedTypes))
     const favorites = await listQQFavoriteSongs(request, desiredCount)
     const virtualAlbums = favoriteSongsToAlbumItems(favorites.items)
       .filter(album => !hasEquivalentEmbyAlbum(upstreamItems, album.Name))
@@ -548,7 +555,7 @@ async function handleItemsRequest(request: Request, embyPath: string): Promise<R
   if (requestedTypes.has('playlist')) {
     const upstream = await tryReadItemsResponse(request, embyPath)
     const playlists = await listVirtualPlaylists(request, desiredCount)
-    const upstreamItems = upstream?.Items ?? []
+    const upstreamItems = filterVisibleItems(upstream?.Items ?? [])
     const virtualItems = playlists
       .filter(playlist => !hasEquivalentEmbyPlaylist(upstreamItems, playlist.name))
       .map(playlistToEmbyItem)
@@ -560,7 +567,7 @@ async function handleItemsRequest(request: Request, embyPath: string): Promise<R
 
   if (isMusicLibraryId(parentId)) {
     const upstream = await tryReadItemsResponse(request, embyPath)
-    return upstream ? Response.json(upstream) : emptyItemsResponse()
+    return upstream ? Response.json({ ...upstream, Items: filterVisibleItems(upstream.Items ?? []) }) : emptyItemsResponse()
   }
 
   return undefined
@@ -647,7 +654,7 @@ async function handleCollectionRequest(request: Request, embyPath: string): Prom
   const page = requestPageParams(url)
   const favorites = await listQQFavoriteSongs(request, Number.POSITIVE_INFINITY)
   const qqGenres = favoriteSongsToGenreItems(favorites.items)
-  const upstreamItems = upstream?.Items ?? []
+  const upstreamItems = filterVisibleItems(upstream?.Items ?? [])
   const merged = [
     ...upstreamItems,
     ...qqGenres.filter(genre => !upstreamItems.some(item => normalizeText(String(item?.Name ?? '')) === normalizeText(genre.Name))),
@@ -678,7 +685,7 @@ async function handlePlaybackReportRequest(request: Request, embyPath: string): 
   return new Response(null, { status: 204 })
 }
 
-function handleItemRequest(embyPath: string): Response | undefined {
+async function handleItemRequest(embyPath: string): Promise<Response | undefined> {
   const itemId = extractItemId(embyPath)
   if (!itemId) return undefined
 
@@ -690,7 +697,7 @@ function handleItemRequest(embyPath: string): Response | undefined {
     return item ? Response.json(item) : undefined
   }
 
-  const stored = loadVirtualSong(decoded.songmid)
+  const stored = await loadOrFetchVirtualSong(decoded.songmid, decoded.playlistId)
   if (!stored) {
     return Response.json({ error: 'Virtual QQ song metadata is not cached. Search or open the virtual playlist again.' }, { status: 404 })
   }
@@ -698,12 +705,12 @@ function handleItemRequest(embyPath: string): Response | undefined {
   return Response.json(songToEmbyItem(stored.song, decoded.playlistId ?? stored.playlistId))
 }
 
-function handlePlaybackInfoRequest(embyPath: string): Response | undefined {
+async function handlePlaybackInfoRequest(embyPath: string): Promise<Response | undefined> {
   const itemId = extractNestedItemId(embyPath, 'PlaybackInfo')
   const decoded = itemId ? decodeVirtualId(itemId) : undefined
   if (!decoded || decoded.kind !== 'qq-song') return undefined
 
-  const stored = loadVirtualSong(decoded.songmid)
+  const stored = await loadOrFetchVirtualSong(decoded.songmid, decoded.playlistId)
   if (!stored) {
     return Response.json({ error: 'Virtual QQ song metadata is not cached. Search or open the virtual playlist again.' }, { status: 404 })
   }
@@ -721,7 +728,7 @@ async function handleSimilarItemsRequest(request: Request, embyPath: string): Pr
   const decoded = itemId ? decodeVirtualId(itemId) : undefined
   if (!decoded || decoded.kind !== 'qq-song') return undefined
 
-  const stored = loadVirtualSong(decoded.songmid)
+  const stored = await loadOrFetchVirtualSong(decoded.songmid, decoded.playlistId)
   const seed = stored?.song
   if (!seed) return emptyItemsResponse()
 
@@ -913,7 +920,7 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
   const decoded = decodeVirtualId(itemId)
   if (!decoded || decoded.kind !== 'qq-song') return undefined
 
-  const stored = loadVirtualSong(decoded.songmid)
+  const stored = await loadOrFetchVirtualSong(decoded.songmid, decoded.playlistId)
   if (!stored) {
     return Response.json({ error: 'Virtual QQ song metadata is not cached. Search or open the virtual playlist again.' }, { status: 404 })
   }
@@ -1004,6 +1011,16 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
     upsertTrackFileStatus(track.id, preferredQuality, 'failed', { error: message })
     return Response.json({ error: message }, { status: 502 })
   }
+}
+
+async function loadOrFetchVirtualSong(songmid: string, playlistId?: string): Promise<{ song: MusicInfo; playlistId?: string } | undefined> {
+  const stored = loadVirtualSong(songmid)
+  if (stored) return stored
+
+  const song = await getQQSongDetail(songmid).catch(() => undefined)
+  if (!song) return undefined
+  rememberVirtualSong(song, playlistId)
+  return { song, playlistId }
 }
 
 async function waitForActivePlayableFile(musicInfo: MusicInfo, preferredQuality: MusicQuality): Promise<ReturnType<typeof getPlayableTrackFile> | undefined> {
@@ -1910,6 +1927,10 @@ function filteredUpstreamTotal(upstream: { Items?: any[]; TotalRecordCount?: num
   const rawItems = upstream?.Items ?? []
   if (rawItems.length !== filteredItems.length) return filteredItems.length
   return upstream?.TotalRecordCount
+}
+
+function filterVisibleItems(items: any[]): any[] {
+  return items.filter(item => !isDeletedEmbyItem(String(item?.Id ?? '')))
 }
 
 function upstreamFirstPagedResponse(

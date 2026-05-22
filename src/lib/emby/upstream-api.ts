@@ -75,10 +75,9 @@ export async function createOrUpdateEmbyPlaylist(input: {
   })}`, { method: 'POST' })
 }
 
-export async function deleteEmbyItems(ids: string[]): Promise<void> {
-  for (const id of ids) {
-    await embyFetch(`/Items/${encodeURIComponent(id)}`, { method: 'DELETE' })
-  }
+export async function deleteEmbyItems(ids: string[], options: { token?: string } = {}): Promise<void> {
+  if (!ids.length) return
+  await embyFetch(`/Items/Delete?${new URLSearchParams({ Ids: ids.join(',') })}`, { method: 'POST' }, options)
 }
 
 export async function setEmbyFavorite(input: {
@@ -91,10 +90,10 @@ export async function setEmbyFavorite(input: {
   })
 }
 
-async function embyFetch<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
+async function embyFetch<T = unknown>(path: string, init: RequestInit = {}, options: { token?: string } = {}): Promise<T> {
   const settings = getEffectiveSettings()
   if (!settings.emby.baseUrl) throw new Error('Upstream Emby is not configured')
-  let token = await getEmbyAccessToken()
+  let token = options.token ?? await getEmbyAccessToken()
   const url = new URL(settings.emby.baseUrl)
   applyPathAndSearch(url, path)
   if (token && !url.searchParams.has('api_key')) url.searchParams.set('api_key', token)
