@@ -23,9 +23,9 @@ export function getStoredQQLoginState(): QQLoginState | undefined {
   }
 }
 
-export function saveQQLoginCookie(cookieText: string) {
+export function saveQQLoginCookie(cookieText: string, options: { loginIp?: string } = {}) {
   const state = buildQQLoginState(cookieText, 'stored')
-  const result = upsertAccountFromQQCookie(cookieText)
+  const result = upsertAccountFromQQCookie(cookieText, options)
   db.prepare(`
     INSERT INTO qq_session (id, cookie, uin, encrypted_uin, qqmusic_key, updated_at)
     VALUES (1, @cookie, @uin, @encryptedUin, @qqmusicKey, CURRENT_TIMESTAMP)

@@ -2,6 +2,8 @@ import crypto from 'node:crypto'
 import { db } from '@/lib/db'
 import { buildQQLoginState, summarizeQQLoginState, type QQLoginState } from '@/lib/qq/account'
 import { appConfig } from '@/lib/config'
+import { getQQFavoriteSongs } from '@/lib/qq/favorites'
+import type { MusicInfo, MusicQuality } from '@/lib/types'
 
 export interface AccountRecord {
   qqUin: string
@@ -13,6 +15,7 @@ export interface AccountRecord {
   embyPassword: string
   embyAccessToken?: string
   lastLoginAt?: string
+  lastLoginIp?: string
   lastActiveAt?: string
   createdAt: string
   updatedAt: string
@@ -23,9 +26,12 @@ export interface AccountListItem {
   embyUsername: string
   embyUserId?: string
   isAdmin: boolean
+  playCount: number
+  favoriteCount: number
   createdAt: string
   updatedAt: string
   lastLoginAt?: string
+  lastLoginIp?: string
   lastActiveAt?: string
 }
 
@@ -44,12 +50,43 @@ interface AccountRow {
   emby_password: string
   emby_access_token: string | null
   last_login_at: string | null
+  last_login_ip: string | null
   last_active_at: string | null
   created_at: string
   updated_at: string
 }
 
-export function upsertAccountFromQQCookie(cookieText: string): AccountUpsertResult {
+interface AccountStatsRow {
+  qq_uin: string
+  play_count: number
+  favorite_count: number
+}
+
+export interface AccountTrackItem extends MusicInfo {
+  quality?: MusicQuality
+  playedAt?: string
+  favoriteUpdatedAt?: string
+  syncState?: string
+}
+
+export interface AccountDetail {
+  account: AccountListItem & {
+    encryptedUin?: string
+    hasQQMusicKey: boolean
+    hasEmbyPassword: boolean
+    hasEmbyAccessToken: boolean
+  }
+  qq: ReturnType<typeof summarizeQQLoginState>
+  favorites: {
+    source: 'qq' | 'local'
+    total: number
+    items: AccountTrackItem[]
+    error?: string
+  }
+  recentPlays: AccountTrackItem[]
+}
+
+export function upsertAccountFromQQCookie(cookieText: string, options: { loginIp?: string } = {}): AccountUpsertResult {
   const state = buildQQLoginState(cookieText, 'stored')
   const existing = getAccountByQQ(state.uin)
   const embyUsername = embyUsernameForQQ(state.uin)
@@ -67,6 +104,7 @@ export function upsertAccountFromQQCookie(cookieText: string): AccountUpsertResu
       emby_password,
       emby_access_token,
       last_login_at,
+      last_login_ip,
       last_active_at,
       updated_at
     )
@@ -80,6 +118,7 @@ export function upsertAccountFromQQCookie(cookieText: string): AccountUpsertResu
       @embyPassword,
       @embyAccessToken,
       CURRENT_TIMESTAMP,
+      @lastLoginIp,
       CURRENT_TIMESTAMP,
       CURRENT_TIMESTAMP
     )
@@ -90,6 +129,7 @@ export function upsertAccountFromQQCookie(cookieText: string): AccountUpsertResu
       emby_username = excluded.emby_username,
       emby_password = excluded.emby_password,
       last_login_at = CURRENT_TIMESTAMP,
+      last_login_ip = COALESCE(excluded.last_login_ip, accounts.last_login_ip),
       last_active_at = CURRENT_TIMESTAMP,
       updated_at = CURRENT_TIMESTAMP
   `).run({
@@ -101,6 +141,7 @@ export function upsertAccountFromQQCookie(cookieText: string): AccountUpsertResu
     embyUsername,
     embyPassword,
     embyAccessToken: existing?.embyAccessToken ?? null,
+    lastLoginIp: options.loginIp ?? null,
   })
 
   return {
@@ -130,16 +171,67 @@ export function listAccounts(): AccountRecord[] {
 }
 
 export function listAccountSummaries(): AccountListItem[] {
+  const stats = accountStatsByQQ()
   return listAccounts().map(account => ({
     qqUin: account.qqUin,
     embyUsername: account.embyUsername,
     embyUserId: account.embyUserId,
     isAdmin: isAdminQQ(account.qqUin),
+    playCount: stats.get(account.qqUin)?.playCount ?? 0,
+    favoriteCount: stats.get(account.qqUin)?.favoriteCount ?? 0,
     createdAt: account.createdAt,
     updatedAt: account.updatedAt,
     lastLoginAt: account.lastLoginAt,
+    lastLoginIp: account.lastLoginIp,
     lastActiveAt: account.lastActiveAt,
   }))
+}
+
+export async function getAccountDetail(qqUin: string): Promise<AccountDetail | undefined> {
+  const account = getAccountByQQ(qqUin)
+  if (!account) return undefined
+
+  const summary = listAccountSummaries().find(item => item.qqUin === qqUin)
+  if (!summary) return undefined
+
+  const localFavorites = listAccountLocalFavorites(qqUin, 50)
+  const favorites = await getQQFavoriteSongs({ cookie: account.qqCookie, limit: 50 })
+    .then(result => ({
+      source: 'qq' as const,
+      total: Math.max(result.total, localFavorites.length),
+      items: mergeAccountTrackItems(result.list.map(song => ({ ...song })), localFavorites),
+    }))
+    .catch((error: unknown) => ({
+      source: 'local' as const,
+      total: localFavorites.length,
+      items: localFavorites,
+      error: error instanceof Error ? error.message : String(error),
+    }))
+
+  return {
+    account: {
+      ...summary,
+      encryptedUin: account.encryptedUin,
+      hasQQMusicKey: Boolean(account.qqmusicKey),
+      hasEmbyPassword: Boolean(account.embyPassword),
+      hasEmbyAccessToken: Boolean(account.embyAccessToken),
+    },
+    qq: summarizeQQLoginState(accountToQQLoginState(account)),
+    favorites,
+    recentPlays: listAccountRecentPlays(qqUin, 50),
+  }
+}
+
+function mergeAccountTrackItems(primary: AccountTrackItem[], secondary: AccountTrackItem[]): AccountTrackItem[] {
+  const seen = new Set(primary.map(item => `${item.source}:${item.songmid}`))
+  const merged = [...primary]
+  for (const item of secondary) {
+    const key = `${item.source}:${item.songmid}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    merged.push(item)
+  }
+  return merged
 }
 
 export function isAdminQQ(qqUin: string | undefined): boolean {
@@ -153,6 +245,17 @@ export function markAccountActive(qqUin: string): void {
     SET last_active_at = CURRENT_TIMESTAMP
     WHERE qq_uin = ?
   `).run(qqUin)
+}
+
+export function markAccountLogin(qqUin: string, loginIp?: string): void {
+  db.prepare(`
+    UPDATE accounts
+    SET
+      last_login_at = CURRENT_TIMESTAMP,
+      last_login_ip = COALESCE(?, last_login_ip),
+      last_active_at = CURRENT_TIMESTAMP
+    WHERE qq_uin = ?
+  `).run(loginIp ?? null, qqUin)
 }
 
 export function updateAccountEmbyAuth(input: {
@@ -226,9 +329,134 @@ function rowToAccount(row: AccountRow): AccountRecord {
     embyPassword: row.emby_password,
     embyAccessToken: row.emby_access_token ?? undefined,
     lastLoginAt: row.last_login_at ?? undefined,
+    lastLoginIp: row.last_login_ip ?? undefined,
     lastActiveAt: row.last_active_at ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  }
+}
+
+function accountStatsByQQ(): Map<string, { playCount: number; favoriteCount: number }> {
+  const rows = db.prepare(`
+    SELECT
+      a.qq_uin,
+      COUNT(DISTINCT pe.id) AS play_count,
+      COUNT(DISTINCT CASE WHEN af.desired_state = 'favorite' THEN af.track_id END) AS favorite_count
+    FROM accounts a
+    LEFT JOIN play_events pe ON pe.qq_uin = a.qq_uin
+    LEFT JOIN account_favorites af ON af.qq_uin = a.qq_uin
+    GROUP BY a.qq_uin
+  `).all() as AccountStatsRow[]
+
+  return new Map(rows.map(row => [row.qq_uin, {
+    playCount: row.play_count,
+    favoriteCount: row.favorite_count,
+  }]))
+}
+
+function listAccountLocalFavorites(qqUin: string, limit: number): AccountTrackItem[] {
+  const rows = db.prepare(`
+    SELECT
+      t.source,
+      t.songmid,
+      t.name,
+      t.singer,
+      t.album_name,
+      t.album_id,
+      t.interval,
+      t.image_url,
+      t.raw_json,
+      af.updated_at AS favorite_updated_at,
+      af.sync_state
+    FROM account_favorites af
+    INNER JOIN tracks t ON t.id = af.track_id
+    WHERE af.qq_uin = ?
+      AND af.desired_state = 'favorite'
+    ORDER BY af.updated_at DESC
+    LIMIT ?
+  `).all(qqUin, limit) as Array<{
+    source: MusicInfo['source']
+    songmid: string
+    name: string
+    singer: string
+    album_name: string | null
+    album_id: string | null
+    interval: string | null
+    image_url: string | null
+    raw_json: string | null
+    favorite_updated_at: string
+    sync_state: string
+  }>
+
+  return rows.map(row => ({
+    source: row.source,
+    songmid: row.songmid,
+    name: row.name,
+    singer: row.singer,
+    albumName: row.album_name ?? undefined,
+    albumId: row.album_id ?? undefined,
+    interval: row.interval ?? undefined,
+    img: row.image_url ?? undefined,
+    raw: parseRawJson(row.raw_json),
+    favoriteUpdatedAt: row.favorite_updated_at,
+    syncState: row.sync_state,
+  }))
+}
+
+function listAccountRecentPlays(qqUin: string, limit: number): AccountTrackItem[] {
+  const rows = db.prepare(`
+    SELECT
+      t.source,
+      t.songmid,
+      t.name,
+      t.singer,
+      t.album_name,
+      t.album_id,
+      t.interval,
+      t.image_url,
+      t.raw_json,
+      pe.quality,
+      pe.played_at
+    FROM play_events pe
+    INNER JOIN tracks t ON t.id = pe.track_id
+    WHERE pe.qq_uin = ?
+    ORDER BY pe.played_at DESC, pe.id DESC
+    LIMIT ?
+  `).all(qqUin, limit) as Array<{
+    source: MusicInfo['source']
+    songmid: string
+    name: string
+    singer: string
+    album_name: string | null
+    album_id: string | null
+    interval: string | null
+    image_url: string | null
+    raw_json: string | null
+    quality: MusicQuality
+    played_at: string
+  }>
+
+  return rows.map(row => ({
+    source: row.source,
+    songmid: row.songmid,
+    name: row.name,
+    singer: row.singer,
+    albumName: row.album_name ?? undefined,
+    albumId: row.album_id ?? undefined,
+    interval: row.interval ?? undefined,
+    img: row.image_url ?? undefined,
+    raw: parseRawJson(row.raw_json),
+    quality: row.quality,
+    playedAt: row.played_at,
+  }))
+}
+
+function parseRawJson(value: string | null): unknown {
+  if (!value) return undefined
+  try {
+    return JSON.parse(value)
+  } catch {
+    return undefined
   }
 }
 

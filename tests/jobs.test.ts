@@ -6,7 +6,7 @@ import { db } from '@/lib/db'
 import { appConfig } from '@/lib/config'
 import { ensureTrack, upsertTrackFileStatus } from '@/lib/cache/store'
 import { processOneEmbySyncJob } from '@/lib/emby/sync-worker'
-import { claimNextJob, clearStaleRunningJobs, completeJob, createJob, failJob, getJob, requeueJob } from '@/lib/jobs'
+import { claimNextJob, clearJobsByStatus, clearStaleRunningJobs, completeJob, createJob, failJob, getJob, requeueJob } from '@/lib/jobs'
 import { getJobSummary, listJobs } from '@/lib/jobs/status'
 import { processWorkerTick } from '@/worker/index'
 
@@ -82,6 +82,42 @@ test('stale running jobs are cleared as failed', () => {
   assert.equal(getJob(stale.id)?.status, 'failed')
   assert.equal(getJob(stale.id)?.error, 'Cleared stale running job')
   assert.equal(getJob(fresh.id)?.status, 'running')
+})
+
+test('terminal jobs can be cleared by status', () => {
+  db.prepare("DELETE FROM jobs WHERE type = 'tag_track_file'").run()
+  db.prepare("DELETE FROM jobs WHERE status IN ('failed', 'completed')").run()
+
+  const queued = createJob({
+    type: 'tag_track_file',
+    payload: { trackFileId: Date.now(), rawPath: '/tmp/queued.flac' },
+  })
+  const running = createJob({
+    type: 'tag_track_file',
+    status: 'running',
+    payload: { trackFileId: Date.now() + 1, rawPath: '/tmp/running.flac' },
+  })
+  const failed = createJob({
+    type: 'tag_track_file',
+    payload: { trackFileId: Date.now() + 2, rawPath: '/tmp/failed.flac' },
+  })
+  const completed = createJob({
+    type: 'tag_track_file',
+    payload: { trackFileId: Date.now() + 3, rawPath: '/tmp/completed.flac' },
+  })
+  failJob(failed.id, 'terminal')
+  completeJob(completed.id)
+
+  assert.equal(clearJobsByStatus('failed'), 1)
+  assert.equal(getJob(failed.id), null)
+  assert.equal(getJob(completed.id)?.status, 'completed')
+  assert.equal(getJob(queued.id)?.status, 'queued')
+  assert.equal(getJob(running.id)?.status, 'running')
+
+  assert.equal(clearJobsByStatus('completed'), 1)
+  assert.equal(getJob(completed.id), null)
+  assert.equal(getJob(queued.id)?.status, 'queued')
+  assert.equal(getJob(running.id)?.status, 'running')
 })
 
 test('emby sync job fails after max attempts when no cached file exists', async () => {

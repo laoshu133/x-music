@@ -4,6 +4,7 @@ import { getAccountByQQ } from '@/lib/db/accounts'
 import { saveQQLoginCookie } from '@/lib/db/qq-session'
 import { ensureUpstreamEmbyUserForAccount } from '@/lib/emby/auth'
 import { setCurrentAccount } from '@/lib/session'
+import { readRequestIp } from '@/lib/request-ip'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -34,7 +35,7 @@ export async function POST(request: Request) {
     if (!result.isOk) return NextResponse.json(result)
 
     if (body.persist !== false) {
-      const saved = saveQQLoginCookie(result.session.cookie)
+      const saved = saveQQLoginCookie(result.session.cookie, { loginIp: readRequestIp(request) })
       await setCurrentAccount(saved.uin)
       const account = getAccountByQQ(saved.uin)
       const upstreamAccount = account ? await ensureUpstreamEmbyUserForAccount(account).catch(() => undefined) : undefined

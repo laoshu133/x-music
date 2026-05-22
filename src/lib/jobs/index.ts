@@ -183,3 +183,14 @@ export function clearStaleRunningJobs(options: ClearStaleJobsOptions): number {
 
   return result.changes
 }
+
+export function clearJobsByStatus(status: Extract<JobStatus, 'completed' | 'failed'>): number {
+  ensureJobsTable()
+
+  const result = db.prepare(`
+    DELETE FROM jobs
+    WHERE status = @status
+  `).run({ status })
+
+  return result.changes
+}

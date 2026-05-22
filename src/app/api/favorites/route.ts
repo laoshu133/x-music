@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { listLocalFavorites, setLocalFavorite, setLocalFavoriteSynced } from '@/lib/db/favorites'
 import { getQQFavoriteSongs, pullRemoteFavorites, QQMusicError, qqMusicErrorResponse, setQQFavoriteSong, syncPendingFavorites } from '@/lib/qq'
 import type { MusicInfo } from '@/lib/types'
+import { getCurrentAccount } from '@/lib/session'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -81,6 +82,7 @@ export async function POST(request: Request) {
 
   const url = new URL(request.url)
   const cookie = body.cookie ?? request.headers.get('x-qq-music-cookie') ?? undefined
+  const account = await getCurrentAccount()
   if (url.searchParams.get('sync') === 'push') {
     try {
       return NextResponse.json(await syncPendingFavorites({
@@ -101,7 +103,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Missing boolean favorite' }, { status: 400 })
     }
 
-    let record = setLocalFavorite(musicInfo, body.favorite)
+    let record = setLocalFavorite(musicInfo, body.favorite, account?.qqUin)
     let remoteSynced = false
     let remoteError: string | undefined
     let remotePayload: unknown
@@ -114,7 +116,7 @@ export async function POST(request: Request) {
         songType: readFavoriteSongNumber(body, 'songType'),
         raw: musicInfo.raw,
       })
-      record = setLocalFavoriteSynced(musicInfo, body.favorite)
+      record = setLocalFavoriteSynced(musicInfo, body.favorite, account?.qqUin)
       remoteSynced = true
     } catch (error) {
       remoteError = error instanceof Error ? error.message : String(error)
@@ -162,13 +164,14 @@ export async function DELETE(request: Request) {
 
   const url = new URL(request.url)
   const cookie = body.cookie ?? request.headers.get('x-qq-music-cookie') ?? undefined
+  const account = await getCurrentAccount()
   if (url.searchParams.get('remote') !== 'qq') {
     const musicInfo = parseMusicInfo(body)
     if (!musicInfo) {
       return NextResponse.json({ error: 'Missing required local song fields' }, { status: 400 })
     }
 
-    let record = setLocalFavorite(musicInfo, false)
+    let record = setLocalFavorite(musicInfo, false, account?.qqUin)
     let remoteSynced = false
     let remoteError: string | undefined
     let remotePayload: unknown
@@ -181,7 +184,7 @@ export async function DELETE(request: Request) {
         songType: readFavoriteSongNumber(body, 'songType'),
         raw: musicInfo.raw,
       })
-      record = setLocalFavoriteSynced(musicInfo, false)
+      record = setLocalFavoriteSynced(musicInfo, false, account?.qqUin)
       remoteSynced = true
     } catch (error) {
       remoteError = error instanceof Error ? error.message : String(error)

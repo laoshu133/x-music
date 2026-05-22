@@ -50,6 +50,7 @@ CREATE INDEX IF NOT EXISTS idx_jobs_status_type ON jobs(status, type);
 CREATE TABLE IF NOT EXISTS play_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+  qq_uin TEXT,
   quality TEXT NOT NULL,
   played_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -59,6 +60,7 @@ CREATE INDEX IF NOT EXISTS idx_play_events_played_at ON play_events(played_at DE
 CREATE TABLE IF NOT EXISTS favorite_sync (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+  qq_uin TEXT,
   desired_state TEXT NOT NULL,
   sync_state TEXT NOT NULL,
   error TEXT,
@@ -87,12 +89,26 @@ CREATE TABLE IF NOT EXISTS accounts (
   emby_password TEXT NOT NULL,
   emby_access_token TEXT,
   last_login_at TEXT,
+  last_login_ip TEXT,
   last_active_at TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX IF NOT EXISTS idx_favorite_sync_state ON favorite_sync(sync_state, updated_at);
+
+CREATE TABLE IF NOT EXISTS account_favorites (
+  qq_uin TEXT NOT NULL,
+  track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+  desired_state TEXT NOT NULL,
+  sync_state TEXT NOT NULL,
+  error TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (qq_uin, track_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_account_favorites_state ON account_favorites(qq_uin, desired_state, updated_at);
 
 CREATE TABLE IF NOT EXISTS app_settings (
   key TEXT PRIMARY KEY,

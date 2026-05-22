@@ -1,5 +1,6 @@
 import { listJobs, getJobDetail, getJobSummary } from '@/lib/jobs/status'
-import type { JobRow } from '@/lib/jobs'
+import { clearJobsByStatus } from '@/lib/jobs'
+import type { JobRow, JobStatus } from '@/lib/jobs'
 import { requireAdmin } from '@/lib/admin'
 
 export const runtime = 'nodejs'
@@ -28,6 +29,24 @@ export async function GET(request: Request): Promise<Response> {
   return Response.json({
     summary: getJobSummary(),
     items: listJobs({ status, type, limit }).map(serializeJob),
+  })
+}
+
+export async function DELETE(request: Request): Promise<Response> {
+  const forbidden = await requireAdmin()
+  if (forbidden) return forbidden
+
+  const url = new URL(request.url)
+  const status = url.searchParams.get('status')
+  if (status !== 'failed' && status !== 'completed') {
+    return Response.json({ error: 'Invalid clear status' }, { status: 400 })
+  }
+
+  const deleted = clearJobsByStatus(status as Extract<JobStatus, 'completed' | 'failed'>)
+  return Response.json({
+    deleted,
+    summary: getJobSummary(),
+    items: listJobs({ limit: 100 }).map(serializeJob),
   })
 }
 

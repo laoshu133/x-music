@@ -22,6 +22,7 @@ import {
   Music2,
   PlayCircle,
   RefreshCw,
+  Trash2,
   Settings,
   Sparkles,
   Workflow,
@@ -114,10 +115,48 @@ interface UserItem {
   embyUsername: string
   embyUserId?: string
   isAdmin: boolean
+  playCount: number
+  favoriteCount: number
   createdAt: string
   updatedAt: string
   lastLoginAt?: string
+  lastLoginIp?: string
   lastActiveAt?: string
+}
+
+interface UserTrackItem {
+  source: string
+  songmid: string
+  name: string
+  singer: string
+  albumName?: string
+  quality?: string
+  playedAt?: string
+  favoriteUpdatedAt?: string
+  syncState?: string
+}
+
+interface UserDetail {
+  account: UserItem & {
+    encryptedUin?: string
+    hasQQMusicKey: boolean
+    hasEmbyPassword: boolean
+    hasEmbyAccessToken: boolean
+  }
+  qq: {
+    loggedIn: boolean
+    source?: string
+    uin?: string
+    hasEncryptedUin?: boolean
+    hasQQMusicKey?: boolean
+  }
+  favorites: {
+    source: 'qq' | 'local'
+    total: number
+    items: UserTrackItem[]
+    error?: string
+  }
+  recentPlays: UserTrackItem[]
 }
 
 interface JobItem {
@@ -241,6 +280,20 @@ export default function MusicClient() {
     return body
   })
   const loadJobs = () => run(s => setJobs(s), () => fetchJson<JobsResult>('/api/jobs?limit=100'))
+  const clearJobs = async (status: 'failed' | 'completed') => {
+    setMessage('')
+    setJobs({ loading: true, error: '', data: null })
+    try {
+      setJobs({
+        loading: false,
+        error: '',
+        data: await fetchJson<JobsResult>(`/api/jobs?status=${status}`, { method: 'DELETE' }),
+      })
+      setMessage(status === 'failed' ? '已清空失败任务' : '已清空完成任务')
+    } catch (error) {
+      setJobs({ loading: false, error: error instanceof Error ? error.message : String(error), data: null })
+    }
+  }
   const loadUsers = () => run(s => setUsers(s), () => fetchJson<UsersResult>('/api/admin/users'))
   const loadAdminConfig = () => run(s => setAdminConfig(s), async () => {
     const data = await fetchJson<AdminConfig>('/api/admin/config')
@@ -519,7 +572,15 @@ export default function MusicClient() {
           <section className="workspace">
             <div className="section-head">
               <h3>任务列表</h3>
-              <IconButton label="刷新" onClick={loadJobs} disabled={jobs.loading}><RefreshCw size={16} /></IconButton>
+              <div className="toolbar">
+                <button className="secondary-button compact-button" onClick={() => clearJobs('failed')} disabled={jobs.loading || !jobs.data?.summary.failed}>
+                  <Trash2 size={15} />清空已失败
+                </button>
+                <button className="secondary-button compact-button" onClick={() => clearJobs('completed')} disabled={jobs.loading || !jobs.data?.summary.completed}>
+                  <Trash2 size={15} />清空已完成
+                </button>
+                <IconButton label="刷新" onClick={loadJobs} disabled={jobs.loading}><RefreshCw size={16} /></IconButton>
+              </div>
             </div>
             <Status state={jobs} />
             {jobs.data ? <JobsPanel jobs={jobs.data} /> : null}
@@ -902,28 +963,120 @@ function JobsPanel({ jobs }: { jobs: JobsResult }) {
 }
 
 function UsersPanel({ users }: { users: UsersResult }) {
+  const [selectedUser, setSelectedUser] = useState<UserItem | null>(null)
+  const [detail, setDetail] = useState<ApiState<UserDetail>>(emptyState)
+
+  const openUser = async (user: UserItem) => {
+    setSelectedUser(user)
+    setDetail({ loading: true, error: '', data: null })
+    try {
+      setDetail({ loading: false, error: '', data: await fetchJson<UserDetail>(`/api/admin/users?qqUin=${encodeURIComponent(user.qqUin)}`) })
+    } catch (error) {
+      setDetail({ loading: false, error: error instanceof Error ? error.message : String(error), data: null })
+    }
+  }
+
   return (
     <div className="users-layout">
       <section className="users-table">
         <div className="user-row header">
+          <span>ID</span>
           <span>QQ</span>
-          <span>播放器帐号</span>
           <span>权限</span>
+          <span>播放歌曲数</span>
+          <span>收藏歌曲数</span>
           <span>最近登录</span>
+          <span>最近登录 IP</span>
           <span>最近使用</span>
         </div>
         {users.items.map(user => (
-          <div className="user-row" key={user.qqUin}>
+          <button className={`user-row ${selectedUser?.qqUin === user.qqUin ? 'active' : ''}`} key={user.qqUin} onClick={() => void openUser(user)}>
+            <span>{user.embyUserId ?? '-'}</span>
             <span>{user.qqUin}</span>
-            <span>{user.embyUsername}</span>
             <span>{user.isAdmin ? '管理员' : '用户'}</span>
+            <span>{user.playCount}</span>
+            <span>{user.favoriteCount}</span>
             <span>{formatOptionalDateTime(user.lastLoginAt)}</span>
+            <span>{user.lastLoginIp ?? '-'}</span>
             <span>{formatOptionalDateTime(user.lastActiveAt)}</span>
-          </div>
+          </button>
         ))}
         {!users.items.length ? <p>暂无用户</p> : null}
       </section>
+      {selectedUser ? <UserDetailDialog user={selectedUser} detail={detail} onClose={() => setSelectedUser(null)} /> : null}
     </div>
+  )
+}
+
+function UserDetailDialog({ user, detail, onClose }: { user: UserItem; detail: ApiState<UserDetail>; onClose: () => void }) {
+  const account = detail.data?.account ?? user
+  return (
+    <div className="dialog-backdrop" role="presentation" onClick={onClose}>
+      <section className="user-detail dialog-panel" role="dialog" aria-modal="true" aria-labelledby="user-detail-title" onClick={event => event.stopPropagation()}>
+        <div className="section-head">
+          <h3 id="user-detail-title">用户 {account.qqUin}</h3>
+          <button className="secondary-button compact-button" onClick={onClose}>关闭</button>
+        </div>
+        <Status state={detail} />
+        <dl className="connection-list">
+          <div><dt>QQ</dt><dd><span>{account.qqUin}</span></dd></div>
+          <div><dt>Emby ID</dt><dd><span>{account.embyUserId ?? '-'}</span></dd></div>
+          <div><dt>播放器帐号</dt><dd><span>{account.embyUsername}</span></dd></div>
+          <div><dt>权限</dt><dd><span>{account.isAdmin ? '管理员' : '用户'}</span></dd></div>
+          <div><dt>QQ Key</dt><dd><span>{detail.data?.account.hasQQMusicKey ? '已保存' : '未保存'}</span></dd></div>
+          <div><dt>加密 UIN</dt><dd><span>{detail.data?.account.encryptedUin ?? '-'}</span></dd></div>
+          <div><dt>最近登录</dt><dd><span>{formatOptionalDateTime(account.lastLoginAt)}</span></dd></div>
+          <div><dt>最近登录 IP</dt><dd><span>{account.lastLoginIp ?? '-'}</span></dd></div>
+          <div><dt>最近使用</dt><dd><span>{formatOptionalDateTime(account.lastActiveAt)}</span></dd></div>
+          <div><dt>创建时间</dt><dd><span>{formatDateTime(account.createdAt)}</span></dd></div>
+        </dl>
+        {detail.data ? (
+          <div className="user-detail-grid">
+            <UserTrackList
+              title={`收藏歌曲 (${detail.data.favorites.total})`}
+              subtitle={detail.data.favorites.source === 'qq' ? 'QQ 音乐实时读取' : '本地记录'}
+              tracks={detail.data.favorites.items}
+              timeField="favoriteUpdatedAt"
+            />
+            <UserTrackList
+              title={`最近播放 (${detail.data.recentPlays.length})`}
+              subtitle="本地播放记录"
+              tracks={detail.data.recentPlays}
+              timeField="playedAt"
+            />
+          </div>
+        ) : null}
+        {detail.data?.favorites.error ? <p className="status error">QQ 收藏读取失败，已显示本地记录：{detail.data.favorites.error}</p> : null}
+      </section>
+    </div>
+  )
+}
+
+function UserTrackList({ title, subtitle, tracks, timeField }: {
+  title: string
+  subtitle: string
+  tracks: UserTrackItem[]
+  timeField: 'playedAt' | 'favoriteUpdatedAt'
+}) {
+  return (
+    <section className="user-track-list">
+      <div className="section-head compact-head">
+        <div>
+          <h4>{title}</h4>
+          <p>{subtitle}</p>
+        </div>
+      </div>
+      <div className="mini-table">
+        {tracks.slice(0, 30).map(track => (
+          <div className="mini-row" key={`${track.songmid}-${track[timeField] ?? ''}`}>
+            <span>{track.name}</span>
+            <span>{track.singer}</span>
+            <span>{formatOptionalDateTime(track[timeField])}</span>
+          </div>
+        ))}
+        {!tracks.length ? <p>暂无记录</p> : null}
+      </div>
+    </section>
   )
 }
 

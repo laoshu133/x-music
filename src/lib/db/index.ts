@@ -27,7 +27,10 @@ export const db = withDatabaseInitLock(() => {
     'ALTER TABLE accounts ADD COLUMN emby_user_id TEXT',
     'ALTER TABLE accounts ADD COLUMN emby_access_token TEXT',
     'ALTER TABLE accounts ADD COLUMN last_login_at TEXT',
+    'ALTER TABLE accounts ADD COLUMN last_login_ip TEXT',
     'ALTER TABLE accounts ADD COLUMN last_active_at TEXT',
+    'ALTER TABLE play_events ADD COLUMN qq_uin TEXT',
+    'ALTER TABLE favorite_sync ADD COLUMN qq_uin TEXT',
     'ALTER TABLE resource_cache ADD COLUMN last_accessed_at TEXT',
   ]) {
     try {

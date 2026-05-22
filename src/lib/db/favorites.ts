@@ -102,48 +102,77 @@ export const getFavoriteStatus = (source: OnlineSource, songmid: string): {
   }
 }
 
-export const setLocalFavorite = (musicInfo: MusicInfo, favorite: boolean): FavoriteRecord => {
+export const setLocalFavorite = (musicInfo: MusicInfo, favorite: boolean, qqUin?: string): FavoriteRecord => {
   const track = ensureTrack(musicInfo)
   const desiredState: FavoriteDesiredState = favorite ? 'favorite' : 'unfavorite'
 
   db.prepare(`
-    INSERT INTO favorite_sync (track_id, desired_state, sync_state, error, updated_at)
-    VALUES (@trackId, @desiredState, 'pending', NULL, CURRENT_TIMESTAMP)
+    INSERT INTO favorite_sync (track_id, qq_uin, desired_state, sync_state, error, updated_at)
+    VALUES (@trackId, @qqUin, @desiredState, 'pending', NULL, CURRENT_TIMESTAMP)
     ON CONFLICT(track_id) DO UPDATE SET
+      qq_uin = COALESCE(excluded.qq_uin, favorite_sync.qq_uin),
       desired_state = excluded.desired_state,
       sync_state = 'pending',
       error = NULL,
       updated_at = CURRENT_TIMESTAMP
   `).run({
     trackId: track.id,
+    qqUin: qqUin ?? null,
     desiredState,
   })
+  upsertAccountFavorite(track.id, desiredState, 'pending', qqUin)
 
   const record = getFavoriteRecord(musicInfo.source, musicInfo.songmid)
   if (!record) throw new Error('Failed to load favorite state')
   return record
 }
 
-export const setLocalFavoriteSynced = (musicInfo: MusicInfo, favorite: boolean): FavoriteRecord => {
+export const setLocalFavoriteSynced = (musicInfo: MusicInfo, favorite: boolean, qqUin?: string): FavoriteRecord => {
   const track = ensureTrack(musicInfo)
   const desiredState: FavoriteDesiredState = favorite ? 'favorite' : 'unfavorite'
 
   db.prepare(`
-    INSERT INTO favorite_sync (track_id, desired_state, sync_state, error, updated_at)
-    VALUES (@trackId, @desiredState, 'synced', NULL, CURRENT_TIMESTAMP)
+    INSERT INTO favorite_sync (track_id, qq_uin, desired_state, sync_state, error, updated_at)
+    VALUES (@trackId, @qqUin, @desiredState, 'synced', NULL, CURRENT_TIMESTAMP)
     ON CONFLICT(track_id) DO UPDATE SET
+      qq_uin = COALESCE(excluded.qq_uin, favorite_sync.qq_uin),
       desired_state = excluded.desired_state,
       sync_state = 'synced',
       error = NULL,
       updated_at = CURRENT_TIMESTAMP
   `).run({
     trackId: track.id,
+    qqUin: qqUin ?? null,
     desiredState,
   })
+  upsertAccountFavorite(track.id, desiredState, 'synced', qqUin)
 
   const record = getFavoriteRecord(musicInfo.source, musicInfo.songmid)
   if (!record) throw new Error('Failed to load favorite state')
   return record
+}
+
+function upsertAccountFavorite(
+  trackId: number,
+  desiredState: FavoriteDesiredState,
+  syncState: FavoriteSyncState,
+  qqUin?: string,
+): void {
+  if (!qqUin) return
+  db.prepare(`
+    INSERT INTO account_favorites (qq_uin, track_id, desired_state, sync_state, error, updated_at)
+    VALUES (@qqUin, @trackId, @desiredState, @syncState, NULL, CURRENT_TIMESTAMP)
+    ON CONFLICT(qq_uin, track_id) DO UPDATE SET
+      desired_state = excluded.desired_state,
+      sync_state = excluded.sync_state,
+      error = NULL,
+      updated_at = CURRENT_TIMESTAMP
+  `).run({
+    qqUin,
+    trackId,
+    desiredState,
+    syncState,
+  })
 }
 
 export const markFavoriteSyncState = (

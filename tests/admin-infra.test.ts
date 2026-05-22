@@ -4,7 +4,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { db } from '@/lib/db'
 import { deleteSetting, getEffectiveSettings, getSetting, setSetting, updateEffectiveSettings } from '@/lib/db/settings'
-import { getAccountByQQ, isAdminQQ, listAccountSummaries, markAccountActive } from '@/lib/db/accounts'
+import { getAccountByQQ, getAccountDetail, isAdminQQ, listAccountSummaries, markAccountActive } from '@/lib/db/accounts'
 import { clearQQLoginCookie, saveQQLoginCookie } from '@/lib/db/qq-session'
 import { dispatchEmbyRequest } from '@/lib/emby/dispatch'
 import { ensureUpstreamEmbyUserForAccount } from '@/lib/emby/auth'
@@ -13,7 +13,10 @@ import { normalizeEmbyPath, stripOptionalEmbyPrefix } from '@/lib/emby/paths'
 import { proxyToUpstreamEmby } from '@/lib/emby/upstream-proxy'
 import { readEmbyAccessToken } from '@/lib/emby/tokens'
 import { decodeVirtualId, encodeVirtualId, songVirtualId } from '@/lib/emby/virtual-ids'
+import { getFavoriteStatus, setLocalFavoriteSynced } from '@/lib/db/favorites'
 import { updateAccountEmbyPassword } from '@/lib/db/accounts'
+import { ensureTrack, insertPlayEvent } from '@/lib/cache/store'
+import type { MusicInfo } from '@/lib/types'
 
 function markAccountUpstreamBound(qqUin: string, embyUserId = `emby-user-${qqUin}`, embyAccessToken?: string): void {
   db.prepare('UPDATE accounts SET emby_user_id = ?, emby_access_token = COALESCE(?, emby_access_token) WHERE qq_uin = ?').run(embyUserId, embyAccessToken ?? null, qqUin)
@@ -59,6 +62,36 @@ test('admin QQ env controls account permissions and summaries', () => {
       process.env.ADMIN_QQ_UINS = previous
     }
     db.prepare('DELETE FROM accounts WHERE qq_uin IN (?, ?)').run('123456', '999777')
+    clearQQLoginCookie()
+  }
+})
+
+test('account summaries include login ip and per-account playback and favorite counts', async () => {
+  const song: MusicInfo = {
+    source: 'tx',
+    songmid: 'account-admin-song-1',
+    name: 'Account Admin Song',
+    singer: 'Account Singer',
+  }
+  db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('555123')
+  db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run(song.songmid)
+  try {
+    saveQQLoginCookie('uin=o555123; euin=encrypted555123; qm_keyst=test-key', { loginIp: '203.0.113.9' })
+    const track = ensureTrack(song)
+    insertPlayEvent(track.id, '320k', '555123')
+    setLocalFavoriteSynced(song, true, '555123')
+
+    const summary = listAccountSummaries().find(user => user.qqUin === '555123')
+    assert.equal(summary?.lastLoginIp, '203.0.113.9')
+    assert.equal(summary?.playCount, 1)
+    assert.equal(summary?.favoriteCount, 1)
+
+    const detail = await getAccountDetail('555123')
+    assert.equal(detail?.recentPlays[0]?.songmid, song.songmid)
+    assert.ok(detail?.favorites.items.some(item => item.songmid === song.songmid))
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('555123')
+    db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run(song.songmid)
     clearQQLoginCookie()
   }
 })
@@ -1149,6 +1182,281 @@ test('musiver single item delete clears virtual items locally', async () => {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999036')
     clearQQLoginCookie()
     db.prepare('DELETE FROM app_settings WHERE key = ?').run('virtual.playlist.virtual-single-delete-playlist')
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('musiver virtual favorite item delete is handled locally without leaking to upstream Emby', async () => {
+  const originalFetch = globalThis.fetch
+  const songmid = '003aAYrm3GE0Ac'
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999039')
+    saveQQLoginCookie('uin=o999039; euin=encrypted999039; qm_keyst=test-key')
+    markAccountUpstreamBound('999039')
+    const account = getAccountByQQ('999039')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const authHeader = `MediaBrowser Client="Musiver", Version="1.3.9", Token="${authPayload.AccessToken}"`
+
+    const song = {
+      source: 'tx' as const,
+      songmid,
+      name: 'Favorite Delete Song',
+      singer: 'Favorite Artist',
+      albumName: 'Favorite Album',
+      albumId: 'favorite-album-1',
+      raw: { songId: 449205, songType: 0 },
+    }
+    setLocalFavoriteSynced(song, true)
+    db.prepare(`
+      INSERT INTO app_settings (key, value_json, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP
+    `).run(`virtual.song.${songmid}`, JSON.stringify({ song }))
+
+    const upstreamRequests: string[] = []
+    const qqFavoriteWrites: Array<{ method: string; param: unknown }> = []
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'u.y.qq.com') {
+        const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {}
+        qqFavoriteWrites.push({
+          method: body.req?.method,
+          param: body.req?.param,
+        })
+        return Response.json({
+          code: 0,
+          req: {
+            code: 0,
+            data: {
+              retCode: 0,
+              result: {
+                dirId: 201,
+                songlist: [{ backendSongId: 449205, songId: 449205, songType: 0 }],
+              },
+            },
+          },
+        })
+      }
+      upstreamRequests.push(String(url))
+      return Response.json({ error: 'virtual favorite mutation leaked upstream' }, { status: 500 })
+    }) as typeof fetch
+
+    const virtualId = songVirtualId(song)
+    const response = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/FavoriteItems/${encodeURIComponent(virtualId)}`, {
+        method: 'DELETE',
+        headers: { authorization: authHeader },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/FavoriteItems/${encodeURIComponent(virtualId)}`),
+    )
+
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.ItemId, virtualId)
+    assert.equal(payload.IsFavorite, false)
+    assert.equal(payload.PlaybackPositionTicks, 0)
+    assert.deepEqual(upstreamRequests, [])
+    assert.equal(qqFavoriteWrites.length, 1)
+    assert.equal(qqFavoriteWrites[0].method, 'DelSonglist')
+    assert.equal(getFavoriteStatus('tx', songmid).favorite, false)
+    assert.equal(getFavoriteStatus('tx', songmid).syncState, 'synced')
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999039')
+    clearQQLoginCookie()
+    db.prepare('DELETE FROM app_settings WHERE key = ?').run(`virtual.song.${songmid}`)
+    db.prepare("DELETE FROM tracks WHERE songmid = ? AND source = 'tx'").run(songmid)
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('musiver virtual favorite item delete succeeds when virtual song cache is missing', async () => {
+  const originalFetch = globalThis.fetch
+  const songmid = '003FdJZH1wljMU'
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999040')
+    saveQQLoginCookie('uin=o999040; euin=encrypted999040; qm_keyst=test-key')
+    markAccountUpstreamBound('999040')
+    const account = getAccountByQQ('999040')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const authHeader = `MediaBrowser Client="Musiver", Version="1.3.9", Token="${authPayload.AccessToken}"`
+
+    const song = {
+      source: 'tx' as const,
+      songmid,
+      name: 'Missing Virtual Cache Song',
+      singer: 'Favorite Artist',
+      raw: { songId: 551307, songType: 0 },
+    }
+    setLocalFavoriteSynced(song, true)
+    db.prepare('DELETE FROM app_settings WHERE key = ?').run(`virtual.song.${songmid}`)
+
+    const upstreamRequests: string[] = []
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      upstreamRequests.push(String(url))
+      return Response.json({ error: 'virtual favorite mutation leaked upstream' }, { status: 500 })
+    }) as typeof fetch
+
+    const virtualId = songVirtualId(song)
+    const response = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/FavoriteItems/${encodeURIComponent(virtualId)}`, {
+        method: 'DELETE',
+        headers: { authorization: authHeader },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/FavoriteItems/${encodeURIComponent(virtualId)}`),
+    )
+
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.ItemId, virtualId)
+    assert.equal(payload.IsFavorite, false)
+    assert.deepEqual(upstreamRequests, [])
+    assert.equal(getFavoriteStatus('tx', songmid).favorite, false)
+    assert.equal(getFavoriteStatus('tx', songmid).syncState, 'pending')
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999040')
+    clearQQLoginCookie()
+    db.prepare('DELETE FROM app_settings WHERE key = ?').run(`virtual.song.${songmid}`)
+    db.prepare("DELETE FROM tracks WHERE songmid = ? AND source = 'tx'").run(songmid)
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('musiver virtual favorite item delete returns success when no local song record exists', async () => {
+  const originalFetch = globalThis.fetch
+  const songmid = 'missing-local-favorite-song'
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999041')
+    saveQQLoginCookie('uin=o999041; euin=encrypted999041; qm_keyst=test-key')
+    markAccountUpstreamBound('999041')
+    const account = getAccountByQQ('999041')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const authHeader = `MediaBrowser Client="Musiver", Version="1.3.9", Token="${authPayload.AccessToken}"`
+
+    db.prepare('DELETE FROM app_settings WHERE key = ?').run(`virtual.song.${songmid}`)
+    db.prepare("DELETE FROM tracks WHERE songmid = ? AND source = 'tx'").run(songmid)
+
+    const upstreamRequests: string[] = []
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      upstreamRequests.push(String(url))
+      return Response.json({ error: 'virtual favorite mutation leaked upstream' }, { status: 500 })
+    }) as typeof fetch
+
+    const virtualId = encodeVirtualId({ kind: 'qq-song', songmid })
+    const response = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/FavoriteItems/${encodeURIComponent(virtualId)}`, {
+        method: 'DELETE',
+        headers: { authorization: authHeader },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/FavoriteItems/${encodeURIComponent(virtualId)}`),
+    )
+
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.ItemId, virtualId)
+    assert.equal(payload.IsFavorite, false)
+    assert.deepEqual(upstreamRequests, [])
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999041')
+    clearQQLoginCookie()
+    db.prepare('DELETE FROM app_settings WHERE key = ?').run(`virtual.song.${songmid}`)
+    db.prepare("DELETE FROM tracks WHERE songmid = ? AND source = 'tx'").run(songmid)
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('musiver virtual favorite item post returns emby user data payload', async () => {
+  const originalFetch = globalThis.fetch
+  const songmid = 'favorite-post-song'
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999042')
+    saveQQLoginCookie('uin=o999042; euin=encrypted999042; qm_keyst=test-key')
+    markAccountUpstreamBound('999042')
+    const account = getAccountByQQ('999042')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const authHeader = `MediaBrowser Client="Musiver", Version="1.3.9", Token="${authPayload.AccessToken}"`
+
+    const song = {
+      source: 'tx' as const,
+      songmid,
+      name: 'Favorite Post Song',
+      singer: 'Favorite Artist',
+      raw: { songId: 665544, songType: 0 },
+    }
+    db.prepare(`
+      INSERT INTO app_settings (key, value_json, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP
+    `).run(`virtual.song.${songmid}`, JSON.stringify({ song }))
+
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'u.y.qq.com') {
+        return Response.json({
+          code: 0,
+          req: {
+            code: 0,
+            data: {
+              retCode: 0,
+              result: {
+                dirId: 201,
+                songlist: [{ backendSongId: 665544, songId: 665544, songType: 0 }],
+              },
+            },
+          },
+        })
+      }
+      return Response.json({ error: 'virtual favorite mutation leaked upstream' }, { status: 500 })
+    }) as typeof fetch
+
+    const virtualId = songVirtualId(song)
+    const response = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/FavoriteItems/${encodeURIComponent(virtualId)}`, {
+        method: 'POST',
+        headers: { authorization: authHeader },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/FavoriteItems/${encodeURIComponent(virtualId)}`),
+    )
+
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.ItemId, virtualId)
+    assert.equal(payload.IsFavorite, true)
+    assert.equal(payload.PlaybackPositionTicks, 0)
+    assert.equal(getFavoriteStatus('tx', songmid).favorite, true)
+    assert.equal(getFavoriteStatus('tx', songmid).syncState, 'synced')
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999042')
+    clearQQLoginCookie()
+    db.prepare('DELETE FROM app_settings WHERE key = ?').run(`virtual.song.${songmid}`)
+    db.prepare("DELETE FROM tracks WHERE songmid = ? AND source = 'tx'").run(songmid)
     globalThis.fetch = originalFetch
   }
 })
