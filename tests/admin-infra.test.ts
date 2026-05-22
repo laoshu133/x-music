@@ -1853,8 +1853,8 @@ test('local emby favorites merge QQ songs without deriving favorite albums', asy
     assert.equal(musiverFavoriteSongsPayload.Items[0].Size, 1024)
     assert.equal(musiverFavoriteSongsPayload.Items[0].Bitrate, 320000)
     assert.equal(musiverFavoriteSongsPayload.Items[0].ProductionYear, 2024)
-    assert.equal(musiverFavoriteSongsPayload.Items[0].AlbumPrimaryImageTag, 'qq-album-1')
-    assert.equal(musiverFavoriteSongsPayload.Items[0].ImageTags.Primary, 'qq-album-1')
+    assert.equal(musiverFavoriteSongsPayload.Items[0].AlbumPrimaryImageTag, musiverFavoriteSongsPayload.Items[0].Id)
+    assert.equal(musiverFavoriteSongsPayload.Items[0].ImageTags.Primary, musiverFavoriteSongsPayload.Items[0].Id)
     assert.equal(musiverFavoriteSongsPayload.Items[0].UserData.Played, false)
     assert.equal(musiverFavoriteSongsPayload.Items[0].MediaSources[0].Protocol, 'Http')
     assert.equal(musiverFavoriteSongsPayload.Items[0].MediaSources[0].Type, 'Default')
@@ -3044,7 +3044,12 @@ test('local emby virtual song lyrics return timed lyric lines', async () => {
       stripOptionalEmbyPrefix(`/Items/${encodeURIComponent(songId)}/${encodeURIComponent(songId)}/Subtitles/1/Stream.js`),
     )
     assert.equal(queryTokenSubtitle.status, 200)
-    assert.match(await queryTokenSubtitle.text(), /第二句/)
+    assert.match(queryTokenSubtitle.headers.get('content-type') ?? '', /application\/json/)
+    const subtitlePayload = await queryTokenSubtitle.json()
+    assert.deepEqual(subtitlePayload.TrackEvents, [
+      { Id: '1', Text: '第一句', StartPositionTicks: 12300000, EndPositionTicks: 40000000 },
+      { Id: '2', Text: '第二句', StartPositionTicks: 40000000, EndPositionTicks: 70000000 },
+    ])
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999024')
     clearQQLoginCookie()
@@ -3177,8 +3182,8 @@ test('musiver virtual song detail and artist filter keep lyrics and cover metada
     assert.equal(detail.status, 200)
     const detailPayload = await detail.json()
     assert.equal(detailPayload.Name, 'Musiver Virtual Song')
-    assert.equal(detailPayload.ImageTags.Primary, '003virtualAlbum')
-    assert.equal(detailPayload.AlbumPrimaryImageTag, '003virtualAlbum')
+    assert.equal(detailPayload.ImageTags.Primary, songId)
+    assert.equal(detailPayload.AlbumPrimaryImageTag, songId)
     assert.equal(detailPayload.HasLyrics, true)
     assert.equal(detailPayload.MediaSources[0].MediaStreams[1].Codec, 'lrc')
 
@@ -3192,7 +3197,7 @@ test('musiver virtual song detail and artist filter keep lyrics and cover metada
     const artistPayload = await artistItems.json()
     assert.equal(artistPayload.TotalRecordCount, 1)
     assert.equal(artistPayload.Items[0].Name, 'Musiver Virtual Song')
-    assert.equal(artistPayload.Items[0].ImageTags.Primary, '003virtualAlbum')
+    assert.equal(artistPayload.Items[0].ImageTags.Primary, songId)
     assert.equal(artistPayload.Items[0].HasLyrics, true)
     assert.equal(artistPayload.Items[0].MediaSources[0].MediaStreams[1].DeliveryMethod, 'External')
     assert.deepEqual(upstreamRequests, [])
@@ -3259,8 +3264,8 @@ test('musiver virtual song detail fetches QQ metadata when cache is missing', as
     assert.equal(detail.status, 200)
     const payload = await detail.json()
     assert.equal(payload.Name, 'QQ Missing Cache Song')
-    assert.equal(payload.ImageTags.Primary, 'qq-detail-album')
-    assert.equal(payload.AlbumPrimaryImageTag, 'qq-detail-album')
+    assert.equal(payload.ImageTags.Primary, songId)
+    assert.equal(payload.AlbumPrimaryImageTag, songId)
     assert.equal(payload.HasLyrics, true)
     assert.equal(payload.MediaSources[0].MediaStreams[1].Codec, 'lrc')
     assert.deepEqual(upstreamRequests, [])
@@ -3690,6 +3695,7 @@ test('local emby image requests fetch cached QQ virtual artwork', async () => {
     assert.equal(response.headers.get('content-type'), 'image/png')
     assert.equal(await response.text(), 'qq-image-bytes')
     assert.deepEqual(imageRequests, ['https://img.example/qq-image.jpg'])
+    await waitFor(() => Boolean(db.prepare('SELECT 1 FROM resource_cache WHERE url = ?').get('https://img.example/qq-image.jpg')))
 
     const cached = await dispatchEmbyRequest(
       new Request(`http://local/emby/Items/${encodeURIComponent(virtualId)}/Images/Primary?maxWidth=480&maxHeight=480`),
@@ -3697,6 +3703,14 @@ test('local emby image requests fetch cached QQ virtual artwork', async () => {
     )
     assert.equal(cached.status, 200)
     assert.equal(await cached.text(), 'qq-image-bytes')
+    assert.equal(imageRequests.length, 1)
+
+    const tagged = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Items/${encodeURIComponent(virtualId)}/Images/Primary/${encodeURIComponent(virtualId)}?maxWidth=480&maxHeight=480`),
+      stripOptionalEmbyPrefix(`/emby/Items/${encodeURIComponent(virtualId)}/Images/Primary/${encodeURIComponent(virtualId)}`),
+    )
+    assert.equal(tagged.status, 200)
+    assert.equal(await tagged.text(), 'qq-image-bytes')
     assert.equal(imageRequests.length, 1)
   } finally {
     db.prepare('DELETE FROM app_settings WHERE key = ?').run('virtual.song.qq-image-song')

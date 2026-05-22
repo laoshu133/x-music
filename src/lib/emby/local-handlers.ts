@@ -547,8 +547,8 @@ function isGenresCollectionPath(path: string): boolean {
 }
 
 function isImageRequest(path: string): boolean {
-  return /^\/Items\/[^/]+\/Images\/[^/]+$/i.test(path)
-    || /^\/Users\/[^/]+\/Images\/[^/]+$/i.test(path)
+  return /^\/Items\/[^/]+\/Images\/[^/]+(?:\/[^/]+)?$/i.test(path)
+    || /^\/Users\/[^/]+\/Images\/[^/]+(?:\/[^/]+)?$/i.test(path)
 }
 
 function emptyItemsResponse(): Response {
@@ -913,12 +913,13 @@ async function handleSubtitleStreamRequest(request: Request, embyPath: string): 
   if (!decoded || decoded.kind !== 'qq-song') return undefined
 
   const lyrics = await fetchQQLyrics(decoded.songmid)
+  const format = subtitleStreamFormat(embyPath)
   const headers = {
-    'content-type': subtitleContentType(embyPath),
+    'content-type': subtitleContentType(format),
     'cache-control': 'public, max-age=86400',
   }
   if (request.method === 'HEAD') return new Response(null, { status: lyrics ? 200 : 404, headers })
-  return new Response(lyrics ?? '', { status: lyrics ? 200 : 404, headers })
+  return new Response(lyrics ? formatSubtitleStream(lyrics, format) : '', { status: lyrics ? 200 : 404, headers })
 }
 
 function virtualContainerToEmbyItem(decoded: VirtualId): any | undefined {
@@ -1917,7 +1918,7 @@ function readSongQualitySize(song: MusicInfo, quality: MusicQuality): number | u
 
 function songImageTag(song: MusicInfo): string | undefined {
   if (!song.img) return undefined
-  return song.albumId || song.songmid
+  return songVirtualId(song)
 }
 
 function songProductionYear(song: MusicInfo): number | undefined {
@@ -2030,9 +2031,9 @@ function extractSubtitleItemId(path: string): string | undefined {
 }
 
 function extractImageItemId(path: string): string | undefined {
-  const itemMatch = path.match(/^\/Items\/([^/]+)\/Images\/[^/]+$/i)
+  const itemMatch = path.match(/^\/Items\/([^/]+)\/Images\/[^/]+(?:\/[^/]+)?$/i)
   if (itemMatch?.[1]) return decodeURIComponent(itemMatch[1])
-  const userMatch = path.match(/^\/Users\/([^/]+)\/Images\/[^/]+$/i)
+  const userMatch = path.match(/^\/Users\/([^/]+)\/Images\/[^/]+(?:\/[^/]+)?$/i)
   return userMatch?.[1] ? decodeURIComponent(userMatch[1]) : undefined
 }
 
@@ -2343,9 +2344,28 @@ function wantsRawLyrics(request: Request): boolean {
   return format === 'lrc' || format === 'text' || accept.includes('text/plain')
 }
 
-function subtitleContentType(path: string): string {
-  const ext = path.match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase()
-  if (ext === 'vtt') return 'text/vtt; charset=utf-8'
-  if (ext === 'srt') return 'application/x-subrip; charset=utf-8'
+function subtitleStreamFormat(path: string): string {
+  return path.match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase() ?? 'lrc'
+}
+
+function subtitleContentType(format: string): string {
+  if (format === 'js' || format === 'json') return 'application/json; charset=utf-8'
+  if (format === 'vtt') return 'text/vtt; charset=utf-8'
+  if (format === 'srt') return 'application/x-subrip; charset=utf-8'
   return 'text/plain; charset=utf-8'
+}
+
+function formatSubtitleStream(lyrics: string, format: string): string {
+  if (format === 'js' || format === 'json') return JSON.stringify({ TrackEvents: lrcToTrackEvents(lyrics) })
+  return lyrics
+}
+
+function lrcToTrackEvents(value: string): Array<{ Id: string; Text: string; StartPositionTicks: number; EndPositionTicks: number }> {
+  const lines = parseLrcLyrics(value)
+  return lines.map((line, index) => ({
+    Id: String(index + 1),
+    Text: line.Text,
+    StartPositionTicks: line.Start,
+    EndPositionTicks: lines[index + 1]?.Start ?? line.Start + 30_000_000,
+  }))
 }
