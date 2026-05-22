@@ -362,6 +362,11 @@ async function handleItemsRequest(request: Request, embyPath: string): Promise<R
   }
 
   const requestedTypes = parseIncludeTypes(includeTypes)
+  const decodedGenreIds = virtualGenreIds(url)
+  if (decodedGenreIds.length > 0) {
+    return handleVirtualGenreItemsRequest(request, decodedGenreIds, requestedTypes, url)
+  }
+
   const filters = parseFilters(url.searchParams.get('Filters') ?? url.searchParams.get('filters') ?? '')
   const limit = numberParam(url, 'Limit', 500)
   const startIndex = startIndexParam(url)
@@ -444,6 +449,35 @@ async function handleItemsRequest(request: Request, embyPath: string): Promise<R
   return undefined
 }
 
+async function handleVirtualGenreItemsRequest(
+  request: Request,
+  genreIds: string[],
+  requestedTypes: Set<string>,
+  url: URL,
+): Promise<Response> {
+  if (!shouldIncludeType(requestedTypes, 'audio') && !shouldIncludeType(requestedTypes, 'musicalbum')) {
+    return emptyItemsResponse()
+  }
+
+  const limit = numberParam(url, 'Limit', 500)
+  const startIndex = startIndexParam(url)
+  const songs = await listQQFavoriteSongs(request, startIndex + limit)
+  const filtered = songs.filter(song => {
+    const genres = songGenres(song)
+    const normalized = genres.length > 0 ? genres : ['QQ Music']
+    return normalized.some(genre => genreIds.includes(genre))
+  })
+
+  const items = shouldIncludeType(requestedTypes, 'musicalbum') && !shouldIncludeType(requestedTypes, 'audio')
+    ? favoriteSongsToAlbumItems(filtered)
+    : filtered.map(song => {
+      rememberVirtualSong(song)
+      return songToEmbyItem(song, undefined, true)
+    })
+
+  return pagedItemsResponse(items, startIndex, limit)
+}
+
 async function handleCollectionRequest(request: Request, embyPath: string): Promise<Response> {
   const upstream = await tryReadItemsResponse(request, embyPath)
   if (!isGenresCollectionPath(embyPath)) {
@@ -495,7 +529,12 @@ function handleItemRequest(embyPath: string): Response | undefined {
   if (!itemId) return undefined
 
   const decoded = decodeVirtualId(itemId)
-  if (!decoded || decoded.kind !== 'qq-song') return undefined
+  if (!decoded) return undefined
+
+  if (decoded.kind !== 'qq-song') {
+    const item = virtualContainerToEmbyItem(decoded)
+    return item ? Response.json(item) : undefined
+  }
 
   const stored = loadVirtualSong(decoded.songmid)
   if (!stored) {
@@ -503,6 +542,64 @@ function handleItemRequest(embyPath: string): Response | undefined {
   }
 
   return Response.json(songToEmbyItem(stored.song, decoded.playlistId ?? stored.playlistId))
+}
+
+function virtualContainerToEmbyItem(decoded: VirtualId): any | undefined {
+  if (decoded.kind === 'qq-playlist') {
+    const playlist = loadVirtualPlaylist(decoded.id)
+    return playlist ? playlistToEmbyItem(playlist) : undefined
+  }
+
+  if (decoded.kind === 'qq-daily') {
+    return playlistToEmbyItem(loadVirtualPlaylist('__daily__') ?? defaultVirtualPlaylist('__daily__'))
+  }
+
+  if (decoded.kind === 'qq-guess') {
+    return playlistToEmbyItem(loadVirtualPlaylist('__guess__') ?? defaultVirtualPlaylist('__guess__'))
+  }
+
+  if (decoded.kind === 'qq-album') {
+    const songs = loadVirtualAlbumSongs(decoded.id)
+    const first = songs[0]
+    if (!first) return undefined
+    const artists = dedupeStrings(songs.flatMap(song => splitArtists(song.singer)))
+    return {
+      Name: first.albumName || 'Unknown Album',
+      ServerId: LOCAL_SERVER_ID,
+      Id: albumVirtualId(decoded.id),
+      Type: 'MusicAlbum',
+      MediaType: 'Audio',
+      IsFolder: true,
+      AlbumArtist: artists[0] ?? '',
+      AlbumArtists: artists,
+      ArtistItems: artists.map((name, index) => ({ Name: name, Id: `${decoded.id}-album-artist-${index}` })),
+      ChildCount: songs.length,
+      RecursiveItemCount: songs.length,
+      ImageTags: first.img ? { Primary: first.albumId || first.songmid } : {},
+      UserData: {
+        PlaybackPositionTicks: 0,
+        PlayCount: 0,
+        IsFavorite: true,
+      },
+    }
+  }
+
+  if (decoded.kind === 'qq-genre') {
+    return {
+      Name: decoded.id,
+      ServerId: LOCAL_SERVER_ID,
+      Id: genreVirtualId(decoded.id),
+      Type: 'Genre',
+      IsFolder: true,
+      UserData: {
+        PlaybackPositionTicks: 0,
+        PlayCount: 0,
+        IsFavorite: false,
+      },
+    }
+  }
+
+  return undefined
 }
 
 async function handlePlaylistItemsRequest(request: Request, embyPath: string): Promise<Response | undefined> {
@@ -757,19 +854,7 @@ async function listVirtualPlaylists(request: Request, limit: number): Promise<QQ
     // User playlists require a valid QQ login; dynamic recommendation playlists still remain available.
   }
 
-  result.push({
-    source: 'tx',
-    id: '__daily__',
-    name: 'QQ 每日推荐',
-    author: 'QQ 音乐',
-    total: 30,
-  }, {
-    source: 'tx',
-    id: '__guess__',
-    name: 'QQ 猜你喜欢',
-    author: 'QQ 音乐',
-    total: 30,
-  })
+  result.push(defaultVirtualPlaylist('__daily__'), defaultVirtualPlaylist('__guess__'))
 
   const deduped = new Map<string, QQPlaylistInfo>()
   for (const playlist of result) {
@@ -780,6 +865,16 @@ async function listVirtualPlaylists(request: Request, limit: number): Promise<QQ
     }
   }
   return [...deduped.values()]
+}
+
+function defaultVirtualPlaylist(id: '__daily__' | '__guess__'): QQPlaylistInfo {
+  return {
+    source: 'tx',
+    id,
+    name: id === '__daily__' ? 'QQ 每日推荐' : 'QQ 猜你喜欢',
+    author: 'QQ 音乐',
+    total: 30,
+  }
 }
 
 async function listQQUserPlaylistsWindow(request: Request, limit: number): Promise<QQPlaylistInfo[]> {
@@ -1198,6 +1293,15 @@ async function upstreamSearch(request: Request): Promise<string> {
 
 function isMusicLibraryId(value: string): boolean {
   return value === MUSIC_LIBRARY_ID
+}
+
+function virtualGenreIds(url: URL): string[] {
+  const raw = url.searchParams.get('GenreIds') ?? url.searchParams.get('genreIds') ?? ''
+  return raw
+    .split(',')
+    .map(value => decodeVirtualId(value.trim()))
+    .filter((value): value is Extract<VirtualId, { kind: 'qq-genre' }> => value?.kind === 'qq-genre')
+    .map(value => value.id)
 }
 
 function parseIncludeTypes(includeTypes: string): Set<string> {

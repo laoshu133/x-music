@@ -1200,6 +1200,91 @@ test('local emby recommendation playlists cap QQ recommendation limit', async ()
   }
 })
 
+test('local emby virtual playlist item details stay local', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999027')
+    saveQQLoginCookie('uin=o999027; qm_keyst=test-key')
+    markAccountUpstreamBound('999027')
+    const account = getAccountByQQ('999027')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const guessId = encodeVirtualId({ kind: 'qq-guess' })
+    const dailyId = encodeVirtualId({ kind: 'qq-daily' })
+    const upstreamRequests: string[] = []
+
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      upstreamRequests.push(String(url))
+      return Response.json({ error: 'virtual playlist id leaked upstream' }, { status: 500 })
+    }) as typeof fetch
+
+    for (const [id, name] of [[guessId, 'QQ 猜你喜欢'], [dailyId, 'QQ 每日推荐']] as const) {
+      const response = await dispatchEmbyRequest(
+        new Request(`http://local/emby/Users/${authPayload.User.Id}/Items/${encodeURIComponent(id)}`, {
+          headers: { 'X-Emby-Authorization': `MediaBrowser Client="ampcast", Version="0.9.28", Device="PC", Token="${authPayload.AccessToken}"` },
+        }),
+        stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/Items/${encodeURIComponent(id)}`),
+      )
+      assert.equal(response.status, 200)
+      const payload = await response.json()
+      assert.equal(payload.Name, name)
+      assert.equal(payload.IsFolder, true)
+      assert.equal(payload.Type, 'Playlist')
+    }
+    assert.deepEqual(upstreamRequests, [])
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999027')
+    clearQQLoginCookie()
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('local emby virtual genre video filters stay local and empty', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999028')
+    saveQQLoginCookie('uin=o999028; qm_keyst=test-key')
+    markAccountUpstreamBound('999028')
+    const account = getAccountByQQ('999028')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const genreId = encodeVirtualId({ kind: 'qq-genre', id: 'QQ Music' })
+    const upstreamRequests: string[] = []
+
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      upstreamRequests.push(String(url))
+      return Response.json({ error: 'virtual genre id leaked upstream' }, { status: 500 })
+    }) as typeof fetch
+
+    const response = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?Fields=BasicSyncInfo%2CCanDelete%2CContainer%2CPrimaryImageAspectRatio%2CProductionYear%2CStatus%2CEndDate%2CPrefix&EnableImageTypes=Primary%2CBackdrop%2CThumb&ImageTypeLimit=1&StartIndex=0&Limit=50&ParentId=11696830&SortBy=SortName&SortOrder=Ascending&IncludeItemTypes=Movie%2CSeries%2CVideo&Recursive=true&GenreIds=${encodeURIComponent(genreId)}`, {
+        headers: { 'X-Emby-Authorization': `MediaBrowser Client="ampcast", Version="0.9.28", Device="PC", Token="${authPayload.AccessToken}"` },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/Items`),
+    )
+
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), { Items: [], TotalRecordCount: 0 })
+    assert.deepEqual(upstreamRequests, [])
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999028')
+    clearQQLoginCookie()
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('local emby played lists merge local QQ play history', async () => {
   const originalFetch = globalThis.fetch
   try {
