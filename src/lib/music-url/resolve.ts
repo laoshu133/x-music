@@ -1,6 +1,4 @@
-import vm from 'node:vm'
 import { appConfig } from '@/lib/config'
-import { cacheKeyFor, deleteCachedResourceKeys, getCachedTextResource } from '@/lib/cache/resources'
 import { getEffectiveSettings } from '@/lib/db/settings'
 import { isMusicQuality, preferredQualities } from '@/lib/quality'
 import type { MusicInfo, MusicQuality, ResolvedMusicUrl } from '@/lib/types'
@@ -8,6 +6,7 @@ import type { MusicInfo, MusicQuality, ResolvedMusicUrl } from '@/lib/types'
 interface MusicUrlResponse {
   url?: unknown
   data?: unknown
+  ekey?: unknown
   quality?: unknown
   type?: unknown
   code?: unknown
@@ -18,17 +17,20 @@ interface MusicUrlResponse {
 
 interface LxApiConfig {
   apiUrl: string
-  apiKey: string
-  method: string
   headers: Record<string, string>
-  body?: string
+}
+
+interface LxMusicUrlResult {
+  url?: string
+  ekey?: string
+}
+
+interface LxResolvedMusicUrlResult {
+  url: string
+  ekey?: string
 }
 
 const responseUrlKeys = ['url', 'musicUrl', 'location', 'playUrl'] as const
-const lxScriptConfigTtlMs = 10 * 60 * 1000
-const lxRequestEventName = 'request'
-
-let lxScriptConfigCache: { source: string; config: LxApiConfig; expiresAt: number } | undefined
 
 export class MusicUrlResolveError extends Error {
   constructor(
@@ -83,95 +85,31 @@ export const resolveMusicUrl = async (
     throw new MusicUrlConfigError('LX_MUSIC_SOURCE_SCRIPT is not configured')
   }
 
-  const url = await resolveThroughLxApi(scriptUrl, musicInfo, quality)
+  const resolved = await requestMusicUrlFromApi(resolveLxApiConfig(scriptUrl), musicInfo, quality)
 
   return {
-    url,
+    ...resolved,
     quality,
     source: musicInfo.source,
     songmid: musicInfo.songmid,
   }
 }
 
-const resolveLxApiConfig = async (scriptUrl: string): Promise<LxApiConfig> => {
-  if (
-    lxScriptConfigCache?.source === scriptUrl &&
-    lxScriptConfigCache.expiresAt > Date.now()
-  ) {
-    return lxScriptConfigCache.config
-  }
+const resolveLxApiConfig = (scriptUrl: string): LxApiConfig => {
+  const url = new URL(scriptUrl)
+  const apiKey = url.searchParams.get('key') ?? url.searchParams.get('apiKey') ?? undefined
+  if (!apiKey) throw new MusicUrlConfigError('LX_MUSIC_SOURCE_SCRIPT must include key or apiKey for the LX music URL API')
 
-  const body = await loadLxScriptText(scriptUrl)
-  let config = body ? parseLxScriptConfig(body) : undefined
-  if (!config && body) {
-    await deleteCachedResourceKeys([cacheKeyFor('lx', 'lx-script', scriptUrl)])
-    const refreshedBody = await loadLxScriptText(scriptUrl)
-    config = refreshedBody ? parseLxScriptConfig(refreshedBody) : undefined
-  }
-  if (!config) {
-    throw new MusicUrlConfigError('LX music source script did not register a music URL request handler or expose API_URL/API_KEY')
-  }
-
-  lxScriptConfigCache = {
-    source: scriptUrl,
-    config,
-    expiresAt: Date.now() + lxScriptConfigTtlMs,
-  }
-  return config
-}
-
-const loadLxScriptText = async (scriptUrl: string): Promise<string | undefined> => {
-  return getCachedTextResource({
-    source: 'lx',
-    resourceType: 'lx-script',
-    url: scriptUrl,
-    headers: {
-      accept: 'application/javascript, text/plain, */*',
-      'user-agent': 'XMusic/1.0',
-    },
-  })
-}
-
-const resolveThroughLxApi = async (
-  scriptUrl: string,
-  musicInfo: MusicInfo,
-  quality: MusicQuality,
-): Promise<string> => {
-  try {
-    const config = await resolveLxApiConfig(scriptUrl)
-    return await requestMusicUrlFromApi(config, musicInfo, quality)
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('did not register a music URL request handler')) {
-      return requestLegacyScriptEndpoint(scriptUrl, musicInfo, quality)
-    }
-    throw error
-  }
-}
-
-export const getLxMusicApiConfig = resolveLxApiConfig
-
-const parseLxScriptConfig = (script: string): LxApiConfig | undefined => {
-  const simulatedConfig = simulateLxSourceScriptConfig(script)
-  if (simulatedConfig) return simulatedConfig
-
-  const apiUrl = matchJsStringConstant(script, 'API_URL')
-  const apiKey = matchJsStringConstant(script, 'API_KEY') ?? new URL(getConfiguredLxScriptUrl() ?? 'http://invalid').searchParams.get('key') ?? undefined
-  if (!apiUrl || apiKey === undefined) return undefined
+  url.pathname = normalizeApiPath(url.pathname)
+  url.search = ''
   return {
-    apiUrl: normalizeLegacyApiUrl(apiUrl),
-    apiKey,
-    method: 'POST',
+    apiUrl: url.toString(),
     headers: {
       accept: 'application/json, text/plain, */*',
       'content-type': 'application/json',
       'user-agent': 'XMusic/1.0',
-      ...(apiKey ? { 'x-api-key': apiKey } : {}),
+      'x-api-key': apiKey,
     },
-    body: JSON.stringify({
-      source: '__X_MUSIC_SOURCE__',
-      musicId: '__X_MUSIC_MUSIC_ID__',
-      quality: '__X_MUSIC_QUALITY__',
-    }),
   }
 }
 
@@ -181,265 +119,25 @@ const getConfiguredLxScriptUrl = (): string | undefined => {
     || appConfig.lxMusicSourceScript
 }
 
-const matchJsStringConstant = (script: string, name: string): string | undefined => {
-  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const match = script.match(new RegExp(`(?:const|let|var)\\s+${escapedName}\\s*=\\s*(['"\`])([^'"\`]+)\\1`))
-  return match?.[2]
-}
-
-const normalizeLegacyApiUrl = (apiUrl: string): string => {
-  const normalized = apiUrl.replace(/\/+$/, '')
+const normalizeApiPath = (pathname: string): string => {
+  const normalized = pathname.replace(/\/+$/, '')
+  if (!normalized || normalized === '/script/lxmusic') return '/music/url'
   return normalized.endsWith('/music/url') ? normalized : `${normalized}/music/url`
-}
-
-const simulateLxSourceScriptConfig = (script: string): LxApiConfig | undefined => {
-  const source = getLxRequestHandler(script)
-  if (!source) return undefined
-
-  const captured = captureHandlerRequest(source)
-  if (!captured?.url) return undefined
-
-  return {
-    apiUrl: captured.url,
-    apiKey: extractApiKeyFromCapturedRequest(captured),
-    method: captured.method,
-    headers: captured.headers,
-    body: captured.body,
-  }
-}
-
-interface LxRequestSource {
-  handler: unknown
-  state: {
-    captured?: unknown
-  }
-}
-
-const getLxRequestHandler = (script: string): LxRequestSource | undefined => {
-  const sandbox = {
-    __handlers: [] as Array<{ eventName: string; handler: unknown }>,
-    __state: {} as LxRequestSource['state'],
-  }
-  const context = vm.createContext(sandbox, {
-    codeGeneration: {
-      strings: false,
-      wasm: false,
-    },
-  })
-
-  try {
-    vm.runInContext(createLxSandboxBootstrap(), context, { timeout: 250 })
-    vm.runInContext(script, context, { timeout: 250 })
-  } catch {
-    return undefined
-  }
-
-  const handler = sandbox.__handlers.find(({ eventName, handler }) => (
-    eventName === lxRequestEventName && typeof handler === 'function'
-  ))?.handler
-  return handler ? { handler, state: sandbox.__state } : undefined
-}
-
-const createLxSandboxBootstrap = (): string => `
-  Object.defineProperty(globalThis, 'constructor', {
-    value: undefined,
-    writable: false,
-    configurable: false
-  })
-  const unavailable = (name) => function () {
-    throw new Error(name + ' is not available in the LX source sandbox')
-  }
-  globalThis.lx = {
-    EVENT_NAMES: {
-      request: '${lxRequestEventName}',
-      updateAlert: 'updateAlert',
-      inited: 'inited'
-    },
-    on(eventName, handler) {
-      if (typeof eventName === 'string') globalThis.__handlers.push({ eventName, handler })
-    },
-    request(input, init, callback) {
-      globalThis.__state.captured = { input, init }
-      return function cancelRequest() {}
-    },
-    send() {},
-    env: {},
-    currentScriptInfo: {},
-    utils: {}
-  }
-  globalThis.console = {
-    debug() {},
-    error() {},
-    info() {},
-    log() {},
-    warn() {}
-  }
-  globalThis.setTimeout = unavailable('setTimeout')
-  globalThis.setInterval = unavailable('setInterval')
-  globalThis.clearTimeout = function () {}
-  globalThis.clearInterval = function () {}
-  globalThis.fetch = unavailable('fetch')
-  globalThis.XMLHttpRequest = unavailable('XMLHttpRequest')
-  globalThis.WebSocket = unavailable('WebSocket')
-`
-
-interface CapturedRequest {
-  url: string
-  method: string
-  headers: Record<string, string>
-  body?: string
-}
-
-const captureHandlerRequest = (source: LxRequestSource): CapturedRequest | undefined => {
-  if (typeof source.handler !== 'function') return undefined
-
-  try {
-    Reflect.apply(source.handler, undefined, [
-      {
-        source: 'tx',
-        action: 'musicUrl',
-        info: {
-          type: '__X_MUSIC_QUALITY__',
-          quality: '__X_MUSIC_QUALITY__',
-          musicInfo: {
-            source: 'tx',
-            songmid: '__X_MUSIC_MUSIC_ID__',
-            musicId: '__X_MUSIC_MUSIC_ID__',
-            id: '__X_MUSIC_MUSIC_ID__',
-            mid: '__X_MUSIC_MUSIC_ID__',
-            name: '__X_MUSIC_NAME__',
-            singer: '__X_MUSIC_SINGER__',
-          },
-        },
-      },
-    ])
-  } catch {
-    // Some source scripts throw after starting the request; the captured shape is still usable.
-  }
-
-  const captured = source.state.captured
-  if (!captured || typeof captured !== 'object') return undefined
-  const request = captured as unknown as Record<string, unknown>
-  return normalizeCapturedRequest(request.input, request.init)
-}
-
-const normalizeCapturedRequest = (input: unknown, init?: unknown): CapturedRequest | undefined => {
-  if (typeof input === 'string') {
-    return {
-      url: input,
-      method: normalizeMethod(readMethod(init)),
-      headers: normalizeHeaders(readHeaders(init)),
-      body: readBody(init),
-    }
-  }
-
-  if (!input || typeof input !== 'object') return undefined
-  const request = input as Record<string, unknown>
-  const url = pickString(request, ['url', 'uri', 'href'])
-  if (!url) return undefined
-
-  return {
-    url,
-    method: normalizeMethod(pickString(request, ['method']) ?? readMethod(init)),
-    headers: normalizeHeaders(request.headers ?? readHeaders(init)),
-    body: stringifyBody(request.body ?? readBody(init) ?? request.data),
-  }
-}
-
-const readMethod = (value: unknown): string | undefined => {
-  if (!value || typeof value !== 'object') return undefined
-  return pickString(value as Record<string, unknown>, ['method'])
-}
-
-const readHeaders = (value: unknown): unknown => {
-  if (!value || typeof value !== 'object') return undefined
-  return (value as Record<string, unknown>).headers
-}
-
-const readBody = (value: unknown): string | undefined => {
-  if (!value || typeof value !== 'object') return undefined
-  return stringifyBody((value as Record<string, unknown>).body)
-}
-
-const pickString = (record: Record<string, unknown>, keys: string[]): string | undefined => {
-  for (const key of keys) {
-    const value = record[key]
-    if (typeof value === 'string' && value.length > 0) return value
-  }
-  return undefined
-}
-
-const normalizeMethod = (method: string | undefined): string => {
-  return method?.toUpperCase() ?? 'GET'
-}
-
-const normalizeHeaders = (headers: unknown): Record<string, string> => {
-  const normalized: Record<string, string> = {
-    accept: 'application/json, text/plain, */*',
-    'user-agent': 'XMusic/1.0',
-  }
-
-  if (!headers || typeof headers !== 'object') return normalized
-
-  for (const [key, value] of Object.entries(headers)) {
-    if (typeof value === 'string') normalized[key.toLowerCase()] = value
-    if (typeof value === 'number' || typeof value === 'boolean') normalized[key.toLowerCase()] = String(value)
-  }
-
-  return normalized
-}
-
-const stringifyBody = (body: unknown): string | undefined => {
-  if (body === undefined || body === null) return undefined
-  if (typeof body === 'string') return body
-  if (body instanceof URLSearchParams) return body.toString()
-  return JSON.stringify(body)
-}
-
-const extractApiKeyFromCapturedRequest = (request: CapturedRequest): string => {
-  const headerKey = Object.entries(request.headers).find(([key]) => (
-    key.toLowerCase() === 'x-api-key' || key.toLowerCase() === 'authorization'
-  ))?.[1]
-  if (headerKey) return headerKey
-
-  try {
-    const url = new URL(request.url)
-    return url.searchParams.get('key') ?? url.searchParams.get('apiKey') ?? ''
-  } catch {
-    return ''
-  }
-}
-
-const fillCapturedHeaders = (
-  headers: Record<string, string>,
-  musicInfo: MusicInfo,
-  quality: MusicQuality,
-): Record<string, string> => {
-  return Object.fromEntries(
-    Object.entries(headers).map(([key, value]) => [key, fillCapturedTemplate(value, musicInfo, quality)]),
-  )
-}
-
-const fillCapturedTemplate = (value: string, musicInfo: MusicInfo, quality: MusicQuality): string => {
-  return value
-    .replaceAll('__X_MUSIC_SOURCE__', musicInfo.source)
-    .replaceAll('__X_MUSIC_MUSIC_ID__', musicInfo.songmid)
-    .replaceAll('__X_MUSIC_QUALITY__', quality)
-    .replaceAll('__X_MUSIC_NAME__', musicInfo.name)
-    .replaceAll('__X_MUSIC_SINGER__', musicInfo.singer)
 }
 
 const requestMusicUrlFromApi = async (
   config: LxApiConfig,
   musicInfo: MusicInfo,
   quality: MusicQuality,
-): Promise<string> => {
-  const requestUrl = fillCapturedTemplate(config.apiUrl, musicInfo, quality)
-  const requestBody = config.body === undefined ? undefined : fillCapturedTemplate(config.body, musicInfo, quality)
-  const response = await fetch(requestUrl, {
-    method: config.method,
-    headers: fillCapturedHeaders(config.headers, musicInfo, quality),
-    body: requestBody,
+): Promise<LxResolvedMusicUrlResult> => {
+  const response = await fetch(config.apiUrl, {
+    method: 'POST',
+    headers: config.headers,
+    body: JSON.stringify({
+      source: musicInfo.source,
+      musicId: musicInfo.songmid,
+      quality,
+    }),
     cache: 'no-store',
   })
 
@@ -448,68 +146,25 @@ const requestMusicUrlFromApi = async (
     throw new Error(`music-url API returned ${response.status}: ${body.slice(0, 160)}`)
   }
 
-  const url = extractMusicUrl(body)
-  if (!url) {
+  const result = extractMusicUrlResult(body)
+  if (!result.url) {
     throw new Error(`music-url API did not return a URL: ${body.slice(0, 160)}`)
   }
 
-  return url
-}
-
-const requestLegacyScriptEndpoint = async (
-  scriptUrl: string,
-  musicInfo: MusicInfo,
-  quality: MusicQuality,
-): Promise<string> => {
-  const requestUrl = buildMusicUrlRequest(scriptUrl, musicInfo, quality)
-  const response = await fetch(requestUrl, {
-    method: 'GET',
-    headers: {
-      accept: 'application/json, text/plain, */*',
-      'user-agent': 'XMusic/1.0',
-    },
-    cache: 'no-store',
-  })
-
-  const body = await response.text()
-  if (!response.ok) {
-    throw new Error(`music-url source returned ${response.status}: ${body.slice(0, 160)}`)
+  return {
+    url: result.url,
+    ekey: result.ekey,
   }
-
-  const url = extractMusicUrl(body)
-  if (!url) {
-    throw new Error(`music-url source did not return a URL: ${body.slice(0, 160)}`)
-  }
-
-  return url
 }
 
-const buildMusicUrlRequest = (scriptUrl: string, musicInfo: MusicInfo, quality: MusicQuality): string => {
-  const url = new URL(scriptUrl)
-  const serializedMusicInfo = JSON.stringify(musicInfo)
-
-  // Keep this as broad request-shape compatibility rather than an LX event sandbox.
-  url.searchParams.set('source', musicInfo.source)
-  url.searchParams.set('action', 'musicUrl')
-  url.searchParams.set('type', quality)
-  url.searchParams.set('quality', quality)
-  url.searchParams.set('songmid', musicInfo.songmid)
-  url.searchParams.set('name', musicInfo.name)
-  url.searchParams.set('singer', musicInfo.singer)
-  url.searchParams.set('musicInfo', serializedMusicInfo)
-  url.searchParams.set('info', serializedMusicInfo)
-
-  return url.toString()
-}
-
-const extractMusicUrl = (body: string): string | undefined => {
+const extractMusicUrlResult = (body: string): LxMusicUrlResult => {
   const trimmed = body.trim()
-  if (isProbablyHttpUrl(trimmed)) return trimmed
+  if (isProbablyHttpUrl(trimmed)) return { url: trimmed }
 
   const parsed = parseJson(trimmed)
-  if (!parsed) return undefined
+  if (!parsed) return {}
 
-  return extractUrlFromUnknown(parsed)
+  return extractMusicUrlFromUnknown(parsed)
 }
 
 const parseJson = (value: string): unknown => {
@@ -520,25 +175,26 @@ const parseJson = (value: string): unknown => {
   }
 }
 
-const extractUrlFromUnknown = (value: unknown): string | undefined => {
-  if (typeof value === 'string') return isProbablyHttpUrl(value) ? value : undefined
-  if (!value || typeof value !== 'object') return undefined
+const extractMusicUrlFromUnknown = (value: unknown): LxMusicUrlResult => {
+  if (typeof value === 'string') return isProbablyHttpUrl(value) ? { url: value } : {}
+  if (!value || typeof value !== 'object') return {}
 
   const response = value as MusicUrlResponse & Record<string, unknown>
+  const ekey = typeof response.ekey === 'string' && response.ekey.length > 0 ? response.ekey : undefined
 
   for (const key of responseUrlKeys) {
     const candidate = response[key]
-    if (typeof candidate === 'string' && isProbablyHttpUrl(candidate)) return candidate
+    if (typeof candidate === 'string' && isProbablyHttpUrl(candidate)) return { url: candidate, ekey }
   }
 
-  const dataResult = extractUrlFromUnknown(response.data)
-  if (dataResult) return dataResult
+  const dataResult = extractMusicUrlFromUnknown(response.data)
+  if (dataResult.url) return { url: dataResult.url, ekey: dataResult.ekey ?? ekey }
 
   for (const candidate of Object.values(response)) {
-    if (typeof candidate === 'string' && isProbablyHttpUrl(candidate)) return candidate
+    if (typeof candidate === 'string' && isProbablyHttpUrl(candidate)) return { url: candidate, ekey }
   }
 
-  return undefined
+  return {}
 }
 
 const isProbablyHttpUrl = (value: string): boolean => {

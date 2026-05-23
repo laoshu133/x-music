@@ -57,6 +57,7 @@ export interface ResolvedMusicUrl {
   quality: MusicQuality
   source: OnlineSource
   songmid: string
+  ekey?: string
   expiresAt?: Date
 }
 

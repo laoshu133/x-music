@@ -1203,7 +1203,7 @@ async function resolvePlayableUpstreamResponse(
         upsertTrackFileStatus(track.id, quality, 'failed', { error: message })
         continue
       }
-      const { response, completion } = await createUpstreamTeeResponse(resolved.url, track, resolved.quality, request)
+      const { response, completion } = await createUpstreamTeeResponse(resolved.url, track, resolved.quality, request, resolved.ekey)
       return {
         url: resolved.url,
         quality: resolved.quality,

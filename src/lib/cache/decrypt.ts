@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, readdir, rm, stat, unlink } from 'node:fs/promises'
+import { appendFile, mkdir, readdir, rm, stat, unlink } from 'node:fs/promises'
 import path from 'node:path'
 import { execFile, type ExecFileException } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -24,6 +24,10 @@ export interface DecryptedAudioFile {
   sizeBytes: number
 }
 
+export interface DecryptEncryptedQQAudioOptions {
+  ekey?: string
+}
+
 export function isEncryptedQQAudioFileName(filePath: string): boolean {
   return encryptedQQAudioExtensions.has(path.extname(safeUrlPathname(filePath)).toLowerCase())
 }
@@ -33,7 +37,7 @@ export function isEncryptedQQAudioRequiresKeyError(error: unknown): boolean {
     || (error instanceof Error && error.message.includes('QQ encrypted audio requires a matching QQ Music local key'))
 }
 
-export async function decryptEncryptedQQAudioFile(inputPath: string): Promise<DecryptedAudioFile> {
+export async function decryptEncryptedQQAudioFile(inputPath: string, options: DecryptEncryptedQQAudioOptions = {}): Promise<DecryptedAudioFile> {
   if (!isEncryptedQQAudioFileName(inputPath)) {
     const sizeBytes = (await stat(inputPath)).size
     return {
@@ -44,6 +48,9 @@ export async function decryptEncryptedQQAudioFile(inputPath: string): Promise<De
   }
 
   const cliPath = await resolveUmCliPath()
+  if (options.ekey) {
+    await appendQTagFooter(inputPath, options.ekey)
+  }
 
   const outputDir = path.join(appConfig.inboxDir, `um-${randomUUID()}`)
   await mkdir(outputDir, { recursive: true })
@@ -66,6 +73,15 @@ export async function decryptEncryptedQQAudioFile(inputPath: string): Promise<De
     await rm(outputDir, { recursive: true, force: true }).catch(() => undefined)
     throw error
   }
+}
+
+async function appendQTagFooter(inputPath: string, ekey: string): Promise<void> {
+  const payload = Buffer.from(`${ekey},0,2`, 'utf8')
+  const footer = Buffer.alloc(payload.length + 8)
+  payload.copy(footer, 0)
+  footer.writeUInt32BE(payload.length, payload.length)
+  footer.write('QTag', payload.length + 4, 'ascii')
+  await appendFile(inputPath, footer)
 }
 
 async function findDecryptedOutput(directory: string): Promise<DecryptedAudioFile> {

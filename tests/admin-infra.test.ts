@@ -706,7 +706,7 @@ test('local emby music library item list reads upstream without virtual parent i
     const authPayload = await auth!.json()
 
     const upstreamRequests: string[] = []
-    globalThis.fetch = (async (url: string | URL | Request) => {
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       upstreamRequests.push(String(url))
       return Response.json({
         Items: [{ Id: 'emby-song-1', Name: 'Emby Song', Type: 'Audio' }],
@@ -762,7 +762,7 @@ test('local emby music library parent maps to cached upstream music library id',
     const authPayload = await auth!.json()
 
     const upstreamRequests: string[] = []
-    globalThis.fetch = (async (url: string | URL | Request) => {
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       upstreamRequests.push(String(url))
       return Response.json({
         Items: [{ Id: 'emby-song-1', Name: 'Emby Song', Type: 'Audio' }],
@@ -818,7 +818,7 @@ test('local emby search merges upstream Emby items with QQ virtual songs', async
     const qqStarted = new Promise<void>(resolve => {
       resolveQQStarted = resolve
     })
-    globalThis.fetch = (async (url: string | URL | Request) => {
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       const requestUrl = new URL(String(url))
       if (requestUrl.hostname === 'u.y.qq.com') {
         qqStartedBeforeUpstreamReleased = !upstreamReleased
@@ -1069,7 +1069,7 @@ test('local emby playlist search merges upstream and QQ playlists', async () => 
     assert.equal(auth?.status, 200)
     const authPayload = await auth!.json()
 
-    globalThis.fetch = (async (url: string | URL | Request) => {
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       const requestUrl = new URL(String(url))
       if (requestUrl.hostname === 'c.y.qq.com') {
         return Response.json({
@@ -1129,7 +1129,7 @@ test('local emby playlist search caps QQ playlist expansion for large client pag
     const authPayload = await auth!.json()
 
     const qqPageSizes: string[] = []
-    globalThis.fetch = (async (url: string | URL | Request) => {
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       const requestUrl = new URL(String(url))
       if (requestUrl.hostname === 'c.y.qq.com') {
         const pageNo = Number(requestUrl.searchParams.get('page_no') ?? 0)
@@ -1345,7 +1345,7 @@ test('musiver items delete clears virtual items locally', async () => {
     }))
 
     const upstreamRequests: string[] = []
-    globalThis.fetch = (async (url: string | URL | Request) => {
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       upstreamRequests.push(String(url))
       return Response.json({ error: 'virtual delete leaked upstream' }, { status: 500 })
     }) as typeof fetch
@@ -3630,7 +3630,7 @@ test('local emby virtual audio GET returns playable errors as 502 JSON', async (
   const originalLxMusicSourceScript = process.env.LX_MUSIC_SOURCE_SCRIPT
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999025')
-    process.env.LX_MUSIC_SOURCE_SCRIPT = 'https://script.example/legacy-lx?key=test-key'
+    process.env.LX_MUSIC_SOURCE_SCRIPT = 'https://script.example/script/lxmusic?key=test-key'
     saveQQLoginCookie('uin=o999025; qm_keyst=test-key')
     markAccountUpstreamBound('999025')
     const account = getAccountByQQ('999025')
@@ -3665,7 +3665,7 @@ test('local emby virtual audio GET returns playable errors as 502 JSON', async (
 
     globalThis.fetch = (async (url: string | URL | Request) => {
       const requestUrl = new URL(String(url))
-      if (requestUrl.hostname === 'script.example') return new Response('https://cdn.example/audio.mp3')
+      if (requestUrl.hostname === 'script.example') return Response.json({ url: 'https://cdn.example/audio.mp3' })
       if (requestUrl.hostname === 'cdn.example') return new Response('missing', { status: 404 })
       return Response.json({ Items: [], TotalRecordCount: 0 })
     }) as typeof fetch
@@ -3699,7 +3699,7 @@ test('musiver virtual audio stream prefers mp3 quality requested by client', asy
   const originalLxMusicSourceScript = process.env.LX_MUSIC_SOURCE_SCRIPT
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999032')
-    process.env.LX_MUSIC_SOURCE_SCRIPT = 'https://script.example/legacy-lx?key=test-key'
+    process.env.LX_MUSIC_SOURCE_SCRIPT = 'https://script.example/script/lxmusic?key=test-key'
     saveQQLoginCookie('uin=o999032; qm_keyst=test-key')
     markAccountUpstreamBound('999032')
     const account = getAccountByQQ('999032')
@@ -3732,13 +3732,12 @@ test('musiver virtual audio stream prefers mp3 quality requested by client', asy
     }))
 
     const requestedQualities: string[] = []
-    globalThis.fetch = (async (url: string | URL | Request) => {
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       const requestUrl = new URL(String(url))
       if (requestUrl.hostname === 'script.example') {
-        if (requestUrl.searchParams.get('action') === 'musicUrl') {
-          requestedQualities.push(requestUrl.searchParams.get('quality') ?? '')
-        }
-        return new Response('https://cdn.example/audio.mp3')
+        const body = JSON.parse(String(init?.body ?? '{}')) as { quality?: string }
+        requestedQualities.push(body.quality ?? '')
+        return Response.json({ url: 'https://cdn.example/audio.mp3' })
       }
       if (requestUrl.hostname === 'cdn.example') {
         return new Response('audio-bytes', { headers: { 'content-type': 'audio/mpeg' } })
@@ -3780,7 +3779,7 @@ test('local emby virtual audio falls back when encrypted preferred quality canno
   const fixtureDir = `/tmp/x-music-um-fallback-fixture-${tag}`
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999034')
-    process.env.LX_MUSIC_SOURCE_SCRIPT = 'https://script.example/legacy-lx?key=test-key'
+    process.env.LX_MUSIC_SOURCE_SCRIPT = 'https://script.example/script/lxmusic?key=test-key'
     saveQQLoginCookie('uin=o999034; qm_keyst=test-key')
     markAccountUpstreamBound('999034')
     const account = getAccountByQQ('999034')
@@ -3827,15 +3826,13 @@ process.exit(2)
     }))
 
     const requestedQualities: string[] = []
-    globalThis.fetch = (async (url: string | URL | Request) => {
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       const requestUrl = new URL(String(url))
       if (requestUrl.hostname === 'script.example') {
-        if (requestUrl.searchParams.get('action') !== 'musicUrl') {
-          return new Response('https://cdn.example/audio.mflac')
-        }
-        const quality = requestUrl.searchParams.get('quality') ?? 'flac'
+        const body = JSON.parse(String(init?.body ?? '{}')) as { quality?: string }
+        const quality = body.quality ?? 'flac'
         requestedQualities.push(quality)
-        return new Response(`https://cdn.example/${quality === 'flac' ? 'audio.mflac' : 'audio.mp3'}`)
+        return Response.json({ url: `https://cdn.example/${quality === 'flac' ? 'audio.mflac' : 'audio.mp3'}` })
       }
       if (requestUrl.hostname === 'cdn.example' && requestUrl.pathname.endsWith('.mflac')) {
         return new Response('encrypted-bytes', { headers: { 'content-type': 'application/octet-stream' } })
@@ -3919,7 +3916,7 @@ test('local emby virtual audio reports QQ encrypted key requirement when every q
   const songmid = `qq-encrypted-requires-key-${Date.now()}`
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999035')
-    process.env.LX_MUSIC_SOURCE_SCRIPT = 'https://script.example/legacy-lx?key=test-key'
+    process.env.LX_MUSIC_SOURCE_SCRIPT = 'https://script.example/script/lxmusic?key=test-key'
     saveQQLoginCookie('uin=o999035; qm_keyst=test-key')
     markAccountUpstreamBound('999035')
     const account = getAccountByQQ('999035')
@@ -3966,15 +3963,13 @@ process.exit(2)
 
     const requestedQualities: string[] = []
     const downloadedAudioPaths: string[] = []
-    globalThis.fetch = (async (url: string | URL | Request) => {
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       const requestUrl = new URL(String(url))
       if (requestUrl.hostname === 'script.example') {
-        if (requestUrl.searchParams.get('action') !== 'musicUrl') {
-          return new Response('https://cdn.example/audio.mflac')
-        }
-        const quality = requestUrl.searchParams.get('quality') ?? 'flac'
+        const body = JSON.parse(String(init?.body ?? '{}')) as { quality?: string }
+        const quality = body.quality ?? 'flac'
         requestedQualities.push(quality)
-        return new Response(`https://cdn.example/${quality === 'flac' ? 'audio.mflac' : `audio-${quality}.mgg`}`)
+        return Response.json({ url: `https://cdn.example/${quality === 'flac' ? 'audio.mflac' : `audio-${quality}.mgg`}` })
       }
       if (requestUrl.hostname === 'cdn.example' && (requestUrl.pathname.endsWith('.mflac') || requestUrl.pathname.endsWith('.mgg'))) {
         downloadedAudioPaths.push(requestUrl.pathname)

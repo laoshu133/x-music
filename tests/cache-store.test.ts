@@ -184,6 +184,90 @@ writeFileSync(join(outputDir, name + '.mp3'), readFileSync(input))
   }
 })
 
+test('upstream stream injects LX ekey into encrypted QQ audio before UM decrypt', async () => {
+  const originalFetch = globalThis.fetch
+  const songmid = `EKEY_STREAM_${Date.now()}`
+  const tag = `vekey-${Date.now()}`
+  const toolDir = `${appConfig.dataDir}/tools/um/${tag}`
+  const archivePath = `/tmp/x-music-um-${tag}.tar.gz`
+  const fixtureDir = `/tmp/x-music-um-fixture-${tag}`
+  const musicInfo: MusicInfo = {
+    source: 'tx',
+    songmid,
+    name: 'EKey Stream Test',
+    singer: 'Tester',
+  }
+
+  try {
+    const archive = await createUmReleaseArchive({
+      fixtureDir,
+      archivePath,
+      script: `#!/usr/bin/env node
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { basename, extname, join } from 'node:path'
+const args = process.argv.slice(2)
+const outputDir = args[args.indexOf('--output') + 1]
+const input = args.at(-1)
+const data = readFileSync(input)
+if (!data.subarray(-4).equals(Buffer.from('QTag'))) {
+  process.stderr.write('missing QTag footer')
+  process.exit(2)
+}
+const payloadLen = data.readUInt32BE(data.length - 8)
+const payload = data.subarray(data.length - 8 - payloadLen, data.length - 8).toString('utf8')
+if (payload !== 'lx-ekey,0,2') {
+  process.stderr.write('unexpected QTag payload: ' + payload)
+  process.exit(2)
+}
+mkdirSync(outputDir, { recursive: true })
+const name = basename(input, extname(input))
+writeFileSync(join(outputDir, name + '.mp3'), Buffer.from('ekey decrypted audio'))
+`,
+    })
+    fs.rmSync(toolDir, { recursive: true, force: true })
+    const hash = createHash('sha256').update(archive).digest('hex')
+    const assetName = umAssetName(tag)
+
+    const track = ensureTrack(musicInfo)
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const requestUrl = String(url)
+      if (requestUrl.includes('/api/v1/repos/um/cli/releases/latest')) {
+        return Response.json({
+          tag_name: tag,
+          assets: [
+            { name: 'sha256sum.txt', browser_download_url: 'https://release.example/sha256sum.txt' },
+            { name: assetName, browser_download_url: `https://release.example/${assetName}` },
+          ],
+        })
+      }
+      if (requestUrl.endsWith('/sha256sum.txt')) return new Response(`${hash}  ${assetName}\n`)
+      if (requestUrl.endsWith(`/${assetName}`)) return new Response(new Uint8Array(archive))
+      return new Response('encrypted audio bytes', {
+        headers: { 'content-type': 'application/octet-stream' },
+      })
+    }) as typeof fetch
+
+    const { response, completion } = await createUpstreamTeeResponse(
+      `https://ws.stream.qqmusic.qq.com/${songmid}.mgg?vkey=test`,
+      track,
+      '320k',
+      new Request('http://local/play'),
+      'lx-ekey',
+    )
+    assert.equal(response.status, 200)
+    assert.equal(await response.text(), 'ekey decrypted audio')
+    await completion
+
+    const file = getPlayableTrackFile('tx', songmid, '320k')
+    assert.match(file?.finalPath ?? '', /\.mp3$/)
+  } finally {
+    fs.rmSync(toolDir, { recursive: true, force: true })
+    fs.rmSync(fixtureDir, { recursive: true, force: true })
+    fs.rmSync(archivePath, { force: true })
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('upstream stream classifies encrypted QQ audio that needs local QQ Music keys', async () => {
   const originalFetch = globalThis.fetch
   const songmid = `QMC_KEY_REQUIRED_${Date.now()}`

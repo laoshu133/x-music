@@ -59,6 +59,7 @@ export const createUpstreamTeeResponse = async (
   track: TrackRecord,
   quality: MusicQuality,
   request: Request,
+  ekey?: string,
 ): Promise<TeeResult> => {
   await mkdir(appConfig.stagingDir, { recursive: true })
   await mkdir(appConfig.inboxDir, { recursive: true })
@@ -94,6 +95,7 @@ export const createUpstreamTeeResponse = async (
       track,
       quality,
       request,
+      ekey,
     })
   }
   if (!isPlayableAudioFileName(extension)) {
@@ -133,12 +135,14 @@ async function createEncryptedUpstreamResponse({
   track,
   quality,
   request,
+  ekey,
 }: {
   upstreamBody: ReadableStream<Uint8Array>
   extension: string
   track: TrackRecord
   quality: MusicQuality
   request: Request
+  ekey?: string
 }): Promise<TeeResult> {
   const cacheKey = `${track.source}-${safeFilePart(track.songmid)}-${quality}-${Date.now()}`
   const encryptedPath = path.join(appConfig.stagingDir, `${cacheKey}${extension}`)
@@ -152,6 +156,7 @@ async function createEncryptedUpstreamResponse({
     encryptedPath,
     track,
     quality,
+    ekey,
   }).then((result) => {
     decryptedPath = result.finalPath
   })
@@ -167,15 +172,17 @@ async function writeEncryptedCache({
   encryptedPath,
   track,
   quality,
+  ekey,
 }: {
   upstreamBody: ReadableStream<Uint8Array>
   encryptedPath: string
   track: TrackRecord
   quality: MusicQuality
+  ekey?: string
 }): Promise<{ finalPath: string }> {
   try {
     await writeStreamToFile(upstreamBody, encryptedPath)
-    const decrypted = await decryptEncryptedQQAudioFile(encryptedPath)
+    const decrypted = await decryptEncryptedQQAudioFile(encryptedPath, { ekey })
     const sha256 = await hashFile(decrypted.finalPath)
     const completedFile = upsertTrackFileStatus(track.id, quality, 'tagging', {
       rawPath: decrypted.finalPath,
