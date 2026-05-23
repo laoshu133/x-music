@@ -2545,6 +2545,120 @@ test('local emby favorite songs sort mixed sources by favorite time descending',
   }
 })
 
+test('musiver favorite list keeps selected virtual song ids stable across detail and playback', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999043')
+    saveQQLoginCookie('uin=o999043; euin=encrypted999043; qm_keyst=test-key')
+    markAccountUpstreamBound('999043')
+    const account = getAccountByQQ('999043')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const authHeader = `MediaBrowser Client="Musiver", Device="Mi-Mini-M2", Version="1.3.9", Token="${authPayload.AccessToken}"`
+
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'u.y.qq.com') {
+        const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {}
+        const begin = Number(body.req?.param?.song_begin ?? 0)
+        const count = Number(body.req?.param?.song_num ?? 0)
+        const songs = [
+          {
+            id: 1,
+            mid: 'qq-musiver-before-target',
+            title: 'Before Target Song',
+            interval: 188,
+            singer: [{ name: 'Before Artist', mid: 'qq-artist-before' }],
+            album: { name: 'Before Album', mid: 'qq-album-before' },
+            fav_time: '2024-01-02T00:00:00.000Z',
+            file: { media_mid: 'qq-media-before', size_320mp3: 1024 },
+          },
+          {
+            id: 2,
+            mid: '004a6D4b14LK4E',
+            title: '萬千花蕊慈母悲哀',
+            interval: 188,
+            singer: [{ name: '珂拉琪 Collage', mid: 'qq-artist-collage' }],
+            album: { name: 'MEmento MORI', mid: 'qq-album-collage' },
+            fav_time: '2024-01-01T00:00:00.000Z',
+            file: { media_mid: '004a6D4b14LK4E', size_flac: 49_863_855 },
+          },
+        ].slice(begin, begin + count)
+        return Response.json({
+          code: 0,
+          req: {
+            code: 0,
+            data: {
+              songlist: songs,
+              total_song_num: 2,
+            },
+          },
+        })
+      }
+
+      return Response.json({ Items: [], TotalRecordCount: 0 })
+    }) as typeof fetch
+
+    const list = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio&Recursive=true&Fields=AudioInfo%2CSortName%2CMediaSources%2CDateCreated%2CProductionYear%2CCanDelete&StartIndex=0&Limit=30&ImageTypeLimit=1&EnableImageTypes=Primary&SortBy=SortName&SortOrder=Descending&isFavorite=true&ParentId=x-music-music`, {
+        headers: { authorization: authHeader, 'user-agent': 'musiver/1.3.9 (Macintosh)' },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/Items`),
+    )
+    assert.equal(list.status, 200)
+    const listPayload = await list.json()
+    assert.deepEqual(listPayload.Items.map((item: { Name: string }) => item.Name), [
+      'Before Target Song',
+      '萬千花蕊慈母悲哀',
+    ])
+    const target = listPayload.Items[1]
+    const targetId = encodeVirtualId({ kind: 'qq-song', songmid: '004a6D4b14LK4E' })
+    assert.equal(target.Id, targetId)
+    assert.equal(target.MediaSources[0].Id, targetId)
+    assert.equal(target.MediaSources[0].ItemId, targetId)
+    assert.equal(target.MediaSources[0].Path, `/Audio/${encodeURIComponent(targetId)}/universal`)
+    assert.equal(target.ImageTags.Primary, targetId)
+    assert.equal(target.AlbumPrimaryImageTag, targetId)
+    assert.equal(target.HasLyrics, true)
+
+    const detail = await dispatchEmbyRequest(
+      new Request(`http://local/Users/${authPayload.User.Id}/Items/${encodeURIComponent(targetId)}`, {
+        headers: { authorization: authHeader, 'user-agent': 'musiver/1.3.9 (Macintosh)' },
+      }),
+      stripOptionalEmbyPrefix(`/Users/${authPayload.User.Id}/Items/${encodeURIComponent(targetId)}`),
+    )
+    assert.equal(detail.status, 200)
+    const detailPayload = await detail.json()
+    assert.equal(detailPayload.Id, targetId)
+    assert.equal(detailPayload.Name, '萬千花蕊慈母悲哀')
+    assert.equal(detailPayload.MediaSources[0].Path, `/Audio/${encodeURIComponent(targetId)}/universal`)
+
+    const playbackInfo = await dispatchEmbyRequest(
+      new Request(`http://local/Items/${encodeURIComponent(targetId)}/PlaybackInfo`, {
+        headers: { authorization: authHeader, 'user-agent': 'musiver/1.3.9 (Macintosh)' },
+      }),
+      stripOptionalEmbyPrefix(`/Items/${encodeURIComponent(targetId)}/PlaybackInfo`),
+    )
+    assert.equal(playbackInfo.status, 200)
+    const playbackPayload = await playbackInfo.json()
+    assert.equal(playbackPayload.MediaSources[0].Id, targetId)
+    assert.equal(playbackPayload.MediaSources[0].ItemId, targetId)
+    assert.equal(playbackPayload.MediaSources[0].Path, `/Audio/${encodeURIComponent(targetId)}/universal`)
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999043')
+    clearQQLoginCookie()
+    db.prepare("DELETE FROM app_settings WHERE key LIKE 'virtual.song.qq-musiver-before-target'").run()
+    db.prepare("DELETE FROM app_settings WHERE key = 'virtual.song.004a6D4b14LK4E'").run()
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('local emby favorite songs count merged deduped items', async () => {
   const originalFetch = globalThis.fetch
   try {
@@ -3296,6 +3410,65 @@ test('local emby virtual song lyrics return timed lyric lines', async () => {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999024')
     clearQQLoginCookie()
     db.prepare("DELETE FROM app_settings WHERE key = 'virtual.song.qq-lyrics-song-1'").run()
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('musiver subtitle js stream returns empty track events when QQ lyrics are unavailable', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999044')
+    saveQQLoginCookie('uin=o999044; qm_keyst=test-key')
+    markAccountUpstreamBound('999044')
+    const account = getAccountByQQ('999044')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const songId = encodeVirtualId({ kind: 'qq-song', songmid: 'qq-empty-lyrics-song' })
+
+    db.prepare(`
+      INSERT INTO app_settings (key, value_json, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP
+    `).run('virtual.song.qq-empty-lyrics-song', JSON.stringify({
+      song: {
+        source: 'tx',
+        songmid: 'qq-empty-lyrics-song',
+        name: 'QQ Empty Lyrics Song',
+        singer: 'QQ Lyrics Artist',
+        albumName: 'QQ Lyrics Album',
+        interval: '03:08',
+        types: [{ type: '320k', size: '1 MB' }],
+        raw: { strMediaMid: 'qq-media-empty-lyrics' },
+      },
+    }))
+
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.pathname.includes('/lyric/fcgi-bin/fcg_query_lyric_new.fcg')) {
+        return Response.json({})
+      }
+      return Response.json({ error: 'unexpected upstream request' }, { status: 500 })
+    }) as typeof fetch
+
+    const subtitle = await dispatchEmbyRequest(
+      new Request(`http://local/Items/${encodeURIComponent(songId)}/${encodeURIComponent(songId)}/Subtitles/2/Stream.js?MediaBrowser%20Client=Musiver&Device=Mi-Mini-M2&Version=1.3.9&Token=${authPayload.AccessToken}`, {
+        headers: { 'user-agent': 'musiver/1.3.9 (Macintosh)' },
+      }),
+      stripOptionalEmbyPrefix(`/Items/${encodeURIComponent(songId)}/${encodeURIComponent(songId)}/Subtitles/2/Stream.js?MediaBrowser%20Client=Musiver&Device=Mi-Mini-M2&Version=1.3.9&Token=${authPayload.AccessToken}`),
+    )
+    assert.equal(subtitle.status, 200)
+    assert.match(subtitle.headers.get('content-type') ?? '', /application\/json/)
+    assert.deepEqual(await subtitle.json(), { TrackEvents: [] })
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999044')
+    clearQQLoginCookie()
+    db.prepare("DELETE FROM app_settings WHERE key = 'virtual.song.qq-empty-lyrics-song'").run()
     globalThis.fetch = originalFetch
   }
 })

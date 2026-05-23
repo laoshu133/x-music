@@ -964,7 +964,9 @@ async function handleSubtitleStreamRequest(request: Request, embyPath: string): 
     'content-type': subtitleContentType(format),
     'cache-control': 'public, max-age=86400',
   }
-  if (request.method === 'HEAD') return new Response(null, { status: lyrics ? 200 : 404, headers })
+  const isJsonSubtitle = format === 'js' || format === 'json'
+  if (request.method === 'HEAD') return new Response(null, { status: lyrics || isJsonSubtitle ? 200 : 404, headers })
+  if (!lyrics && isJsonSubtitle) return new Response(formatSubtitleStream('', format), { status: 200, headers })
   return new Response(lyrics ? formatSubtitleStream(lyrics, format) : '', { status: lyrics ? 200 : 404, headers })
 }
 
