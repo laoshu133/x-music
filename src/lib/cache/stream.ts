@@ -8,11 +8,18 @@ import { enqueueTagJob, fileExtensionFromContentType, isPlayableAudioFileName, u
 import { enqueueEmbyTrackSync } from '@/lib/emby/sync'
 import { triggerInlineTagging } from '@/lib/tagging/inline'
 import type { MusicInfo, MusicQuality, TrackRecord } from '@/lib/types'
-import { decryptEncryptedQQAudioFile, isEncryptedQQAudioFileName } from './decrypt'
+import { isEncryptedQQAudioFileName } from './decrypt'
+import { createQmc2Decryptor, detectDecryptedAudioExtension } from './um-crypto'
 
 interface TeeResult {
   response: Response
   completion: Promise<void>
+}
+
+interface EncryptedTeeResult {
+  body: ReadableStream<Uint8Array>
+  completion: Promise<void>
+  contentType: Promise<string>
 }
 
 export const streamLocalFile = async (filePath: string, request: Request): Promise<Response> => {
@@ -89,12 +96,16 @@ export const createUpstreamTeeResponse = async (
   const extension = fileExtensionFromContentType(upstream.headers.get('content-type'), upstreamUrl)
   if (encryptedUpstream) {
     if (upstream.status === 206) throw new Error('encrypted upstream returned partial content')
-    return createEncryptedUpstreamResponse({
+    if (!ekey) return createPossiblyPlainEncryptedUpstreamResponse({
       upstreamBody: upstream.body,
-      extension: path.extname(safeUrlPathname(upstreamUrl)).toLowerCase(),
+      fallbackExtension: extension,
       track,
       quality,
-      request,
+    })
+    return createEncryptedUpstreamResponse({
+      upstreamBody: upstream.body,
+      track,
+      quality,
       ekey,
     })
   }
@@ -131,98 +142,108 @@ export const createUpstreamTeeResponse = async (
 
 async function createEncryptedUpstreamResponse({
   upstreamBody,
-  extension,
   track,
   quality,
-  request,
   ekey,
 }: {
   upstreamBody: ReadableStream<Uint8Array>
-  extension: string
   track: TrackRecord
   quality: MusicQuality
-  request: Request
-  ekey?: string
+  ekey: string
 }): Promise<TeeResult> {
   const cacheKey = `${track.source}-${safeFilePart(track.songmid)}-${quality}-${Date.now()}`
-  const encryptedPath = path.join(appConfig.stagingDir, `${cacheKey}${extension}`)
+  const partPath = path.join(appConfig.stagingDir, `${cacheKey}.part`)
   upsertTrackFileStatus(track.id, quality, 'streaming_and_caching', {
-    rawPath: encryptedPath,
+    rawPath: partPath,
   })
 
-  let decryptedPath: string | undefined
-  const completion = writeEncryptedCache({
+  const decryptor = await createQmc2Decryptor(ekey)
+  const { body, completion, contentType } = teeEncryptedUpstreamToClientAndCache({
     upstreamBody,
-    encryptedPath,
+    partPath,
+    cacheKey,
     track,
     quality,
-    ekey,
-  }).then((result) => {
-    decryptedPath = result.finalPath
+    decryptor,
   })
-  await completion
   return {
-    response: await streamLocalFile(decryptedPath ?? encryptedPath, request),
+    response: new Response(body, {
+      status: 200,
+      headers: {
+        'content-type': await contentType,
+        'cache-control': 'no-store',
+        'accept-ranges': 'none',
+      },
+    }),
     completion,
   }
 }
 
-async function writeEncryptedCache({
+async function createPossiblyPlainEncryptedUpstreamResponse({
   upstreamBody,
-  encryptedPath,
+  fallbackExtension,
   track,
   quality,
-  ekey,
 }: {
   upstreamBody: ReadableStream<Uint8Array>
-  encryptedPath: string
+  fallbackExtension: string
   track: TrackRecord
   quality: MusicQuality
-  ekey?: string
-}): Promise<{ finalPath: string }> {
-  try {
-    await writeStreamToFile(upstreamBody, encryptedPath)
-    const decrypted = await decryptEncryptedQQAudioFile(encryptedPath, { ekey })
-    const sha256 = await hashFile(decrypted.finalPath)
-    const completedFile = upsertTrackFileStatus(track.id, quality, 'tagging', {
-      rawPath: decrypted.finalPath,
-      finalPath: decrypted.finalPath,
-      sizeBytes: decrypted.sizeBytes,
-      sha256,
-    })
-    enqueueTagJob(completedFile, track)
-    enqueueEmbyTrackSync({
-      source: track.source,
-      songmid: track.songmid,
-      musicInfo: trackToMusicInfo(track),
-    })
-    triggerInlineTagging()
-    return { finalPath: decrypted.finalPath }
-  } catch (error) {
-    await unlink(encryptedPath).catch(() => undefined)
-    upsertTrackFileStatus(track.id, quality, 'failed', {
-      error: error instanceof Error ? error.message : String(error),
-    })
-    throw error
+}): Promise<TeeResult> {
+  const cacheKey = `${track.source}-${safeFilePart(track.songmid)}-${quality}-${Date.now()}`
+  const partPath = path.join(appConfig.stagingDir, `${cacheKey}.part`)
+  const reader = upstreamBody.getReader()
+  const initial = await readInitialPlainChunks(reader)
+  const extension = initial.extension ?? fallbackExtension
+  const inboxPath = path.join(appConfig.inboxDir, `${cacheKey}${extension}`)
+  upsertTrackFileStatus(track.id, quality, 'streaming_and_caching', {
+    rawPath: partPath,
+  })
+
+  const { body, completion } = teeUpstreamToClientAndCache({
+    reader,
+    initialChunks: initial.chunks,
+    partPath,
+    inboxPath,
+    shouldCache: true,
+    track,
+    quality,
+  })
+
+  return {
+    response: new Response(body, {
+      status: 200,
+      headers: {
+        'content-type': contentTypeFromPath(extension),
+        'cache-control': 'no-store',
+        'accept-ranges': 'none',
+      },
+    }),
+    completion,
   }
 }
 
 const teeUpstreamToClientAndCache = ({
   upstreamBody,
+  reader: providedReader,
+  initialChunks = [],
   partPath,
   inboxPath,
   shouldCache,
   track,
   quality,
 }: {
-  upstreamBody: ReadableStream<Uint8Array>
+  upstreamBody?: ReadableStream<Uint8Array>
+  reader?: ReadableStreamDefaultReader<Uint8Array>
+  initialChunks?: Uint8Array[]
   partPath: string
   inboxPath: string
   shouldCache: boolean
   track: TrackRecord
   quality: MusicQuality
 }): { body: ReadableStream<Uint8Array>; completion: Promise<void> } => {
-  const reader = upstreamBody.getReader()
+  const reader = providedReader ?? upstreamBody?.getReader()
+  if (!reader) throw new Error('upstream reader was not provided')
   const hash = crypto.createHash('sha256')
   const writeStream = shouldCache ? fs.createWriteStream(partPath) : undefined
   let clientCancelled = false
@@ -278,6 +299,19 @@ const teeUpstreamToClientAndCache = ({
   const body = new ReadableStream<Uint8Array>({
     async start(controller) {
       try {
+        for (const value of initialChunks) {
+          if (writeStream && !writeFailed) {
+            const buffer = Buffer.from(value)
+            writtenBytes += buffer.length
+            hash.update(buffer)
+            if (!writeStream.write(buffer)) await waitForWritableDrain(writeStream)
+          }
+
+          if (!clientCancelled) {
+            controller.enqueue(value)
+          }
+        }
+
         for (;;) {
           const { done, value } = await reader.read()
           if (done) break
@@ -313,6 +347,152 @@ const teeUpstreamToClientAndCache = ({
   })
 
   return { body, completion }
+}
+
+const teeEncryptedUpstreamToClientAndCache = ({
+  upstreamBody,
+  partPath,
+  cacheKey,
+  track,
+  quality,
+  decryptor,
+}: {
+  upstreamBody: ReadableStream<Uint8Array>
+  partPath: string
+  cacheKey: string
+  track: TrackRecord
+  quality: MusicQuality
+  decryptor: { decrypt(buffer: Uint8Array, offset: number): void }
+}): EncryptedTeeResult => {
+  const reader = upstreamBody.getReader()
+  const hash = crypto.createHash('sha256')
+  const writeStream = fs.createWriteStream(partPath)
+  const headerChunks: Buffer[] = []
+  const queuedChunks: Buffer[] = []
+  let clientCancelled = false
+  let offset = 0
+  let writtenBytes = 0
+  let writeFailed: Error | undefined
+  let finalExtension: string | undefined
+  let finalized = false
+  let resolveCompletion: () => void
+  let rejectCompletion: (error: unknown) => void
+  let resolveContentType: (contentType: string) => void
+  let rejectContentType: (error: unknown) => void
+
+  const completion = new Promise<void>((resolve, reject) => {
+    resolveCompletion = resolve
+    rejectCompletion = reject
+  })
+  const contentType = new Promise<string>((resolve, reject) => {
+    resolveContentType = resolve
+    rejectContentType = reject
+  })
+
+  writeStream.on('error', (error) => {
+    writeFailed = error
+  })
+
+  const completeCache = async (): Promise<void> => {
+    try {
+      writeStream.end()
+      await waitForWritable(writeStream)
+      if (writeFailed) throw writeFailed
+
+      const extension = finalExtension ?? '.mp3'
+      const inboxPath = path.join(appConfig.inboxDir, `${cacheKey}${extension}`)
+      await rename(partPath, inboxPath)
+      const completedFile = upsertTrackFileStatus(track.id, quality, 'tagging', {
+        rawPath: inboxPath,
+        finalPath: inboxPath,
+        sizeBytes: writtenBytes,
+        sha256: hash.digest('hex'),
+      })
+      enqueueTagJob(completedFile, track)
+      enqueueEmbyTrackSync({
+        source: track.source,
+        songmid: track.songmid,
+        musicInfo: trackToMusicInfo(track),
+      })
+      triggerInlineTagging()
+      resolveCompletion()
+    } catch (error) {
+      await unlink(partPath).catch(() => undefined)
+      upsertTrackFileStatus(track.id, quality, 'failed', {
+        error: error instanceof Error ? error.message : String(error),
+      })
+      rejectCompletion(error)
+    }
+  }
+
+  const body = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const flushQueuedChunks = () => {
+        if (clientCancelled) return
+        for (const chunk of queuedChunks.splice(0)) {
+          controller.enqueue(chunk)
+        }
+      }
+
+      try {
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done) break
+
+          const buffer = Buffer.from(value)
+          decryptor.decrypt(buffer, offset)
+          offset += buffer.length
+
+          if (!finalized) {
+            headerChunks.push(buffer)
+            const header = Buffer.concat(headerChunks)
+            finalExtension = await detectDecryptedAudioExtension(header)
+            finalized = finalExtension !== undefined || header.length >= 8192
+            if (finalized) {
+              resolveContentType(contentTypeFromPath(finalExtension ?? '.mp3'))
+              flushQueuedChunks()
+            }
+          }
+
+          writtenBytes += buffer.length
+          hash.update(buffer)
+          if (!writeStream.write(buffer)) await waitForWritableDrain(writeStream)
+          if (writeFailed) throw writeFailed
+
+          if (!finalized) {
+            queuedChunks.push(buffer)
+          } else if (!clientCancelled) {
+            controller.enqueue(buffer)
+          }
+        }
+
+        if (!finalized) {
+          finalExtension = '.mp3'
+          finalized = true
+          resolveContentType(contentTypeFromPath(finalExtension))
+          flushQueuedChunks()
+        }
+
+        if (!clientCancelled) controller.close()
+        await completeCache()
+      } catch (error) {
+        writeStream.destroy()
+        await unlink(partPath).catch(() => undefined)
+        upsertTrackFileStatus(track.id, quality, 'failed', {
+          error: error instanceof Error ? error.message : String(error),
+        })
+        rejectContentType(error)
+        if (!clientCancelled) controller.error(error)
+        rejectCompletion(error)
+      }
+    },
+    cancel() {
+      clientCancelled = true
+      // Keep reading the same upstream in start() so the decrypted cache can still complete.
+    },
+  })
+
+  return { body, completion, contentType }
 }
 
 const buildProxyHeaders = (upstreamHeaders: Headers, cachingFullFile: boolean, upstreamUrl: string): Headers => {
@@ -363,50 +543,42 @@ const parseRange = (range: string, size: number): { start: number; end: number }
 }
 
 const contentTypeFromPath = (filePath: string): string => {
-  const ext = path.extname(filePath).toLowerCase()
-  if (ext === '.flac') return 'audio/flac'
+  const ext = filePath.startsWith('.') && !filePath.includes('/')
+    ? filePath.toLowerCase()
+    : path.extname(filePath).toLowerCase()
+  if (ext === '.flac' || ext === '.mflac') return 'audio/flac'
   if (ext === '.m4a' || ext === '.mp4') return 'audio/mp4'
-  if (ext === '.ogg') return 'audio/ogg'
+  if (ext === '.ogg' || ext === '.mgg') return 'audio/ogg'
+  if (ext === '.wav') return 'audio/wav'
   return 'audio/mpeg'
 }
 
-async function writeStreamToFile(stream: ReadableStream<Uint8Array>, filePath: string): Promise<number> {
-  const reader = stream.getReader()
-  const writeStream = fs.createWriteStream(filePath)
-  let writtenBytes = 0
-  let writeFailed: Error | undefined
-  writeStream.on('error', (error) => {
-    writeFailed = error
-  })
+async function readInitialPlainChunks(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+): Promise<{ chunks: Uint8Array[]; extension?: string }> {
+  const chunks: Uint8Array[] = []
+  let header = Buffer.alloc(0)
 
-  try {
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      const buffer = Buffer.from(value)
-      writtenBytes += buffer.length
-      if (!writeStream.write(buffer)) await waitForWritableDrain(writeStream)
-      if (writeFailed) throw writeFailed
-    }
-    writeStream.end()
-    await waitForWritable(writeStream)
-    if (writeFailed) throw writeFailed
-    return writtenBytes
-  } catch (error) {
-    writeStream.destroy()
-    throw error
+  while (header.length < 8192) {
+    const { done, value } = await reader.read()
+    if (done) break
+    chunks.push(value)
+    header = Buffer.concat([header, Buffer.from(value)])
+    const extension = detectAudioExtensionFromHeader(header)
+    if (extension) return { chunks, extension }
   }
+
+  return { chunks, extension: detectAudioExtensionFromHeader(header) }
 }
 
-async function hashFile(filePath: string): Promise<string> {
-  const hash = crypto.createHash('sha256')
-  await new Promise<void>((resolve, reject) => {
-    const stream = fs.createReadStream(filePath)
-    stream.on('data', chunk => hash.update(chunk))
-    stream.on('end', resolve)
-    stream.on('error', reject)
-  })
-  return hash.digest('hex')
+function detectAudioExtensionFromHeader(header: Buffer): string | undefined {
+  if (header.length >= 4 && header.subarray(0, 4).equals(Buffer.from('fLaC'))) return '.flac'
+  if (header.length >= 3 && header.subarray(0, 3).equals(Buffer.from('ID3'))) return '.mp3'
+  if (header.length >= 2 && header[0] === 0xff && (header[1] & 0xe0) === 0xe0) return '.mp3'
+  if (header.length >= 4 && header.subarray(0, 4).equals(Buffer.from('OggS'))) return '.ogg'
+  if (header.length >= 12 && header.subarray(0, 4).equals(Buffer.from('RIFF')) && header.subarray(8, 12).equals(Buffer.from('WAVE'))) return '.wav'
+  if (header.length >= 12 && header.subarray(4, 8).equals(Buffer.from('ftyp'))) return '.m4a'
+  return undefined
 }
 
 function trackToMusicInfo(track: TrackRecord): MusicInfo {

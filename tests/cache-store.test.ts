@@ -2,12 +2,12 @@ import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
+import path from 'node:path'
 import test from 'node:test'
 import { ensureTrack, getPlayableTrackFile, getReadyTrackFile, insertPlayEvent, listPlayHistory, upsertTrackFileStatus } from '@/lib/cache/store'
 import { cachedResourceResponse, cleanupResourceCache } from '@/lib/cache/resources'
 import { createUpstreamTeeResponse } from '@/lib/cache/stream'
-import { EncryptedQQAudioRequiresKeyError } from '@/lib/cache/decrypt'
-import { resolveUmCliPath } from '@/lib/cache/um-cli'
+import { refreshUmCrypto, resolveUmCryptoLoaderPath } from '@/lib/cache/um-crypto'
 import { appConfig } from '@/lib/config'
 import { db } from '@/lib/db'
 import type { MusicInfo } from '@/lib/types'
@@ -75,7 +75,7 @@ test('cache store does not serve encrypted QQ cache files as playable audio', ()
   }
 })
 
-test('upstream stream rejects encrypted QQ audio containers when UM CLI cannot be resolved', async () => {
+test('upstream stream passes through encrypted-extension upstreams without LX ekey', async () => {
   const originalFetch = globalThis.fetch
   const songmid = `ENCRYPTED_STREAM_${Date.now()}`
   const musicInfo: MusicInfo = {
@@ -87,79 +87,9 @@ test('upstream stream rejects encrypted QQ audio containers when UM CLI cannot b
 
   try {
     const track = ensureTrack(musicInfo)
-    globalThis.fetch = (async (url: string | URL | Request) => {
-      const requestUrl = String(url)
-      if (requestUrl.includes('/api/v1/repos/um/cli/releases/latest')) {
-        return Response.json({ tag_name: 'v0.0.0', assets: [] })
-      }
-      return new Response('fake encrypted audio', {
-        headers: { 'content-type': 'audio/mpeg' },
-      })
-    }) as typeof fetch
-
-    await assert.rejects(
-      createUpstreamTeeResponse(
-        `https://ws.stream.qqmusic.qq.com/${songmid}.mgg?vkey=test`,
-        track,
-        '320k',
-        new Request('http://local/play'),
-      ),
-      /UM CLI release has no asset|compatible asset/,
-    )
-  } finally {
-    globalThis.fetch = originalFetch
-  }
-})
-
-test('upstream stream decrypts encrypted QQ audio containers through UM CLI', async () => {
-  const originalFetch = globalThis.fetch
-  const songmid = `DECRYPTED_STREAM_${Date.now()}`
-  const tag = `vdecrypt-${Date.now()}`
-  const toolDir = `${appConfig.dataDir}/tools/um/${tag}`
-  const archivePath = `/tmp/x-music-um-${tag}.tar.gz`
-  const fixtureDir = `/tmp/x-music-um-fixture-${tag}`
-  const musicInfo: MusicInfo = {
-    source: 'tx',
-    songmid,
-    name: 'Decrypted Stream Test',
-    singer: 'Tester',
-  }
-
-  try {
-    const archive = await createUmReleaseArchive({
-      fixtureDir,
-      archivePath,
-      script: `#!/usr/bin/env node
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { basename, extname, join } from 'node:path'
-const args = process.argv.slice(2)
-const outputDir = args[args.indexOf('--output') + 1]
-const input = args.at(-1)
-mkdirSync(outputDir, { recursive: true })
-const name = basename(input, extname(input))
-writeFileSync(join(outputDir, name + '.mp3'), readFileSync(input))
-`,
-    })
-    fs.rmSync(toolDir, { recursive: true, force: true })
-    const hash = createHash('sha256').update(archive).digest('hex')
-    const assetName = umAssetName(tag)
-
-    const track = ensureTrack(musicInfo)
-    globalThis.fetch = (async (url: string | URL | Request) => {
-      const requestUrl = String(url)
-      if (requestUrl.includes('/api/v1/repos/um/cli/releases/latest')) {
-        return Response.json({
-          tag_name: tag,
-          assets: [
-            { name: 'sha256sum.txt', browser_download_url: 'https://release.example/sha256sum.txt' },
-            { name: assetName, browser_download_url: `https://release.example/${assetName}` },
-          ],
-        })
-      }
-      if (requestUrl.endsWith('/sha256sum.txt')) return new Response(`${hash}  ${assetName}\n`)
-      if (requestUrl.endsWith(`/${assetName}`)) return new Response(new Uint8Array(archive))
-      return new Response('decrypted audio bytes', {
-        headers: { 'content-type': 'audio/mpeg' },
+    globalThis.fetch = (async () => {
+      return new Response('ID3 fake audio bytes', {
+        headers: { 'content-type': 'application/octet-stream' },
       })
     }) as typeof fetch
 
@@ -168,6 +98,66 @@ writeFileSync(join(outputDir, name + '.mp3'), readFileSync(input))
       track,
       '320k',
       new Request('http://local/play'),
+    )
+    assert.equal(response.status, 200)
+    assert.equal(response.headers.get('content-type'), 'audio/mpeg')
+    assert.equal(await response.text(), 'ID3 fake audio bytes')
+    await completion
+
+    const file = getPlayableTrackFile('tx', songmid, '320k')
+    assert.ok(file?.finalPath?.endsWith('.mp3'))
+    assert.ok(file?.finalPath)
+    assert.equal(fs.readFileSync(file.finalPath, 'utf8'), 'ID3 fake audio bytes')
+  } finally {
+    globalThis.fetch = originalFetch
+    db.prepare("DELETE FROM tracks WHERE songmid = ? AND source = 'tx'").run(songmid)
+  }
+})
+
+test('upstream stream decrypts encrypted QQ audio containers through UM crypto while caching', async () => {
+  const originalFetch = globalThis.fetch
+  const songmid = `DECRYPTED_STREAM_${Date.now()}`
+  const version = `99.0.${Date.now()}`
+  const toolDir = path.join(appConfig.toolsDir, 'um-crypto', version)
+  const archivePath = `/tmp/x-music-um-crypto-${version}.tgz`
+  const fixtureDir = `/tmp/x-music-um-crypto-fixture-${version}`
+  const musicInfo: MusicInfo = {
+    source: 'tx',
+    songmid,
+    name: 'Decrypted Stream Test',
+    singer: 'Tester',
+  }
+
+  try {
+    const archive = await createUmCryptoPackage({
+      fixtureDir,
+      archivePath,
+      loader: fakeUmCryptoLoader({ replacementText: 'decrypted audio bytes' }),
+    })
+    fs.rmSync(toolDir, { recursive: true, force: true })
+    const integrity = `sha512-${createHash('sha512').update(archive).digest('base64')}`
+    const tarballUrl = `https://release.example/crypto-${version}.tgz`
+
+    const track = ensureTrack(musicInfo)
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const requestUrl = String(url)
+      if (requestUrl.includes('/api/packages/um/npm/%40unlock-music%2Fcrypto')) {
+        return Response.json({
+          'dist-tags': { latest: version },
+          versions: { [version]: { dist: { integrity, tarball: tarballUrl } } },
+        })
+      }
+      if (requestUrl === tarballUrl) return new Response(new Uint8Array(archive))
+      return new Response('encrypted audio bytes', { headers: { 'content-type': 'application/octet-stream' } })
+    }) as typeof fetch
+
+    await refreshUmCrypto()
+    const { response, completion } = await createUpstreamTeeResponse(
+      `https://ws.stream.qqmusic.qq.com/${songmid}.mgg?vkey=test`,
+      track,
+      '320k',
+      new Request('http://local/play'),
+      'lx-ekey',
     )
     assert.equal(response.status, 200)
     assert.equal(await response.text(), 'decrypted audio bytes')
@@ -184,13 +174,13 @@ writeFileSync(join(outputDir, name + '.mp3'), readFileSync(input))
   }
 })
 
-test('upstream stream injects LX ekey into encrypted QQ audio before UM decrypt', async () => {
+test('upstream stream passes LX ekey into UM crypto QMC2 decryptor', async () => {
   const originalFetch = globalThis.fetch
   const songmid = `EKEY_STREAM_${Date.now()}`
-  const tag = `vekey-${Date.now()}`
-  const toolDir = `${appConfig.dataDir}/tools/um/${tag}`
-  const archivePath = `/tmp/x-music-um-${tag}.tar.gz`
-  const fixtureDir = `/tmp/x-music-um-fixture-${tag}`
+  const version = `99.0.${Date.now()}`
+  const toolDir = path.join(appConfig.toolsDir, 'um-crypto', version)
+  const archivePath = `/tmp/x-music-um-crypto-${version}.tgz`
+  const fixtureDir = `/tmp/x-music-um-crypto-fixture-${version}`
   const musicInfo: MusicInfo = {
     source: 'tx',
     songmid,
@@ -199,54 +189,31 @@ test('upstream stream injects LX ekey into encrypted QQ audio before UM decrypt'
   }
 
   try {
-    const archive = await createUmReleaseArchive({
+    const archive = await createUmCryptoPackage({
       fixtureDir,
       archivePath,
-      script: `#!/usr/bin/env node
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { basename, extname, join } from 'node:path'
-const args = process.argv.slice(2)
-const outputDir = args[args.indexOf('--output') + 1]
-const input = args.at(-1)
-const data = readFileSync(input)
-if (!data.subarray(-4).equals(Buffer.from('QTag'))) {
-  process.stderr.write('missing QTag footer')
-  process.exit(2)
-}
-const payloadLen = data.readUInt32BE(data.length - 8)
-const payload = data.subarray(data.length - 8 - payloadLen, data.length - 8).toString('utf8')
-if (payload !== 'lx-ekey,0,2') {
-  process.stderr.write('unexpected QTag payload: ' + payload)
-  process.exit(2)
-}
-mkdirSync(outputDir, { recursive: true })
-const name = basename(input, extname(input))
-writeFileSync(join(outputDir, name + '.mp3'), Buffer.from('ekey decrypted audio'))
-`,
+      loader: fakeUmCryptoLoader({ requiredEkey: 'lx-ekey', replacementText: 'decrypted audio bytes' }),
     })
     fs.rmSync(toolDir, { recursive: true, force: true })
-    const hash = createHash('sha256').update(archive).digest('hex')
-    const assetName = umAssetName(tag)
+    const integrity = `sha512-${createHash('sha512').update(archive).digest('base64')}`
+    const tarballUrl = `https://release.example/crypto-${version}.tgz`
 
     const track = ensureTrack(musicInfo)
     globalThis.fetch = (async (url: string | URL | Request) => {
       const requestUrl = String(url)
-      if (requestUrl.includes('/api/v1/repos/um/cli/releases/latest')) {
+      if (requestUrl.includes('/api/packages/um/npm/%40unlock-music%2Fcrypto')) {
         return Response.json({
-          tag_name: tag,
-          assets: [
-            { name: 'sha256sum.txt', browser_download_url: 'https://release.example/sha256sum.txt' },
-            { name: assetName, browser_download_url: `https://release.example/${assetName}` },
-          ],
+          'dist-tags': { latest: version },
+          versions: { [version]: { dist: { integrity, tarball: tarballUrl } } },
         })
       }
-      if (requestUrl.endsWith('/sha256sum.txt')) return new Response(`${hash}  ${assetName}\n`)
-      if (requestUrl.endsWith(`/${assetName}`)) return new Response(new Uint8Array(archive))
+      if (requestUrl === tarballUrl) return new Response(new Uint8Array(archive))
       return new Response('encrypted audio bytes', {
         headers: { 'content-type': 'application/octet-stream' },
       })
     }) as typeof fetch
 
+    await refreshUmCrypto()
     const { response, completion } = await createUpstreamTeeResponse(
       `https://ws.stream.qqmusic.qq.com/${songmid}.mgg?vkey=test`,
       track,
@@ -255,7 +222,7 @@ writeFileSync(join(outputDir, name + '.mp3'), Buffer.from('ekey decrypted audio'
       'lx-ekey',
     )
     assert.equal(response.status, 200)
-    assert.equal(await response.text(), 'ekey decrypted audio')
+    assert.equal(await response.text(), 'decrypted audio bytes')
     await completion
 
     const file = getPlayableTrackFile('tx', songmid, '320k')
@@ -268,115 +235,42 @@ writeFileSync(join(outputDir, name + '.mp3'), Buffer.from('ekey decrypted audio'
   }
 })
 
-test('upstream stream classifies encrypted QQ audio that needs local QQ Music keys', async () => {
+test('UM crypto resolver downloads and reuses latest package asset', async () => {
   const originalFetch = globalThis.fetch
-  const songmid = `QMC_KEY_REQUIRED_${Date.now()}`
-  const tag = `vkey-required-${Date.now()}`
-  const toolDir = `${appConfig.dataDir}/tools/um/${tag}`
-  const archivePath = `/tmp/x-music-um-${tag}.tar.gz`
-  const fixtureDir = `/tmp/x-music-um-fixture-${tag}`
-  const musicInfo: MusicInfo = {
-    source: 'tx',
-    songmid,
-    name: 'QMC Key Required Test',
-    singer: 'Tester',
-  }
+  const version = `99.0.${Date.now()}`
+  const toolDir = path.join(appConfig.toolsDir, 'um-crypto', version)
+  const archivePath = `/tmp/x-music-um-crypto-${version}.tgz`
+  const fixtureDir = `/tmp/x-music-um-crypto-fixture-${version}`
 
   try {
-    const archive = await createUmReleaseArchive({
+    fs.rmSync(toolDir, { recursive: true, force: true })
+    const archive = await createUmCryptoPackage({
       fixtureDir,
       archivePath,
-      script: `#!/usr/bin/env node
-process.stderr.write('qmc: detect file type failed\\nno any decoder can resolve the file')
-process.exit(2)
-`,
+      loader: fakeUmCryptoLoader(),
     })
-    fs.rmSync(toolDir, { recursive: true, force: true })
-    const hash = createHash('sha256').update(archive).digest('hex')
-    const assetName = umAssetName(tag)
-
-    const track = ensureTrack(musicInfo)
-    globalThis.fetch = (async (url: string | URL | Request) => {
-      const requestUrl = String(url)
-      if (requestUrl.includes('/api/v1/repos/um/cli/releases/latest')) {
-        return Response.json({
-          tag_name: tag,
-          assets: [
-            { name: 'sha256sum.txt', browser_download_url: 'https://release.example/sha256sum.txt' },
-            { name: assetName, browser_download_url: `https://release.example/${assetName}` },
-          ],
-        })
-      }
-      if (requestUrl.endsWith('/sha256sum.txt')) return new Response(`${hash}  ${assetName}\n`)
-      if (requestUrl.endsWith(`/${assetName}`)) return new Response(new Uint8Array(archive))
-      return new Response('encrypted audio bytes', {
-        headers: { 'content-type': 'application/octet-stream' },
-      })
-    }) as typeof fetch
-
-    await assert.rejects(
-      createUpstreamTeeResponse(
-        `https://ws.stream.qqmusic.qq.com/${songmid}.mgg?vkey=test`,
-        track,
-        '320k',
-        new Request('http://local/play'),
-      ),
-      EncryptedQQAudioRequiresKeyError,
-    )
-  } finally {
-    fs.rmSync(toolDir, { recursive: true, force: true })
-    fs.rmSync(fixtureDir, { recursive: true, force: true })
-    fs.rmSync(archivePath, { force: true })
-    globalThis.fetch = originalFetch
-  }
-})
-
-test('UM CLI resolver downloads and reuses latest release asset', async () => {
-  const originalFetch = globalThis.fetch
-  const tag = `vtest-${Date.now()}`
-  const toolDir = `${appConfig.dataDir}/tools/um/${tag}`
-  const archivePath = `/tmp/x-music-um-${tag}.tar.gz`
-  const fixtureDir = `/tmp/x-music-um-fixture-${tag}`
-
-  try {
-    fs.rmSync(toolDir, { recursive: true, force: true })
-    fs.rmSync(fixtureDir, { recursive: true, force: true })
-    fs.mkdirSync(fixtureDir, { recursive: true })
-    fs.writeFileSync(`${fixtureDir}/um`, '#!/bin/sh\nexit 0\n')
-    fs.chmodSync(`${fixtureDir}/um`, 0o755)
-    await new Promise<void>((resolve, reject) => {
-      const child = spawn('tar', ['-czf', archivePath, '-C', fixtureDir, 'um'])
-      child.on('error', reject)
-      child.on('exit', (code: number) => code === 0 ? resolve() : reject(new Error(`tar exited ${code}`)))
-    })
-    const archive = fs.readFileSync(archivePath)
-    const hash = createHash('sha256').update(archive).digest('hex')
-    const assetName = `um-${process.platform === 'darwin' ? 'darwin' : 'linux'}-${process.arch === 'x64' ? 'amd64' : 'arm64'}-${tag}.tar.gz`
+    const integrity = `sha512-${createHash('sha512').update(archive).digest('base64')}`
+    const tarballUrl = `https://release.example/crypto-${version}.tgz`
     let archiveDownloads = 0
 
     globalThis.fetch = (async (url: string | URL | Request) => {
       const requestUrl = String(url)
-      if (requestUrl.includes('/api/v1/repos/um/cli/releases/latest')) {
+      if (requestUrl.includes('/api/packages/um/npm/%40unlock-music%2Fcrypto')) {
         return Response.json({
-          tag_name: tag,
-          assets: [
-            { name: 'sha256sum.txt', browser_download_url: 'https://release.example/sha256sum.txt' },
-            { name: assetName, browser_download_url: `https://release.example/${assetName}` },
-          ],
+          'dist-tags': { latest: version },
+          versions: { [version]: { dist: { integrity, tarball: tarballUrl } } },
         })
       }
-      if (requestUrl.endsWith('/sha256sum.txt')) {
-        return new Response(`${hash}  ${assetName}\n`)
-      }
-      if (requestUrl.endsWith(`/${assetName}`)) {
+      if (requestUrl === tarballUrl) {
         archiveDownloads += 1
         return new Response(new Uint8Array(archive))
       }
       return new Response('not found', { status: 404 })
     }) as typeof fetch
 
-    const first = await resolveUmCliPath()
-    const second = await resolveUmCliPath()
+    await refreshUmCrypto()
+    const first = await resolveUmCryptoLoaderPath()
+    const second = await resolveUmCryptoLoaderPath()
     assert.equal(first, second)
     assert.equal(fs.existsSync(first), true)
     assert.equal(archiveDownloads, 1)
@@ -577,23 +471,49 @@ test('resource response streams first miss while caching for later hits', async 
   }
 })
 
-function umAssetName(tag: string): string {
-  return `um-${process.platform === 'darwin' ? 'darwin' : 'linux'}-${process.arch === 'x64' ? 'amd64' : 'arm64'}-${tag}.tar.gz`
-}
-
-async function createUmReleaseArchive(input: {
+async function createUmCryptoPackage(input: {
   fixtureDir: string
   archivePath: string
-  script: string
+  loader: string
 }): Promise<Buffer> {
   fs.rmSync(input.fixtureDir, { recursive: true, force: true })
-  fs.mkdirSync(input.fixtureDir, { recursive: true })
-  fs.writeFileSync(`${input.fixtureDir}/um`, input.script)
-  fs.chmodSync(`${input.fixtureDir}/um`, 0o755)
+  const distDir = path.join(input.fixtureDir, 'package', 'dist')
+  fs.mkdirSync(distDir, { recursive: true })
+  fs.writeFileSync(path.join(input.fixtureDir, 'package', 'package.json'), JSON.stringify({
+    name: '@unlock-music/crypto',
+    version: '0.0.0',
+    main: 'dist/loader-inline.js',
+  }))
+  fs.writeFileSync(path.join(distDir, 'loader-inline.js'), input.loader)
   await new Promise<void>((resolve, reject) => {
-    const child = spawn('tar', ['-czf', input.archivePath, '-C', input.fixtureDir, 'um'])
+    const child = spawn('tar', ['-czf', input.archivePath, '-C', input.fixtureDir, 'package'])
     child.on('error', reject)
     child.on('exit', (code: number) => code === 0 ? resolve() : reject(new Error(`tar exited ${code}`)))
   })
   return fs.readFileSync(input.archivePath)
+}
+
+function fakeUmCryptoLoader(input: { requiredEkey?: string; replacementText?: string } = {}): string {
+  const replacementText = input.replacementText ?? 'decrypted audio bytes'
+  return `
+'use strict';
+exports.ready = Promise.resolve(true);
+exports.QMC2 = class QMC2 {
+  constructor(ekey) {
+    if (${JSON.stringify(input.requiredEkey ?? '')} && ekey !== ${JSON.stringify(input.requiredEkey ?? '')}) {
+      throw new Error('unexpected ekey: ' + ekey);
+    }
+    this.replacement = ${JSON.stringify(replacementText)};
+    this.used = false;
+  }
+  decrypt(buffer, offset) {
+    if (!this.replacement || this.used || offset !== 0) return;
+    this.used = true;
+    Buffer.from(this.replacement).copy(buffer, 0, 0, Math.min(buffer.length, Buffer.byteLength(this.replacement)));
+  }
+};
+exports.detectAudioType = function detectAudioType(buffer) {
+  return { audioType: 'mp3', needMore: false };
+};
+`
 }

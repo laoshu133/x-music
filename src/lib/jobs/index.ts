@@ -2,7 +2,7 @@ import { db } from '@/lib/db'
 
 export type JobStatus = 'queued' | 'running' | 'completed' | 'failed'
 
-export type JobType = 'tag_track_file' | 'sync_emby_track' | 'cleanup_resource_cache' | 'refresh_um_cli'
+export type JobType = 'tag_track_file' | 'sync_emby_track' | 'cleanup_resource_cache' | 'refresh_um_crypto'
 
 export interface JobRow<TPayload = unknown> {
   id: number

@@ -8,7 +8,7 @@ import { db } from '@/lib/db'
 import { appConfig } from '@/lib/config'
 import { ensureTrack, upsertTrackFileStatus } from '@/lib/cache/store'
 import { processOneEmbySyncJob } from '@/lib/emby/sync-worker'
-import { enqueueRefreshUmCliJob } from '@/lib/cache/um-cli-job'
+import { enqueueRefreshUmCryptoJob } from '@/lib/cache/um-crypto-job'
 import { claimNextJob, clearJobsByStatus, clearStaleRunningJobs, completeJob, createJob, failJob, getJob, requeueJob } from '@/lib/jobs'
 import { getJobSummary, listJobs } from '@/lib/jobs/status'
 import { processWorkerTick } from '@/worker/index'
@@ -211,11 +211,11 @@ test('worker tick gives emby sync a turn when tag processing did work', async ()
   assert.deepEqual(calls, ['tag', 'emby', 'cleanup'])
 })
 
-test('worker tick processes queued UM CLI refresh jobs', async () => {
+test('worker tick processes queued UM crypto refresh jobs', async () => {
   const calls: string[] = []
   const didWork = await processWorkerTick({
     scheduleCleanupResourceCacheJob: false,
-    async processRefreshUmCliJob() {
+    async processRefreshUmCryptoJob() {
       calls.push('um')
       return true
     },
@@ -237,50 +237,47 @@ test('worker tick processes queued UM CLI refresh jobs', async () => {
   assert.deepEqual(calls, ['um', 'tag', 'emby', 'cleanup'])
 })
 
-test('UM CLI refresh job downloads latest release once and reuses local version', async () => {
+test('UM crypto refresh job downloads latest package once and reuses local version', async () => {
   const originalFetch = globalThis.fetch
-  const tag = `vjob-${Date.now()}`
-  const toolDir = path.join(appConfig.toolsDir, 'um', tag)
-  const archivePath = `/tmp/x-music-um-job-${tag}.tar.gz`
-  const fixtureDir = `/tmp/x-music-um-job-fixture-${tag}`
+  const version = `99.0.${Date.now()}`
+  const toolDir = path.join(appConfig.toolsDir, 'um-crypto', version)
+  const archivePath = `/tmp/x-music-um-crypto-job-${version}.tgz`
+  const fixtureDir = `/tmp/x-music-um-crypto-job-fixture-${version}`
 
   try {
-    db.prepare("DELETE FROM jobs WHERE type = 'refresh_um_cli'").run()
+    db.prepare("DELETE FROM jobs WHERE type = 'refresh_um_crypto'").run()
     rmSync(toolDir, { recursive: true, force: true })
     rmSync(fixtureDir, { recursive: true, force: true })
-    mkdirSync(fixtureDir, { recursive: true })
-    writeFileSync(path.join(fixtureDir, 'um'), '#!/bin/sh\nexit 0\n')
-    await new Promise<void>((resolve, reject) => {
-      const child = spawn('tar', ['-czf', archivePath, '-C', fixtureDir, 'um'])
-      child.on('error', reject)
-      child.on('exit', code => code === 0 ? resolve() : reject(new Error(`tar exited ${code}`)))
+    const archive = await createUmCryptoPackage({
+      fixtureDir,
+      archivePath,
+      loader: `
+'use strict';
+exports.ready = Promise.resolve(true);
+exports.QMC2 = class QMC2 { decrypt() {} };
+exports.detectAudioType = () => ({ audioType: 'mp3', needMore: false });
+`,
     })
-
-    const archive = readFileSync(archivePath)
-    const hash = createHash('sha256').update(archive).digest('hex')
-    const assetName = `um-${process.platform === 'darwin' ? 'darwin' : 'linux'}-${process.arch === 'x64' ? 'amd64' : 'arm64'}-${tag}.tar.gz`
+    const integrity = `sha512-${createHash('sha512').update(archive).digest('base64')}`
+    const tarballUrl = `https://release.example/crypto-${version}.tgz`
     let archiveDownloads = 0
 
     globalThis.fetch = (async (url: string | URL | Request) => {
       const requestUrl = String(url)
-      if (requestUrl.includes('/api/v1/repos/um/cli/releases/latest')) {
+      if (requestUrl.includes('/api/packages/um/npm/%40unlock-music%2Fcrypto')) {
         return Response.json({
-          tag_name: tag,
-          assets: [
-            { name: 'sha256sum.txt', browser_download_url: 'https://release.example/sha256sum.txt' },
-            { name: assetName, browser_download_url: `https://release.example/${assetName}` },
-          ],
+          'dist-tags': { latest: version },
+          versions: { [version]: { dist: { integrity, tarball: tarballUrl } } },
         })
       }
-      if (requestUrl.endsWith('/sha256sum.txt')) return new Response(`${hash}  ${assetName}\n`)
-      if (requestUrl.endsWith(`/${assetName}`)) {
+      if (requestUrl === tarballUrl) {
         archiveDownloads += 1
         return new Response(new Uint8Array(archive))
       }
       return new Response('not found', { status: 404 })
     }) as typeof fetch
 
-    enqueueRefreshUmCliJob({ reason: 'startup' })
+    enqueueRefreshUmCryptoJob({ reason: 'startup' })
     assert.equal(await processWorkerTick({
       scheduleCleanupResourceCacheJob: false,
       processTagJob: async () => false,
@@ -289,7 +286,7 @@ test('UM CLI refresh job downloads latest release once and reuses local version'
     }), true)
     assert.equal(archiveDownloads, 1)
 
-    enqueueRefreshUmCliJob({ reason: 'startup' })
+    enqueueRefreshUmCryptoJob({ reason: 'startup' })
     assert.equal(await processWorkerTick({
       scheduleCleanupResourceCacheJob: false,
       processTagJob: async () => false,
@@ -301,10 +298,32 @@ test('UM CLI refresh job downloads latest release once and reuses local version'
     rmSync(toolDir, { recursive: true, force: true })
     rmSync(fixtureDir, { recursive: true, force: true })
     rmSync(archivePath, { force: true })
-    db.prepare("DELETE FROM jobs WHERE type = 'refresh_um_cli'").run()
+    db.prepare("DELETE FROM jobs WHERE type = 'refresh_um_crypto'").run()
     globalThis.fetch = originalFetch
   }
 })
+
+async function createUmCryptoPackage(input: {
+  fixtureDir: string
+  archivePath: string
+  loader: string
+}): Promise<Buffer> {
+  rmSync(input.fixtureDir, { recursive: true, force: true })
+  const distDir = path.join(input.fixtureDir, 'package', 'dist')
+  mkdirSync(distDir, { recursive: true })
+  writeFileSync(path.join(input.fixtureDir, 'package', 'package.json'), JSON.stringify({
+    name: '@unlock-music/crypto',
+    version: '0.0.0',
+    main: 'dist/loader-inline.js',
+  }))
+  writeFileSync(path.join(distDir, 'loader-inline.js'), input.loader)
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn('tar', ['-czf', input.archivePath, '-C', input.fixtureDir, 'package'])
+    child.on('error', reject)
+    child.on('exit', code => code === 0 ? resolve() : reject(new Error(`tar exited ${code}`)))
+  })
+  return readFileSync(input.archivePath)
+}
 
 test('emby sync job does not complete when scan cannot find item', async () => {
   const originalFetch = globalThis.fetch
