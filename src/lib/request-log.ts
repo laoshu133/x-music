@@ -16,6 +16,7 @@ export function markRequestSource(response: Response, source: RequestSource): Re
 
 export function logIncomingRequest(request: Request, details: Record<string, unknown> = {}): void {
   if (!requestLoggingEnabled()) return
+  if (!requestLoggingModeIncludesSuccess()) return
   writeRequestLog({
     event: 'http_request_start',
     method: request.method,
@@ -34,16 +35,24 @@ export function logCompletedRequest(
   details: Record<string, unknown> = {},
 ): Response {
   if (!requestLoggingEnabled()) return response
+  if (isSuccessfulOrRedirect(response.status) && !requestLoggingModeIncludesSuccess()) return response
+  const durationMs = Math.max(0, Date.now() - startedAt)
   writeRequestLog({
-    event: 'http_request_complete',
+    event: 'http_request',
     method: request.method,
     path: safeRequestPath(request.url),
-    status: response.status,
-    durationMs: Math.max(0, Date.now() - startedAt),
-    source: response.headers.get('x-x-music-source') ?? undefined,
     ip: requestIp(request),
     userAgent: trimHeader(request.headers.get('user-agent')),
     range: request.headers.has('range') ? request.headers.get('range') : undefined,
+    ...details,
+  })
+  writeRequestLog({
+    event: 'http_response',
+    method: request.method,
+    path: safeRequestPath(request.url),
+    status: response.status,
+    durationMs,
+    source: response.headers.get('x-x-music-source') ?? undefined,
     contentLength: response.headers.get('content-length') ?? undefined,
     contentRange: response.headers.get('content-range') ?? undefined,
     serverTiming: response.headers.get('server-timing') ?? undefined,
@@ -59,13 +68,21 @@ export function logFailedRequest(
   details: Record<string, unknown> = {},
 ): void {
   if (!requestLoggingEnabled()) return
+  const durationMs = Math.max(0, Date.now() - startedAt)
   writeRequestLog({
-    event: 'http_request_error',
+    event: 'http_request',
     method: request.method,
     path: safeRequestPath(request.url),
-    durationMs: Math.max(0, Date.now() - startedAt),
     ip: requestIp(request),
     userAgent: trimHeader(request.headers.get('user-agent')),
+    ...details,
+  }, 'error')
+  writeRequestLog({
+    event: 'http_response',
+    method: request.method,
+    path: safeRequestPath(request.url),
+    status: 500,
+    durationMs,
     error: error instanceof Error ? error.message : String(error),
     ...details,
   }, 'error')
@@ -75,6 +92,14 @@ export function requestLoggingEnabled(): boolean {
   const setting = process.env.X_MUSIC_REQUEST_LOGS?.trim().toLowerCase()
   if (setting && setting !== 'auto') return ['1', 'true', 'on', 'yes'].includes(setting)
   return process.env.NODE_ENV === 'production'
+}
+
+function requestLoggingModeIncludesSuccess(): boolean {
+  return ['all', 'verbose'].includes(process.env.X_MUSIC_REQUEST_LOG_MODE?.trim().toLowerCase() ?? '')
+}
+
+function isSuccessfulOrRedirect(status: number): boolean {
+  return status >= 200 && status < 400
 }
 
 export function safeRequestPath(rawUrl: string): string {

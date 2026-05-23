@@ -19,7 +19,7 @@ import { updateAccountEmbyPassword } from '@/lib/db/accounts'
 import { ensureTrack, insertPlayEvent } from '@/lib/cache/store'
 import type { MusicInfo } from '@/lib/types'
 import { syncMappedEmbyFavoriteBestEffort } from '@/lib/emby/favorites'
-import { logCompletedRequest, requestLoggingEnabled, safeRequestPath } from '@/lib/request-log'
+import { logCompletedRequest, logFailedRequest, requestLoggingEnabled, safeRequestPath } from '@/lib/request-log'
 
 function markAccountUpstreamBound(qqUin: string, embyUserId = `emby-user-${qqUin}`, embyAccessToken?: string): void {
   db.prepare('UPDATE accounts SET emby_user_id = ?, emby_access_token = COALESCE(?, emby_access_token) WHERE qq_uin = ?').run(embyUserId, embyAccessToken ?? null, qqUin)
@@ -102,11 +102,14 @@ test('account summaries include login ip and per-account playback and favorite c
   }
 })
 
-test('request logging defaults to production only and redacts token-like query values', () => {
+test('request logging defaults to production only and logs only non-success responses', () => {
   const previous = process.env.X_MUSIC_REQUEST_LOGS
+  const previousMode = process.env.X_MUSIC_REQUEST_LOG_MODE
   const previousNodeEnv = process.env.NODE_ENV
   const originalInfo = console.info
+  const originalError = console.error
   const messages: string[] = []
+  const errorMessages: string[] = []
   try {
     delete process.env.X_MUSIC_REQUEST_LOGS
     assert.equal(requestLoggingEnabled(), false)
@@ -124,6 +127,9 @@ test('request logging defaults to production only and redacts token-like query v
     console.info = (message?: unknown) => {
       messages.push(String(message))
     }
+    console.error = (message?: unknown) => {
+      errorMessages.push(String(message))
+    }
     const request = new Request('http://local/Audio/item/stream?api_key=secret', {
       headers: {
         'user-agent': 'test-agent',
@@ -139,20 +145,53 @@ test('request logging defaults to production only and redacts token-like query v
       },
     }), Date.now() - 5, { route: '/Audio' })
 
-    assert.equal(messages.length, 1)
-    const payload = JSON.parse(messages[0]!) as Record<string, unknown>
-    assert.equal(payload.event, 'http_request_complete')
-    assert.equal(payload.status, 206)
-    assert.equal(payload.path, '/Audio/item/stream?api_key=%5Bredacted%5D')
-    assert.equal(payload.source, 'local')
-    assert.equal(payload.ip, '203.0.113.10')
-    assert.equal(payload.range, 'bytes=0-')
+    assert.equal(messages.length, 0)
+
+    logCompletedRequest(request, new Response(null, {
+      status: 404,
+      headers: {
+        'x-x-music-source': 'upstream',
+        'content-length': '0',
+        'server-timing': 'emby-upstream;dur=12',
+      },
+    }), Date.now() - 5, { route: '/Audio' })
+
+    assert.equal(messages.length, 2)
+    const requestPayload = JSON.parse(messages[0]!) as Record<string, unknown>
+    assert.equal(requestPayload.event, 'http_request')
+    assert.equal(requestPayload.status, undefined)
+    assert.equal(requestPayload.path, '/Audio/item/stream?api_key=%5Bredacted%5D')
+    assert.equal(requestPayload.ip, '203.0.113.10')
+    assert.equal(requestPayload.range, 'bytes=0-')
+
+    const responsePayload = JSON.parse(messages[1]!) as Record<string, unknown>
+    assert.equal(responsePayload.event, 'http_response')
+    assert.equal(responsePayload.status, 404)
+    assert.equal(responsePayload.path, '/Audio/item/stream?api_key=%5Bredacted%5D')
+    assert.equal(responsePayload.source, 'upstream')
+    assert.equal(responsePayload.serverTiming, 'emby-upstream;dur=12')
+
+    logFailedRequest(request, Date.now() - 5, new Error('boom'), { route: '/Audio' })
+    assert.equal(errorMessages.length, 2)
+    const failedRequestPayload = JSON.parse(errorMessages[0]!) as Record<string, unknown>
+    assert.equal(failedRequestPayload.event, 'http_request')
+    assert.equal(failedRequestPayload.path, '/Audio/item/stream?api_key=%5Bredacted%5D')
+    const failedResponsePayload = JSON.parse(errorMessages[1]!) as Record<string, unknown>
+    assert.equal(failedResponsePayload.event, 'http_response')
+    assert.equal(failedResponsePayload.status, 500)
+    assert.equal(failedResponsePayload.error, 'boom')
   } finally {
     console.info = originalInfo
+    console.error = originalError
     if (previous === undefined) {
       delete process.env.X_MUSIC_REQUEST_LOGS
     } else {
       process.env.X_MUSIC_REQUEST_LOGS = previous
+    }
+    if (previousMode === undefined) {
+      delete process.env.X_MUSIC_REQUEST_LOG_MODE
+    } else {
+      process.env.X_MUSIC_REQUEST_LOG_MODE = previousMode
     }
     Object.defineProperty(process.env, 'NODE_ENV', { value: previousNodeEnv, configurable: true, enumerable: true, writable: true })
   }

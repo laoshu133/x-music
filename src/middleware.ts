@@ -1,8 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server'
-import { logIncomingRequest } from '@/lib/request-log'
 
 export function middleware(request: NextRequest): NextResponse {
-  logIncomingRequest(request)
   return NextResponse.next()
 }
 
