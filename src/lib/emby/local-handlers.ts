@@ -143,6 +143,11 @@ export async function handleLocalEmbyRequest(request: Request, embyPath: string)
     return handleImageRequest(request, embyPath)
   }
 
+  if ((request.method === 'GET' || request.method === 'HEAD') && isSubtitleStreamRequest(embyPath)) {
+    if (!isAuthorizedLocalRequest(request)) return unauthorizedResponse()
+    return handleSubtitleStreamRequest(request, embyPath)
+  }
+
   if (request.method === 'GET' && isItemRequest(embyPath)) {
     if (!isAuthorizedLocalRequest(request)) return unauthorizedResponse()
     return handleItemRequest(embyPath)
@@ -171,11 +176,6 @@ export async function handleLocalEmbyRequest(request: Request, embyPath: string)
   if (request.method === 'GET' && isPlaylistItemsRequest(embyPath)) {
     if (!isAuthorizedLocalRequest(request)) return unauthorizedResponse()
     return handlePlaylistItemsRequest(request, embyPath)
-  }
-
-  if ((request.method === 'GET' || request.method === 'HEAD') && isSubtitleStreamRequest(embyPath)) {
-    if (!isAuthorizedLocalRequest(request)) return unauthorizedResponse()
-    return handleSubtitleStreamRequest(request, embyPath)
   }
 
   if ((request.method === 'GET' || request.method === 'HEAD') && isAudioRequest(embyPath)) {
@@ -506,7 +506,7 @@ function isItemsRequest(path: string): boolean {
 }
 
 function isItemRequest(path: string): boolean {
-  return /^\/Users\/[^/]+\/Items\/[^/]+$/i.test(path) || /^\/Items\/[^/]+$/i.test(path)
+  return /^\/Users\/[^/]+\/Items\/[^/]+\/?$/i.test(path) || /^\/Items\/[^/]+\/?$/i.test(path)
 }
 
 function isFavoriteItemMutationRequest(path: string): boolean {
@@ -527,7 +527,9 @@ function isLyricsRequest(path: string): boolean {
 
 function isSubtitleStreamRequest(path: string): boolean {
   return /^\/Items\/[^/]+\/[^/]+\/Subtitles\/\d+(?:\/\d+)?\/Stream\.[^/]+$/i.test(path)
+    || /^\/Items\/[^/]+\/Subtitles\/\d+(?:\/\d+)?\/Stream\.[^/]+$/i.test(path)
     || /^\/Videos\/[^/]+\/[^/]+\/Subtitles\/\d+(?:\/\d+)?\/Stream\.[^/]+$/i.test(path)
+    || /^\/Videos\/[^/]+\/Subtitles\/\d+(?:\/\d+)?\/Stream\.[^/]+$/i.test(path)
 }
 
 function isPlaylistItemsRequest(path: string): boolean {
@@ -1899,13 +1901,13 @@ function songMediaSource(song: MusicInfo, runtimeTicks?: number) {
         IsForced: false,
         IsHearingImpaired: false,
         Type: 'Subtitle',
-        Index: 1,
+        Index: 2,
         IsExternal: true,
         IsTextSubtitleStream: true,
         SupportsExternalStream: true,
         Protocol: 'Http',
         DeliveryMethod: 'External',
-        DeliveryUrl: `/Items/${encodeURIComponent(id)}/${encodeURIComponent(id)}/Subtitles/1/Stream.lrc`,
+        DeliveryUrl: `/Items/${encodeURIComponent(id)}/Subtitles/2/Stream.lrc`,
         Language: 'zho',
         AttachmentSize: 0,
       },
@@ -2049,7 +2051,7 @@ function extractNestedItemId(path: string, action: string): string | undefined {
 }
 
 function extractSubtitleItemId(path: string): string | undefined {
-  const itemMatch = path.match(/^\/(?:Items|Videos)\/([^/]+)\/[^/]+\/Subtitles\/\d+(?:\/\d+)?\/Stream\.[^/]+$/i)
+  const itemMatch = path.match(/^\/(?:Items|Videos)\/([^/]+)(?:\/[^/]+)?\/Subtitles\/\d+(?:\/\d+)?\/Stream\.[^/]+$/i)
   return itemMatch?.[1] ? decodeURIComponent(itemMatch[1]) : undefined
 }
 

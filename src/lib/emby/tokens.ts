@@ -15,6 +15,8 @@ export function readEmbyAccessToken(request: Request): string | undefined {
     ?? tokenFromAuthorizationHeader(request.headers.get('Authorization'))
     ?? url.searchParams.get('api_key')
     ?? url.searchParams.get('ApiKey')
+    ?? url.searchParams.get('X-Emby-Token')
+    ?? url.searchParams.get('X-MediaBrowser-Token')
     ?? url.searchParams.get('Token')
     ?? url.searchParams.get('token')
     ?? undefined

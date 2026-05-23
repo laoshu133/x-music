@@ -3253,8 +3253,10 @@ test('local emby virtual song lyrics return timed lyric lines', async () => {
     assert.equal(playbackInfo.status, 200)
     const playbackPayload = await playbackInfo.json()
     assert.equal(playbackPayload.MediaSources[0].MediaStreams[1].Type, 'Subtitle')
+    assert.equal(playbackPayload.MediaSources[0].MediaStreams[1].Index, 2)
     assert.equal(playbackPayload.MediaSources[0].MediaStreams[1].DeliveryMethod, 'External')
     assert.match(playbackPayload.MediaSources[0].MediaStreams[1].DeliveryUrl, /Stream\.lrc$/)
+    assert.match(playbackPayload.MediaSources[0].MediaStreams[1].DeliveryUrl, /\/Subtitles\/2\/Stream\.lrc$/)
 
     const subtitle = await dispatchEmbyRequest(
       new Request(`http://local/Items/${encodeURIComponent(songId)}/${encodeURIComponent(songId)}/Subtitles/1/Stream.lrc`, {
@@ -3265,6 +3267,17 @@ test('local emby virtual song lyrics return timed lyric lines', async () => {
     assert.equal(subtitle.status, 200)
     assert.match(subtitle.headers.get('content-type') ?? '', /text\/plain/)
     assert.match(await subtitle.text(), /第一句/)
+
+    const amcfySubtitle = await dispatchEmbyRequest(
+      new Request(`http://local/Items/${encodeURIComponent(songId)}/Subtitles/2/Stream.js?id=${encodeURIComponent(songId)}&content-type=application%2Fjson&X-Emby-Client=Amcfy%20Music%20for%20iOS&X-Emby-Token=${authPayload.AccessToken}`, {
+        headers: { 'user-agent': 'Amcfy Music/1.0.20' },
+      }),
+      stripOptionalEmbyPrefix(`/Items/${encodeURIComponent(songId)}/Subtitles/2/Stream.js`),
+    )
+    assert.equal(amcfySubtitle.status, 200)
+    assert.match(amcfySubtitle.headers.get('content-type') ?? '', /application\/json/)
+    const amcfyPayload = await amcfySubtitle.json()
+    assert.equal(amcfyPayload.TrackEvents[0].Text, '第一句')
 
     const queryTokenSubtitle = await dispatchEmbyRequest(
       new Request(`http://local/Items/${encodeURIComponent(songId)}/${encodeURIComponent(songId)}/Subtitles/1/Stream.js?MediaBrowser%20Client=Musiver&Device=Mi-Mini-M2&Version=1.3.9&Token=${authPayload.AccessToken}`, {
