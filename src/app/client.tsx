@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ComponentType } from 'react'
 import {
   Activity,
@@ -505,7 +505,7 @@ export default function MusicClient() {
           <div className="brand-mark">
             <img src="/public/logo.svg" alt="" />
           </div>
-          <div>
+          <div className="brand-copy">
             <h1>XMusic</h1>
             <span>把音乐装进自己口袋</span>
           </div>
@@ -729,19 +729,43 @@ function LoginPage({
 
 function AccountSummary({ account, avatarUrl, onLogout }: { account: AccountState; avatarUrl?: string; onLogout: () => void }) {
   const displayName = account.nickname ?? '-'
+  const [menuOpen, setMenuOpen] = useState(false)
+  const panelRef = useRef<HTMLElement | null>(null)
+
+  useEffect(() => {
+    if (!menuOpen) return
+    const closeMenu = (event: MouseEvent) => {
+      if (panelRef.current?.contains(event.target as Node)) return
+      setMenuOpen(false)
+    }
+    window.addEventListener('mousedown', closeMenu)
+    return () => window.removeEventListener('mousedown', closeMenu)
+  }, [menuOpen])
+
   return (
-    <section className="account-panel">
+    <section className="account-panel" ref={panelRef}>
       <div className="section-head">
         <h3>帐号</h3>
         <button className="ghost-button" onClick={onLogout}><LogOut size={16} />登出</button>
       </div>
       <div className="account-summary">
-        {avatarUrl ? <img src={avatarUrl} alt="" /> : <div className="avatar-placeholder">{account.uin?.slice(-2) ?? 'QQ'}</div>}
+        <button className="account-avatar-button" onClick={() => setMenuOpen(value => !value)} aria-label="帐号菜单" aria-expanded={menuOpen}>
+          {avatarUrl ? <img src={avatarUrl} alt="" /> : <span className="avatar-placeholder">{account.uin?.slice(-2) ?? 'QQ'}</span>}
+        </button>
         <dl className="account-facts">
           <div><dt>昵称</dt><dd>{displayName}</dd></div>
           <div><dt>QQ</dt><dd>{account.uin ?? '-'}</dd></div>
         </dl>
       </div>
+      {menuOpen ? (
+        <div className="account-popover" role="menu">
+          <dl>
+            <div><dt>昵称</dt><dd>{displayName}</dd></div>
+            <div><dt>QQ</dt><dd>{account.uin ?? '-'}</dd></div>
+          </dl>
+          <button className="ghost-button" onClick={onLogout} role="menuitem"><LogOut size={16} />登出</button>
+        </div>
+      ) : null}
     </section>
   )
 }

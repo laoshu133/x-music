@@ -106,16 +106,21 @@ a {
 }
 
 .brand-lockup {
+  position: relative;
   display: grid;
-  grid-template-columns: 44px minmax(0, 1fr) auto;
+  grid-template-columns: 44px minmax(0, 1fr);
   gap: 11px;
   align-items: center;
   min-width: 0;
+  min-height: 59px;
   border-bottom: 1px solid var(--line);
   padding-bottom: 14px;
 }
 
 .collapse-button {
+  position: absolute;
+  top: 10px;
+  right: 0;
   width: 24px;
   height: 24px;
   display: inline-grid;
@@ -133,28 +138,20 @@ a {
 
 .sidebar-collapsed .brand-lockup {
   grid-template-columns: 44px;
+  justify-items: center;
 }
 
-.sidebar-collapsed .brand-lockup div:last-child,
+.sidebar-collapsed .brand-copy,
 .sidebar-collapsed .tabs button span,
 .sidebar-collapsed .account-panel h3,
 .sidebar-collapsed .account-facts,
-.sidebar-collapsed .account-panel .ghost-button span {
+.sidebar-collapsed .account-panel > .section-head {
   display: none;
 }
 
 .sidebar-collapsed .account-panel {
+  position: relative;
   justify-items: center;
-}
-
-.sidebar-collapsed .account-panel .section-head {
-  justify-content: center;
-}
-
-.sidebar-collapsed .account-panel .ghost-button {
-  width: 44px;
-  min-height: 36px;
-  padding: 0;
 }
 
 .sidebar-collapsed .account-summary {
@@ -162,7 +159,7 @@ a {
 }
 
 .sidebar-collapsed .collapse-button {
-  justify-self: center;
+  right: 10px;
 }
 
 .sidebar-collapsed .tabs button {
@@ -267,6 +264,7 @@ a {
 }
 
 .account-panel {
+  position: relative;
   display: grid;
   gap: 10px;
   min-width: 0;
@@ -333,7 +331,18 @@ a {
   align-items: center;
 }
 
-.account-summary img,
+.account-avatar-button {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  padding: 0;
+}
+
+.account-avatar-button img,
 .avatar-placeholder {
   width: 44px;
   height: 44px;
@@ -341,7 +350,7 @@ a {
   border-radius: 8px;
 }
 
-.account-summary img {
+.account-avatar-button img {
   object-fit: cover;
 }
 
@@ -370,6 +379,54 @@ a {
   color: var(--ink);
   min-width: 0;
   overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-popover {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  z-index: 10;
+  width: 220px;
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 12px;
+  box-shadow: var(--shadow);
+}
+
+.sidebar-collapsed .account-popover {
+  left: calc(100% + 10px);
+  bottom: 0;
+}
+
+.account-popover dl {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.account-popover dl div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.account-popover dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.account-popover dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1435,14 +1492,22 @@ button.user-row.active {
   }
 
   .sidebar-collapsed .brand-lockup {
-    grid-template-columns: 44px minmax(0, 1fr) auto;
+    grid-template-columns: 44px minmax(0, 1fr);
+    justify-items: stretch;
   }
 
-  .sidebar-collapsed .brand-lockup div:last-child,
+  .sidebar-collapsed .collapse-button {
+    right: 0;
+  }
+
+  .sidebar-collapsed .brand-copy,
   .sidebar-collapsed .account-panel h3,
-  .sidebar-collapsed .account-facts,
-  .sidebar-collapsed .account-panel .ghost-button span {
+  .sidebar-collapsed .account-facts {
     display: grid;
+  }
+
+  .sidebar-collapsed .account-panel > .section-head {
+    display: flex;
   }
 
   .sidebar-collapsed .tabs button span {
@@ -1453,18 +1518,13 @@ button.user-row.active {
     justify-items: stretch;
   }
 
-  .sidebar-collapsed .account-panel .section-head {
-    justify-content: space-between;
-  }
-
-  .sidebar-collapsed .account-panel .ghost-button {
-    width: auto;
-    min-height: 40px;
-    padding: 0 12px;
-  }
-
   .sidebar-collapsed .account-summary {
     grid-template-columns: 44px minmax(0, 1fr);
+  }
+
+  .sidebar-collapsed .account-popover {
+    left: 0;
+    bottom: calc(100% + 8px);
   }
 
   .sidebar-collapsed .tabs button {
