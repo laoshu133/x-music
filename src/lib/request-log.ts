@@ -46,6 +46,7 @@ export function logCompletedRequest(
     range: request.headers.has('range') ? request.headers.get('range') : undefined,
     contentLength: response.headers.get('content-length') ?? undefined,
     contentRange: response.headers.get('content-range') ?? undefined,
+    serverTiming: response.headers.get('server-timing') ?? undefined,
     ...details,
   })
   return response

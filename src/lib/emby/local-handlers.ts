@@ -53,6 +53,7 @@ const QQ_SEARCH_SONG_PAGE_SIZE = 50
 const QQ_PLAYLIST_PAGE_SIZE = 50
 const QQ_FAVORITES_MAX_CONCURRENCY = 4
 const QQ_FAVORITES_DEFAULT_TOTAL = 999
+const MAX_EMBY_SEARCH_VIRTUAL_ITEMS = 50
 const VIRTUAL_RECOMMENDATION_PLAYLIST_PLAY_COUNT = '999999999'
 const QQ_FAVORITE_ORDER_BASE_MS = Date.UTC(2099, 0, 1)
 const FAVORITE_SORT_TIME = Symbol('favoriteSortTime')
@@ -68,6 +69,11 @@ type WindowResult<T> = {
   totalReliable?: boolean
   rawCount?: number
   complete?: boolean
+}
+
+type TimedResult<T> = {
+  result: T
+  durationMs: number
 }
 
 const favoriteTotalCache = new Map<string, number>()
@@ -615,14 +621,19 @@ async function handleItemsRequest(request: Request, embyPath: string): Promise<R
 
   if (searchTerm?.trim()) {
     const query = searchTerm.trim()
-    const upstreamPromise = tryReadItemsResponse(request, embyPath)
+    const searchPage = cappedPageParams(page, MAX_EMBY_SEARCH_VIRTUAL_ITEMS)
+    const virtualSearchCount = Math.min(desiredFetchCount(searchPage), MAX_EMBY_SEARCH_VIRTUAL_ITEMS)
+    const upstreamPromise = timedResult(tryReadItemsResponse(request, embyPath, searchPage))
     const songsPromise = shouldIncludeType(requestedTypes, 'audio')
-      ? searchQQMusicWindow(query, desiredCount)
-      : Promise.resolve<WindowResult<MusicInfo> | undefined>(undefined)
+      ? timedResult(searchQQMusicWindow(query, virtualSearchCount))
+      : Promise.resolve<TimedResult<WindowResult<MusicInfo>> | undefined>(undefined)
     const playlistsPromise = shouldIncludeType(requestedTypes, 'playlist')
-      ? searchQQPlaylistsWindow(query, desiredCount)
-      : Promise.resolve<WindowResult<QQPlaylistInfo> | undefined>(undefined)
-    const [upstream, songs, playlists] = await Promise.all([upstreamPromise, songsPromise, playlistsPromise])
+      ? timedResult(searchQQPlaylistsWindow(query, virtualSearchCount))
+      : Promise.resolve<TimedResult<WindowResult<QQPlaylistInfo>> | undefined>(undefined)
+    const [upstreamSearch, songSearch, playlistSearch] = await Promise.all([upstreamPromise, songsPromise, playlistsPromise])
+    const upstream = upstreamSearch.result
+    const songs = songSearch?.result
+    const playlists = playlistSearch?.result
     const upstreamItems = filterItemsByTypes(upstream?.Items ?? [], requestedTypes)
     const virtualItems: any[] = []
 
@@ -641,7 +652,13 @@ async function handleItemsRequest(request: Request, embyPath: string): Promise<R
         .map(playlistToEmbyItem))
     }
 
-    return upstreamFirstPagedResponse(upstreamItems, filteredUpstreamTotal(upstream, upstreamItems), virtualItems, virtualItems.length, page)
+    const response = upstreamFirstPagedResponse(upstreamItems, filteredUpstreamTotal(upstream, upstreamItems), virtualItems, virtualItems.length, searchPage)
+    response.headers.set('Server-Timing', [
+      `emby-upstream;dur=${Math.max(0, upstreamSearch.durationMs)}`,
+      songSearch ? `qq-search;dur=${Math.max(0, songSearch.durationMs)}` : undefined,
+      playlistSearch ? `qq-playlists;dur=${Math.max(0, playlistSearch.durationMs)}` : undefined,
+    ].filter(Boolean).join(', '))
+    return response
   }
 
   if (filters.has('isplayed') && shouldIncludeType(requestedTypes, 'audio')) {
@@ -2129,6 +2146,13 @@ function finiteFetchCount(limit: number, fallback = MAX_EMBY_LIST_LIMIT): number
   return Number.isFinite(limit) ? limit : fallback
 }
 
+function cappedPageParams(page: PageParams, maxLimit: number): PageParams {
+  return {
+    startIndex: page.startIndex,
+    limit: Math.min(page.limit ?? maxLimit, maxLimit),
+  }
+}
+
 function reachedFetchLimit(count: number, limit: number): boolean {
   return Number.isFinite(limit) && count >= limit
 }
@@ -2154,6 +2178,14 @@ async function mapWithConcurrency<T, R>(
     }
   }))
   return results
+}
+
+async function timedResult<T>(promise: Promise<T>): Promise<TimedResult<T>> {
+  const startedAt = Date.now()
+  return {
+    result: await promise,
+    durationMs: Date.now() - startedAt,
+  }
 }
 
 function pagedItemsResponse(items: any[], page: PageParams, totalRecordCount = items.length): Response {

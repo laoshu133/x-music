@@ -857,7 +857,7 @@ test('local emby search merges upstream Emby items with QQ virtual songs', async
   }
 })
 
-test('local emby search pages QQ songs with safe upstream page size', async () => {
+test('local emby search caps QQ song expansion for large client pages', async () => {
   const originalFetch = globalThis.fetch
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999016')
@@ -874,6 +874,7 @@ test('local emby search pages QQ songs with safe upstream page size', async () =
     const authPayload = await auth!.json()
 
     const qqPageSizes: number[] = []
+    const upstreamRequests: string[] = []
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       const requestUrl = new URL(String(url))
       if (requestUrl.hostname === 'u.y.qq.com') {
@@ -906,6 +907,7 @@ test('local emby search pages QQ songs with safe upstream page size', async () =
         })
       }
 
+      upstreamRequests.push(String(url))
       return Response.json({ Items: [], TotalRecordCount: 0 })
     }) as typeof fetch
 
@@ -920,12 +922,92 @@ test('local emby search pages QQ songs with safe upstream page size', async () =
 
     assert.equal(response.status, 200)
     const payload = await response.json()
-    assert.equal(payload.Items.length, 250)
-    assert.deepEqual(qqPageSizes, [50, 50, 50, 50, 50])
+    assert.equal(payload.Items.length, 50)
+    assert.equal(payload.TotalRecordCount, 50)
+    assert.deepEqual(qqPageSizes, [50])
+    assert.equal(new URL(upstreamRequests[0]!).searchParams.get('Limit'), '50')
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999016')
     clearQQLoginCookie()
     db.prepare("DELETE FROM app_settings WHERE key LIKE 'virtual.song.qq-search-page-%'").run()
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('musiver audio search stays bounded even when client requests 500 media-source items', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999018')
+    saveQQLoginCookie('uin=o999018; qm_keyst=test-key')
+    markAccountUpstreamBound('999018')
+    const account = getAccountByQQ('999018')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+
+    let qqRequests = 0
+    const upstreamRequests: string[] = []
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'u.y.qq.com') {
+        qqRequests += 1
+        const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {}
+        const pageSize = Number(body.req?.param?.num_per_page ?? 0)
+        return Response.json({
+          code: 0,
+          req: {
+            code: 0,
+            data: {
+              body: {
+                item_song: Array.from({ length: pageSize }, (_, index) => ({
+                  id: index + 1,
+                  mid: `qq-musiver-search-${index + 1}`,
+                  title: `QQ Musiver Search ${index + 1}`,
+                  interval: 188,
+                  singer: [{ name: 'QQ Artist', mid: 'qq-artist-1' }],
+                  album: { name: 'QQ Album', mid: 'qq-album-1' },
+                  file: { media_mid: `qq-media-${index + 1}`, size_320mp3: 1024 },
+                })),
+              },
+              meta: { estimate_sum: 500 },
+            },
+          },
+        })
+      }
+
+      upstreamRequests.push(String(url))
+      return Response.json({ Items: [], TotalRecordCount: 0 })
+    }) as typeof fetch
+
+    const response = await dispatchEmbyRequest(
+      new Request(`http://local/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio&Recursive=true&Fields=AudioInfo%2CSortName%2CMediaSources%2CDateCreated%2CProductionYear%2CCanDelete&StartIndex=0&Limit=500&ImageTypeLimit=1&EnableImageTypes=Primary&SortBy=DateCreated&SortOrder=Descending&SearchTerm=${encodeURIComponent('花好月圆')}`, {
+        headers: {
+          authorization: `MediaBrowser Client="Musiver", Version="1.3.9", Token="${authPayload.AccessToken}"`,
+          'user-agent': 'musiver/1.3.9 (Macintosh)',
+        },
+      }),
+      stripOptionalEmbyPrefix(`/Users/${authPayload.User.Id}/Items`),
+    )
+
+    assert.equal(response.status, 200)
+    const text = await response.text()
+    const payload = JSON.parse(text)
+    assert.equal(payload.Items.length, 50)
+    assert.equal(payload.TotalRecordCount, 50)
+    assert.equal(qqRequests, 1)
+    assert.equal(new URL(upstreamRequests[0]!).searchParams.get('Limit'), '50')
+    assert.match(response.headers.get('server-timing') ?? '', /emby-upstream;dur=\d+/)
+    assert.match(response.headers.get('server-timing') ?? '', /qq-search;dur=\d+/)
+    assert.ok(Buffer.byteLength(text) < 500_000)
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999018')
+    clearQQLoginCookie()
+    db.prepare("DELETE FROM app_settings WHERE key LIKE 'virtual.song.qq-musiver-search-%'").run()
     globalThis.fetch = originalFetch
   }
 })
@@ -989,7 +1071,7 @@ test('local emby playlist search merges upstream and QQ playlists', async () => 
   }
 })
 
-test('local emby playlist search pages QQ playlists with safe upstream page size', async () => {
+test('local emby playlist search caps QQ playlist expansion for large client pages', async () => {
   const originalFetch = globalThis.fetch
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999017')
@@ -1043,8 +1125,9 @@ test('local emby playlist search pages QQ playlists with safe upstream page size
 
     assert.equal(response.status, 200)
     const payload = await response.json()
-    assert.equal(payload.Items.length, 120)
-    assert.deepEqual(qqPageSizes, ['0:50', '1:50', '2:50'])
+    assert.equal(payload.Items.length, 50)
+    assert.equal(payload.TotalRecordCount, 50)
+    assert.deepEqual(qqPageSizes, ['0:50'])
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999017')
     clearQQLoginCookie()
