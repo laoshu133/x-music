@@ -3,10 +3,12 @@ import { db } from '@/lib/db'
 import { buildQQLoginState, summarizeQQLoginState, type QQLoginState } from '@/lib/qq/account'
 import { appConfig } from '@/lib/config'
 import { getQQFavoriteSongs } from '@/lib/qq/favorites'
+import { getQQUserProfile } from '@/lib/qq/user'
 import type { MusicInfo, MusicQuality } from '@/lib/types'
 
 export interface AccountRecord {
   qqUin: string
+  qqNickname?: string
   qqCookie: string
   encryptedUin?: string
   qqmusicKey?: string
@@ -23,6 +25,7 @@ export interface AccountRecord {
 
 export interface AccountListItem {
   qqUin: string
+  qqNickname?: string
   embyUsername: string
   embyUserId?: string
   isAdmin: boolean
@@ -42,6 +45,7 @@ export interface AccountUpsertResult {
 
 interface AccountRow {
   qq_uin: string
+  qq_nickname: string | null
   qq_cookie: string
   encrypted_uin: string | null
   qqmusic_key: string | null
@@ -108,6 +112,7 @@ export function upsertAccountFromQQCookie(cookieText: string, options: { loginIp
   db.prepare(`
     INSERT INTO accounts (
       qq_uin,
+      qq_nickname,
       qq_cookie,
       encrypted_uin,
       qqmusic_key,
@@ -122,6 +127,7 @@ export function upsertAccountFromQQCookie(cookieText: string, options: { loginIp
     )
     VALUES (
       @qqUin,
+      @qqNickname,
       @qqCookie,
       @encryptedUin,
       @qqmusicKey,
@@ -136,6 +142,7 @@ export function upsertAccountFromQQCookie(cookieText: string, options: { loginIp
     )
     ON CONFLICT(qq_uin) DO UPDATE SET
       qq_cookie = excluded.qq_cookie,
+      qq_nickname = COALESCE(excluded.qq_nickname, accounts.qq_nickname),
       encrypted_uin = excluded.encrypted_uin,
       qqmusic_key = excluded.qqmusic_key,
       emby_username = excluded.emby_username,
@@ -146,6 +153,7 @@ export function upsertAccountFromQQCookie(cookieText: string, options: { loginIp
       updated_at = CURRENT_TIMESTAMP
   `).run({
     qqUin: state.uin,
+    qqNickname: existing?.qqNickname ?? null,
     qqCookie: state.cookie,
     encryptedUin: state.encryptedUin ?? null,
     qqmusicKey: state.qqmusicKey ?? null,
@@ -188,6 +196,7 @@ export function listAccountSummaries(): AccountListItem[] {
     const accountStats = stats.get(account.qqUin)
     return {
       qqUin: account.qqUin,
+      qqNickname: account.qqNickname,
       embyUsername: account.embyUsername,
       embyUserId: account.embyUserId,
       isAdmin: isAdminQQ(account.qqUin),
@@ -308,6 +317,33 @@ export function markAccountLogin(qqUin: string, loginIp?: string): void {
   `).run(loginIp ?? null, qqUin)
 }
 
+export async function refreshAccountQQProfile(qqUin: string): Promise<AccountRecord | undefined> {
+  const account = getAccountByQQ(qqUin)
+  if (!account) return undefined
+
+  const profile = await getQQUserProfile({ uin: qqUin, cookie: account.qqCookie }).catch(() => undefined)
+  if (profile?.nickname) updateAccountQQNickname(qqUin, profile.nickname)
+  return getAccountByQQ(qqUin)
+}
+
+export function updateAccountQQNickname(qqUin: string, nickname: string): AccountRecord | undefined {
+  const normalized = nickname.trim()
+  if (!normalized) return getAccountByQQ(qqUin)
+
+  db.prepare(`
+    UPDATE accounts
+    SET
+      qq_nickname = @nickname,
+      updated_at = CURRENT_TIMESTAMP
+    WHERE qq_uin = @qqUin
+  `).run({
+    qqUin,
+    nickname: normalized,
+  })
+
+  return getAccountByQQ(qqUin)
+}
+
 export function updateAccountEmbyAuth(input: {
   qqUin: string
   embyUserId?: string
@@ -358,6 +394,7 @@ export function accountToQQLoginState(account: AccountRecord): QQLoginState {
 export function summarizeAccount(account: AccountRecord) {
   return {
     ...summarizeQQLoginState(accountToQQLoginState(account)),
+    nickname: account.qqNickname,
     isAdmin: isAdminQQ(account.qqUin),
     emby: {
       username: account.embyUsername,
@@ -371,6 +408,7 @@ export function summarizeAccount(account: AccountRecord) {
 function rowToAccount(row: AccountRow): AccountRecord {
   return {
     qqUin: row.qq_uin,
+    qqNickname: row.qq_nickname ?? undefined,
     qqCookie: row.qq_cookie,
     encryptedUin: row.encrypted_uin ?? undefined,
     qqmusicKey: row.qqmusic_key ?? undefined,

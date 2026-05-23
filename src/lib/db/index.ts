@@ -24,6 +24,7 @@ export const db = withDatabaseInitLock(() => {
     'ALTER TABLE track_files ADD COLUMN lyrics_path TEXT',
     'ALTER TABLE track_files ADD COLUMN cover_path TEXT',
     'ALTER TABLE track_files ADD COLUMN tagged_at TEXT',
+    'ALTER TABLE accounts ADD COLUMN qq_nickname TEXT',
     'ALTER TABLE accounts ADD COLUMN emby_user_id TEXT',
     'ALTER TABLE accounts ADD COLUMN emby_access_token TEXT',
     'ALTER TABLE accounts ADD COLUMN last_login_at TEXT',

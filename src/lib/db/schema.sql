@@ -81,6 +81,7 @@ CREATE TABLE IF NOT EXISTS qq_session (
 
 CREATE TABLE IF NOT EXISTS accounts (
   qq_uin TEXT PRIMARY KEY,
+  qq_nickname TEXT,
   qq_cookie TEXT NOT NULL,
   encrypted_uin TEXT,
   qqmusic_key TEXT,

@@ -30,6 +30,11 @@ export interface QQLoginSession {
   cookieObject: Record<string, string>
 }
 
+export interface QQUserProfile {
+  uin: string
+  nickname?: string
+}
+
 type UserPlaylistRaw = {
   dissid?: string | number
   dissname?: string
@@ -161,6 +166,29 @@ function extractPlaylists(payload: Record<string, any>): UserPlaylistRaw[] {
     })
   }
   return matched as UserPlaylistRaw[]
+}
+
+function extractProfile(payload: Record<string, any>, uin: string): QQUserProfile {
+  const candidates = [
+    payload?.data?.creator,
+    payload?.data?.creatorInfo,
+    payload?.data?.user,
+    payload?.data?.profile,
+    payload?.creator,
+    payload?.creatorInfo,
+    payload?.user,
+    payload?.profile,
+  ]
+
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== 'object') continue
+    const nickname = candidate.nick ?? candidate.nickname ?? candidate.name
+    if (typeof nickname === 'string' && nickname.trim()) return { uin, nickname: nickname.trim() }
+  }
+
+  const playlist = extractPlaylists(payload).find(item => item.creator?.name || item.creator?.nick || item.nickname)
+  const nickname = playlist?.creator?.name ?? playlist?.creator?.nick ?? playlist?.nickname
+  return { uin, nickname: nickname?.trim() || undefined }
 }
 
 function mapUserPlaylist(item: UserPlaylistRaw): QQPlaylistInfo {
@@ -352,6 +380,33 @@ export async function getQQUserPlaylists(input: {
 
   const offset = input.offset ?? 0
   const limit = input.limit ?? 30
+  const payload = await fetchQQUserHomepage(uin, login?.cookie)
+  const rawList = extractPlaylists(payload)
+  const list = rawList.slice(offset, offset + limit).map(mapUserPlaylist).filter(item => item.id)
+
+  return {
+    source: 'tx',
+    list,
+    page: Math.floor(offset / limit) + 1,
+    offset,
+    limit,
+    total: rawList.length,
+    allPage: Math.ceil(rawList.length / limit),
+  }
+}
+
+export async function getQQUserProfile(input: {
+  uin?: string
+  cookie?: string
+}): Promise<QQUserProfile> {
+  const login = getQQLoginState({ cookie: input.cookie })
+  const uin = input.uin ?? login?.uin
+  if (!uin) throw new QQMusicError('QQ user UIN is required', 400)
+
+  return extractProfile(await fetchQQUserHomepage(uin, login?.cookie), uin)
+}
+
+async function fetchQQUserHomepage(uin: string, cookie?: string): Promise<Record<string, any>> {
   const params = new URLSearchParams({
     _: String(Date.now()),
     cv: '4747474',
@@ -379,7 +434,7 @@ export async function getQQUserPlaylists(input: {
       referer: `https://y.qq.com/portal/profile.html?uin=${encodeURIComponent(uin)}`,
       'user-agent':
         'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36',
-      ...(login?.cookie ? { cookie: login.cookie } : {}),
+      ...(cookie ? { cookie } : {}),
     },
   })
   if (!response.ok) throw new QQMusicError('QQ user playlists request failed', response.status)
@@ -394,16 +449,5 @@ export async function getQQUserPlaylists(input: {
     throw new QQMusicError('QQ user playlists request was rejected', 502, payload)
   }
 
-  const rawList = extractPlaylists(payload)
-  const list = rawList.slice(offset, offset + limit).map(mapUserPlaylist).filter(item => item.id)
-
-  return {
-    source: 'tx',
-    list,
-    page: Math.floor(offset / limit) + 1,
-    offset,
-    limit,
-    total: rawList.length,
-    allPage: Math.ceil(rawList.length / limit),
-  }
+  return payload
 }

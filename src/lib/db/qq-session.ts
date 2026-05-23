@@ -44,6 +44,7 @@ export function saveQQLoginCookie(cookieText: string, options: { loginIp?: strin
 
   return {
     ...summarizeQQLoginState(state),
+    nickname: result.account.qqNickname,
     emby: {
       username: result.account.embyUsername,
       hasPassword: Boolean(result.account.embyPassword),

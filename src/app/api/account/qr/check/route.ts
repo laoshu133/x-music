@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { buildQQLoginState, checkQQLoginQr, qqMusicErrorResponse, summarizeQQLoginState } from '@/lib/qq'
-import { getAccountByQQ } from '@/lib/db/accounts'
+import { getAccountByQQ, refreshAccountQQProfile, summarizeAccount } from '@/lib/db/accounts'
 import { saveQQLoginCookie } from '@/lib/db/qq-session'
 import { ensureUpstreamEmbyUserForAccount } from '@/lib/emby/auth'
 import { setCurrentAccount } from '@/lib/session'
@@ -37,13 +37,19 @@ export async function POST(request: Request) {
     if (body.persist !== false) {
       const saved = saveQQLoginCookie(result.session.cookie, { loginIp: readRequestIp(request) })
       await setCurrentAccount(saved.uin)
-      const account = getAccountByQQ(saved.uin)
+      const profiledAccount = await refreshAccountQQProfile(saved.uin).catch(() => undefined)
+      const account = profiledAccount ?? getAccountByQQ(saved.uin)
       const upstreamAccount = account ? await ensureUpstreamEmbyUserForAccount(account).catch(() => undefined) : undefined
+      const accountSummary = upstreamAccount ? summarizeAccount(upstreamAccount) : account ? summarizeAccount(account) : saved
       return NextResponse.json({
         ...result,
         account: {
-          ...saved,
-          emby: upstreamAccount ? { ...saved.emby, userId: upstreamAccount.embyUserId } : saved.emby,
+          ...accountSummary,
+          emby: {
+            ...saved.emby,
+            ...accountSummary.emby,
+            userId: upstreamAccount?.embyUserId ?? accountSummary.emby?.userId,
+          },
           persisted: true,
         },
       })

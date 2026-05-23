@@ -45,6 +45,7 @@ interface AccountState {
   loggedIn: boolean
   source?: 'env' | 'request' | 'stored'
   uin?: string
+  nickname?: string
   isAdmin?: boolean
   hasEncryptedUin?: boolean
   hasQQMusicKey?: boolean
@@ -112,6 +113,7 @@ interface UsersResult {
 
 interface UserItem {
   qqUin: string
+  qqNickname?: string
   embyUsername: string
   embyUserId?: string
   isAdmin: boolean
@@ -198,7 +200,7 @@ interface ConnectionInfo {
 
 const playerRecommendations = [
   { name: 'ampcast', platform: 'Web / Desktop', href: 'https://ampcast.app/' },
-  { name: '箭头音乐', platform: 'iOS / Android / Desktop', href: 'https://cn.amcfy.com/' },
+  { name: '箭头音乐', platform: 'iOS / Android', href: 'https://cn.amcfy.com/' },
   { name: '音流', platform: 'iOS / Android / Desktop', href: 'https://music.aqzscn.cn/' },
   { name: 'VutronMusic', platform: 'Windows / macOS / Linux', href: 'https://github.com/stark81/VutronMusic' },
 ]
@@ -225,9 +227,15 @@ const viewMeta: Record<View, { label: string; icon: ComponentType<{ size?: numbe
 }
 
 const views = Object.keys(viewMeta) as View[]
+const sidebarCollapsedStorageKey = 'xmusic.sidebarCollapsed'
 
 function parseView(value: string | null): View {
   return value && views.includes(value as View) ? value as View : 'home'
+}
+
+function initialSidebarCollapsed() {
+  if (typeof window === 'undefined') return false
+  return window.localStorage.getItem(sidebarCollapsedStorageKey) === '1'
 }
 
 export default function MusicClient() {
@@ -247,7 +255,7 @@ export default function MusicClient() {
   const [users, setUsers] = useState<ApiState<UsersResult>>(emptyState)
   const [message, setMessage] = useState('')
   const [browserOrigin, setBrowserOrigin] = useState('')
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(initialSidebarCollapsed)
   const [embyPasswordDraft, setEmbyPasswordDraft] = useState('')
   const [configDraft, setConfigDraft] = useState<ConfigDraft>({
     qqEnabled: true,
@@ -421,6 +429,10 @@ export default function MusicClient() {
     setBrowserOrigin(window.location.origin)
     void loadAccount()
   }, [])
+
+  useEffect(() => {
+    window.localStorage.setItem(sidebarCollapsedStorageKey, sidebarCollapsed ? '1' : '0')
+  }, [sidebarCollapsed])
 
   useEffect(() => {
     setView(routeView)
@@ -635,15 +647,15 @@ function LoginPage({
   const [loginMethod, setLoginMethod] = useState<'qr' | 'cookie'>('qr')
   const qrDisabled = loginQrPhase === 'expired' || loginQrPhase === 'error'
   const qrStatusText = loginQrPhase === 'checking'
-    ? '正在检查扫码状态...'
+    ? '检查中'
     : loginQrPhase === 'scanned'
-      ? '已扫码，请在手机上确认登录'
+      ? '待确认'
     : loginQrPhase === 'expired'
-      ? '二维码已失效，请刷新后重新扫码'
+      ? '已失效'
       : loginQrPhase === 'error'
-        ? '扫码登录出错，请刷新二维码后重试'
+        ? '登录异常'
         : loginQr.data
-          ? '请使用 QQ 扫码确认登录'
+          ? '等待扫码'
           : ''
 
   return (
@@ -654,7 +666,7 @@ function LoginPage({
         </div>
         <div>
           <h1>XMusic</h1>
-          <span>连接你的 QQ 音乐收藏</span>
+          <span>把音乐装进自己口袋</span>
         </div>
       </div>
       <div className="login-tabs" role="tablist" aria-label="登录方式">
@@ -683,13 +695,17 @@ function LoginPage({
             <h2>QQ 扫码登录</h2>
             {loginQr.data ? (
               <div className="qr-login large">
-                <div className={`qr-code ${qrDisabled ? 'disabled' : ''}`}>
-                  <img src={loginQr.data.img} alt="QQ 登录二维码" />
-                  {qrStatusText ? <p className={`qr-status ${qrDisabled ? 'attention' : ''}`}>{qrStatusText}</p> : null}
+                <div className="qr-visual">
+                  <div className={`qr-code ${qrDisabled ? 'disabled' : ''}`}>
+                    <img src={loginQr.data.img} alt="QQ 登录二维码" />
+                  </div>
                 </div>
-                <p className="qr-help">请用手机 QQ 扫描二维码。若在手机端打开，请改用电脑或另一台设备打开本页后扫码。</p>
-                <div className="qr-actions">
-                  <button onClick={onRequestLoginQr} disabled={loginQr.loading || account.loading}><RefreshCw size={16} />刷新二维码</button>
+                <div className="qr-copy">
+                  {qrStatusText ? <p className={`qr-status ${qrDisabled ? 'attention' : ''}`}>{qrStatusText}</p> : null}
+                  <p className="qr-hint">请用手机 QQ 扫码；手机打开需换设备扫码。</p>
+                  <div className="qr-actions">
+                    <button onClick={onRequestLoginQr} disabled={loginQr.loading || account.loading}><RefreshCw size={16} />刷新二维码</button>
+                  </div>
                 </div>
               </div>
             ) : (
@@ -712,6 +728,7 @@ function LoginPage({
 }
 
 function AccountSummary({ account, avatarUrl, onLogout }: { account: AccountState; avatarUrl?: string; onLogout: () => void }) {
+  const displayName = account.nickname ?? '-'
   return (
     <section className="account-panel">
       <div className="section-head">
@@ -721,8 +738,8 @@ function AccountSummary({ account, avatarUrl, onLogout }: { account: AccountStat
       <div className="account-summary">
         {avatarUrl ? <img src={avatarUrl} alt="" /> : <div className="avatar-placeholder">{account.uin?.slice(-2) ?? 'QQ'}</div>}
         <dl className="account-facts">
-          <div><dt>QQ 音乐</dt><dd>{account.uin}</dd></div>
-          <div><dt>播放器帐号</dt><dd>{account.emby?.username ?? account.uin}</dd></div>
+          <div><dt>昵称</dt><dd>{displayName}</dd></div>
+          <div><dt>QQ</dt><dd>{account.uin ?? '-'}</dd></div>
         </dl>
       </div>
     </section>
@@ -998,7 +1015,7 @@ function UsersPanel({ users }: { users: UsersResult }) {
         </div>
         {users.items.map(user => (
           <button className={`user-row ${selectedUser?.qqUin === user.qqUin ? 'active' : ''}`} key={user.qqUin} onClick={() => void openUser(user)}>
-            <span className="user-cell-main"><strong>{user.qqUin}</strong><small>{user.embyUserId ?? '无 Emby ID'}</small></span>
+            <span className="user-cell-main"><strong>{user.qqNickname ?? user.qqUin}</strong><small>{user.qqNickname ? `QQ ${user.qqUin}` : user.embyUserId ?? '无 Emby ID'}</small></span>
             <span><StatusBadge status={user.isAdmin ? 'admin' : 'user'} /></span>
             <span className="numeric-cell">{user.playCount}</span>
             <span className="numeric-cell">{user.favoriteCount}</span>
@@ -1045,6 +1062,7 @@ function UserDetailDialog({
   const [favoritesPage, setFavoritesPage] = useState(1)
   const [playsPage, setPlaysPage] = useState(1)
   const account = profile.data?.account ?? user
+  const accountTitle = account.qqNickname ?? account.qqUin
   const favoriteBadge = favorites.data?.total ?? (favorites.loading ? '...' : '-')
   const playBadge = plays.data?.total ?? account.playCount
   const loadFavorites = async (page = favoritesPage, force = false) => {
@@ -1088,7 +1106,7 @@ function UserDetailDialog({
       <section className="user-detail dialog-panel" role="dialog" aria-modal="true" aria-labelledby="user-detail-title" onClick={event => event.stopPropagation()}>
         <div className="user-detail-head">
           <div>
-            <h3 id="user-detail-title">用户 {account.qqUin}</h3>
+            <h3 id="user-detail-title">{accountTitle}</h3>
             <p>{account.embyUserId ?? '未绑定 Emby ID'}</p>
           </div>
           <button className="secondary-button compact-button" onClick={onClose}>关闭</button>
@@ -1110,6 +1128,7 @@ function UserDetailDialog({
             <div className="detail-tab-content">
             <Status state={profile} />
             <dl className="user-info-grid">
+              <div><dt>昵称</dt><dd><span>{account.qqNickname ?? '-'}</span></dd></div>
               <div><dt>QQ</dt><dd><span>{account.qqUin}</span></dd></div>
               <div><dt>Emby ID</dt><dd><span>{account.embyUserId ?? '-'}</span></dd></div>
               <div><dt>播放器帐号</dt><dd><span>{account.embyUsername}</span></dd></div>

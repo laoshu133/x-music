@@ -137,8 +137,28 @@ a {
 
 .sidebar-collapsed .brand-lockup div:last-child,
 .sidebar-collapsed .tabs button span,
-.sidebar-collapsed .account-panel {
+.sidebar-collapsed .account-panel h3,
+.sidebar-collapsed .account-facts,
+.sidebar-collapsed .account-panel .ghost-button span {
   display: none;
+}
+
+.sidebar-collapsed .account-panel {
+  justify-items: center;
+}
+
+.sidebar-collapsed .account-panel .section-head {
+  justify-content: center;
+}
+
+.sidebar-collapsed .account-panel .ghost-button {
+  width: 44px;
+  min-height: 36px;
+  padding: 0;
+}
+
+.sidebar-collapsed .account-summary {
+  grid-template-columns: 44px;
 }
 
 .sidebar-collapsed .collapse-button {
@@ -507,8 +527,9 @@ a {
 
 .qr-login {
   display: grid;
-  gap: 10px;
-  justify-items: start;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 18px;
+  align-items: center;
 }
 
 .qr-code {
@@ -521,7 +542,7 @@ a {
 
 .qr-code.disabled::after {
   position: absolute;
-  inset: 6px 6px 32px;
+  inset: 6px;
   display: grid;
   place-items: center;
   border-radius: 4px;
@@ -556,37 +577,45 @@ a {
   height: 194px;
 }
 
-.qr-status {
-  position: absolute;
-  left: 6px;
-  right: 6px;
-  bottom: 6px;
-  margin: 0;
-  min-height: 26px;
+.qr-visual,
+.qr-copy {
+  min-width: 0;
+}
+
+.qr-copy {
   display: grid;
-  place-items: center;
-  padding: 4px 8px;
-  border-radius: 4px;
-  background: rgba(15, 23, 42, 0.76);
-  color: white;
-  font-size: 12px;
+  align-content: center;
+  gap: 10px;
+}
+
+.qr-status {
+  margin: 0;
+  width: fit-content;
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 10px;
+  border: 1px solid rgba(23, 107, 93, 0.35);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 13px;
   font-weight: 700;
   line-height: 1.25;
-  text-align: center;
-  pointer-events: none;
 }
 
 .qr-status.attention {
-  background: rgba(180, 83, 9, 0.88);
-  color: white;
+  border-color: rgba(180, 83, 9, 0.35);
+  background: rgba(180, 83, 9, 0.08);
+  color: #92400e;
 }
 
-.qr-help {
+.qr-hint {
   max-width: 260px;
   margin: 0;
   color: var(--muted);
   font-size: 13px;
-  line-height: 1.55;
+  line-height: 1.45;
 }
 
 .qr-actions {
@@ -1410,9 +1439,32 @@ button.user-row.active {
   }
 
   .sidebar-collapsed .brand-lockup div:last-child,
-  .sidebar-collapsed .tabs button span,
-  .sidebar-collapsed .account-panel {
+  .sidebar-collapsed .account-panel h3,
+  .sidebar-collapsed .account-facts,
+  .sidebar-collapsed .account-panel .ghost-button span {
     display: grid;
+  }
+
+  .sidebar-collapsed .tabs button span {
+    display: inline;
+  }
+
+  .sidebar-collapsed .account-panel {
+    justify-items: stretch;
+  }
+
+  .sidebar-collapsed .account-panel .section-head {
+    justify-content: space-between;
+  }
+
+  .sidebar-collapsed .account-panel .ghost-button {
+    width: auto;
+    min-height: 40px;
+    padding: 0 12px;
+  }
+
+  .sidebar-collapsed .account-summary {
+    grid-template-columns: 44px minmax(0, 1fr);
   }
 
   .sidebar-collapsed .tabs button {
@@ -1462,6 +1514,16 @@ button.user-row.active {
   .player-support-grid,
   .connection-copy-grid {
     grid-template-columns: 1fr;
+  }
+
+  .qr-login {
+    grid-template-columns: 1fr;
+    justify-items: center;
+    text-align: center;
+  }
+
+  .qr-copy {
+    justify-items: center;
   }
 
   .login-screen {
