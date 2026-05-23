@@ -614,12 +614,19 @@ async function handleItemsRequest(request: Request, embyPath: string): Promise<R
   const desiredCount = desiredFetchCount(page)
 
   if (searchTerm?.trim()) {
-    const upstream = await tryReadItemsResponse(request, embyPath)
+    const query = searchTerm.trim()
+    const upstreamPromise = tryReadItemsResponse(request, embyPath)
+    const songsPromise = shouldIncludeType(requestedTypes, 'audio')
+      ? searchQQMusicWindow(query, desiredCount)
+      : Promise.resolve<WindowResult<MusicInfo> | undefined>(undefined)
+    const playlistsPromise = shouldIncludeType(requestedTypes, 'playlist')
+      ? searchQQPlaylistsWindow(query, desiredCount)
+      : Promise.resolve<WindowResult<QQPlaylistInfo> | undefined>(undefined)
+    const [upstream, songs, playlists] = await Promise.all([upstreamPromise, songsPromise, playlistsPromise])
     const upstreamItems = filterItemsByTypes(upstream?.Items ?? [], requestedTypes)
     const virtualItems: any[] = []
 
-    if (shouldIncludeType(requestedTypes, 'audio')) {
-      const songs = await searchQQMusicWindow(searchTerm.trim(), desiredCount)
+    if (songs) {
       virtualItems.push(...dedupeSongs(songs.items)
         .filter(song => !hasEquivalentEmbySong(upstreamItems, song))
         .map(song => {
@@ -628,8 +635,7 @@ async function handleItemsRequest(request: Request, embyPath: string): Promise<R
         }))
     }
 
-    if (shouldIncludeType(requestedTypes, 'playlist')) {
-      const playlists = await searchQQPlaylistsWindow(searchTerm.trim(), desiredCount)
+    if (playlists) {
       virtualItems.push(...playlists.items
         .filter(playlist => !hasEquivalentEmbyPlaylist(upstreamItems, playlist.name))
         .map(playlistToEmbyItem))

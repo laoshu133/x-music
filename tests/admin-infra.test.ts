@@ -158,6 +158,22 @@ test('request logging defaults to production only and redacts token-like query v
   }
 })
 
+test('catch-all route returns friendly 404 for browser navigation to unknown paths', async () => {
+  const route = await import('@/app/[...path]/route')
+  const response = await route.GET(new Request('http://local/xxx', {
+    headers: {
+      accept: 'text/html,application/xhtml+xml',
+      'sec-fetch-mode': 'navigate',
+    },
+  }), { params: Promise.resolve({ path: ['xxx'] }) })
+
+  assert.equal(response.status, 404)
+  assert.match(response.headers.get('content-type') ?? '', /text\/html/)
+  const body = await response.text()
+  assert.match(body, /页面不存在/)
+  assert.match(body, /\/xxx/)
+})
+
 test('QQ login creates a per-account Emby gateway account', () => {
   db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('123456')
   try {
@@ -750,9 +766,22 @@ test('local emby search merges upstream Emby items with QQ virtual songs', async
     const authPayload = await auth!.json()
 
     const upstreamRequests: string[] = []
+    let releaseUpstream: (() => void) | undefined
+    let resolveUpstreamStarted: (() => void) | undefined
+    let resolveQQStarted: (() => void) | undefined
+    let upstreamReleased = false
+    let qqStartedBeforeUpstreamReleased = false
+    const upstreamStarted = new Promise<void>(resolve => {
+      resolveUpstreamStarted = resolve
+    })
+    const qqStarted = new Promise<void>(resolve => {
+      resolveQQStarted = resolve
+    })
     globalThis.fetch = (async (url: string | URL | Request) => {
       const requestUrl = new URL(String(url))
       if (requestUrl.hostname === 'u.y.qq.com') {
+        qqStartedBeforeUpstreamReleased = !upstreamReleased
+        resolveQQStarted?.()
         return Response.json({
           code: 0,
           req: {
@@ -776,6 +805,13 @@ test('local emby search merges upstream Emby items with QQ virtual songs', async
       }
 
       upstreamRequests.push(String(url))
+      await new Promise<void>(resolve => {
+        releaseUpstream = () => {
+          upstreamReleased = true
+          resolve()
+        }
+        resolveUpstreamStarted?.()
+      })
       return Response.json({
         Items: [
           { Id: 'emby-folder-1', Name: 'Emby Folder', Type: 'CollectionFolder' },
@@ -785,7 +821,7 @@ test('local emby search merges upstream Emby items with QQ virtual songs', async
       })
     }) as typeof fetch
 
-    const response = await dispatchEmbyRequest(
+    const responsePromise = dispatchEmbyRequest(
       new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio&ParentId=x-music-music&SearchTerm=song&Limit=50&StartIndex=0`, {
         headers: {
           'X-Emby-Authorization': `MediaBrowser Client="ampcast", Version="0.9.28", Device="PC", Token="${authPayload.AccessToken}"`,
@@ -793,6 +829,20 @@ test('local emby search merges upstream Emby items with QQ virtual songs', async
       }),
       stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/Items`),
     )
+    try {
+      await Promise.race([
+        qqStarted,
+        new Promise((_, reject) => setTimeout(() => reject(new Error('QQ search did not start before upstream search completed')), 1000)),
+      ])
+      assert.equal(qqStartedBeforeUpstreamReleased, true)
+    } finally {
+      await Promise.race([
+        upstreamStarted,
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Upstream search did not start')), 1000)),
+      ])
+      releaseUpstream?.()
+    }
+    const response = await responsePromise
 
     assert.equal(response.status, 200)
     const payload = await response.json()
