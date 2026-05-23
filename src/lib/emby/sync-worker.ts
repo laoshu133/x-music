@@ -13,6 +13,8 @@ import {
   searchEmbyAudioByPath,
 } from './upstream-api'
 import { getDefaultUpstreamMusicLibraryLocation } from './auth'
+import { decodeVirtualId } from './virtual-ids'
+import { loadVirtualPlaylist } from './virtual-store'
 import type { SyncEmbyTrackJobPayload } from './sync'
 import { syncMediaFilesToEmbyWebdav } from './webdav'
 
@@ -36,6 +38,7 @@ const defaultCacheWaitMs = Number(process.env.EMBY_SYNC_CACHE_WAIT_MS ?? 30000)
 const defaultCachePollIntervalMs = Number(process.env.EMBY_SYNC_CACHE_POLL_INTERVAL_MS ?? 2000)
 const defaultScanWaitMs = Number(process.env.EMBY_SYNC_SCAN_WAIT_MS ?? 60000)
 const defaultScanPollIntervalMs = Number(process.env.EMBY_SYNC_SCAN_POLL_INTERVAL_MS ?? 5000)
+const embySyncableAudioExtensions = new Set(['.flac', '.mp3', '.m4a', '.mp4', '.ogg', '.opus', '.wav'])
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -73,6 +76,10 @@ export async function processOneEmbySyncJob(options: number | EmbySyncJobOptions
       }
       return true
     }
+    if (!isEmbySyncableAudioPath(mediaPath)) {
+      failJob(job.id, `Cached file format is not syncable to Emby: ${mediaPath}`)
+      return true
+    }
 
     const syncedMedia = row?.finalPath
       ? await syncMediaFilesToEmbyWebdav({
@@ -107,9 +114,10 @@ export async function processOneEmbySyncJob(options: number | EmbySyncJobOptions
       remoteId: embyItemId,
       raw: job.payload.musicInfo,
     })
-    if (job.payload.playlistId) {
+    const playlistName = syncedPlaylistName(job.payload.playlistId)
+    if (playlistName) {
       await createOrUpdateEmbyPlaylist({
-        name: `QQ ${job.payload.playlistId}`,
+        name: playlistName,
         itemIds: [embyItemId],
       }).catch((error: unknown) => {
         console.warn(`failed to update Emby playlist ${job.payload.playlistId}`, error)
@@ -167,6 +175,18 @@ function isSyncableCachedMedia(
 function isPathInside(candidate: string, directory: string): boolean {
   const relative = path.relative(path.resolve(directory), path.resolve(candidate))
   return Boolean(relative) && !relative.startsWith('..') && !path.isAbsolute(relative)
+}
+
+function isEmbySyncableAudioPath(filePath: string): boolean {
+  return embySyncableAudioExtensions.has(path.extname(filePath).toLowerCase())
+}
+
+function syncedPlaylistName(playlistId?: string): string | undefined {
+  if (!playlistId) return undefined
+  const decoded = decodeVirtualId(playlistId)
+  if (!decoded || decoded.kind !== 'qq-playlist') return undefined
+  const playlist = loadVirtualPlaylist(decoded.id)
+  return playlist?.name?.trim() ? playlist.name : undefined
 }
 
 function getCachedMedia(payload: SyncEmbyTrackJobPayload): CachedMediaRow | undefined {

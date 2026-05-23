@@ -1101,7 +1101,7 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
     return markRequestSource(new Response(null, { status: 200, headers: playableHeaders }), playableHeaders.get('content-length') ? 'local' : 'upstream')
   }
 
-  const mapped = getRemoteMapping({ localType: 'track', localKey: `${musicInfo.source}:${musicInfo.songmid}`, remote: 'emby' })?.remoteId
+  const mapped = validEmbyTrackMapping(musicInfo)
     ?? await searchEmbyAudioByName(musicInfo).catch(() => undefined)
   if (mapped) {
     upsertRemoteMapping({
@@ -1233,6 +1233,25 @@ function qqCookieForRequest(request: Request): string | undefined {
   return authorizedLocalAccount(request)?.qqCookie
     ?? request.headers.get('x-qq-music-cookie')
     ?? undefined
+}
+
+function validEmbyTrackMapping(musicInfo: MusicInfo): string | undefined {
+  const mapping = getRemoteMapping({ localType: 'track', localKey: `${musicInfo.source}:${musicInfo.songmid}`, remote: 'emby' })
+  if (!mapping?.remoteId) return undefined
+  if (!mapping.rawJson) return undefined
+  try {
+    const raw = JSON.parse(mapping.rawJson) as Partial<MusicInfo>
+    if (
+      raw.source === musicInfo.source
+      && raw.songmid === musicInfo.songmid
+      && normalizeText(raw.name ?? '') === normalizeText(musicInfo.name)
+    ) {
+      return mapping.remoteId
+    }
+  } catch {
+    return undefined
+  }
+  return undefined
 }
 
 async function virtualAudioHeadHeaders(musicInfo: MusicInfo): Promise<Headers> {

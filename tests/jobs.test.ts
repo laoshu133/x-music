@@ -246,6 +246,127 @@ test('emby sync job does not complete when scan cannot find item', async () => {
   }
 })
 
+test('emby sync job ignores non-matching Emby search fallback item', async () => {
+  const originalFetch = globalThis.fetch
+  const originalWebdavDsn = process.env.EMBY_SOURCE_WEBDAV_DSN
+  const songmid = `SYNC_MISMATCH_${Date.now()}`
+  const rawPath = `/tmp/x-music-${songmid}.mp3`
+  db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track'").run()
+  writeFileSync(rawPath, 'fake audio')
+  delete process.env.EMBY_SOURCE_WEBDAV_DSN
+  try {
+    const musicInfo = { source: 'tx' as const, songmid, name: 'Expected Sync Song', singer: 'Expected Artist' }
+    const track = ensureTrack(musicInfo)
+    upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath: rawPath, rawPath })
+    const created = createJob({
+      type: 'sync_emby_track',
+      payload: { source: 'tx', songmid, musicInfo },
+    })
+
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.pathname.endsWith('/Library/Media/Updated')) return new Response(null, { status: 204 })
+      if (requestUrl.pathname.endsWith('/Items')) {
+        return Response.json({ Items: [{ Id: 'wrong-emby-song', Name: 'Different Song', Artists: ['Different Artist'] }] })
+      }
+      return Response.json({}, { status: 404 })
+    }) as typeof fetch
+
+    assert.equal(await processOneEmbySyncJob({
+      maxAttempts: 1,
+      scanWaitMs: 0,
+    }), true)
+    const job = getJob(created.id)
+    assert.equal(job?.status, 'failed')
+    assert.match(job?.error ?? '', /item was not found/)
+  } finally {
+    rmSync(rawPath, { force: true })
+    process.env.EMBY_SOURCE_WEBDAV_DSN = originalWebdavDsn
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('emby sync job fails unsupported audio containers without scanning Emby', async () => {
+  const originalFetch = globalThis.fetch
+  const originalWebdavDsn = process.env.EMBY_SOURCE_WEBDAV_DSN
+  const songmid = `SYNC_UNSUPPORTED_${Date.now()}`
+  const rawPath = `/tmp/x-music-${songmid}.mgg`
+  const requests: string[] = []
+
+  db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track'").run()
+  writeFileSync(rawPath, 'fake encrypted audio')
+  delete process.env.EMBY_SOURCE_WEBDAV_DSN
+  try {
+    const musicInfo = { source: 'tx' as const, songmid, name: 'Unsupported Sync', singer: 'Tester' }
+    const track = ensureTrack(musicInfo)
+    upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath: rawPath, rawPath })
+    const created = createJob({
+      type: 'sync_emby_track',
+      payload: { source: 'tx', songmid, musicInfo },
+    })
+
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      requests.push(String(url))
+      return Response.json({}, { status: 500 })
+    }) as typeof fetch
+
+    assert.equal(await processOneEmbySyncJob(1), true)
+    const job = getJob(created.id)
+    assert.equal(job?.status, 'failed')
+    assert.match(job?.error ?? '', /not syncable to Emby/)
+    assert.deepEqual(requests, [])
+  } finally {
+    rmSync(rawPath, { force: true })
+    process.env.EMBY_SOURCE_WEBDAV_DSN = originalWebdavDsn
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('emby sync job does not create Emby playlists from virtual playlist ids', async () => {
+  const originalFetch = globalThis.fetch
+  const originalWebdavDsn = process.env.EMBY_SOURCE_WEBDAV_DSN
+  const songmid = `SYNC_VIRTUAL_PLAYLIST_${Date.now()}`
+  const rawPath = `/tmp/x-music-${songmid}.mp3`
+  const requests: Array<{ method: string; pathname: string; search: string }> = []
+  const playlistId = 'mix_eyJraW5kIjoicXEtcGxheWxpc3QiLCJpZCI6IjkyMTg3MTg2NjcifQ'
+
+  db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track'").run()
+  writeFileSync(rawPath, 'fake audio')
+  delete process.env.EMBY_SOURCE_WEBDAV_DSN
+  try {
+    const musicInfo = { source: 'tx' as const, songmid, name: 'Virtual Playlist Sync', singer: 'Tester' }
+    const track = ensureTrack(musicInfo)
+    upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath: rawPath, rawPath })
+    const created = createJob({
+      type: 'sync_emby_track',
+      payload: { source: 'tx', songmid, playlistId, musicInfo },
+    })
+
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = new URL(String(url))
+      requests.push({
+        method: init?.method ?? 'GET',
+        pathname: requestUrl.pathname,
+        search: requestUrl.search,
+      })
+      if (requestUrl.pathname.endsWith('/Library/Media/Updated')) return new Response(null, { status: 204 })
+      if (requestUrl.pathname.endsWith('/Items')) {
+        return Response.json({ Items: [{ Id: 'emby-virtual-playlist-song', Name: 'Virtual Playlist Sync', Artists: ['Tester'] }] })
+      }
+      return Response.json({}, { status: 404 })
+    }) as typeof fetch
+
+    assert.equal(await processOneEmbySyncJob(1), true)
+    assert.equal(getJob(created.id)?.status, 'completed')
+    assert.ok(!requests.some(request => request.pathname.endsWith('/Playlists')))
+    assert.ok(!requests.some(request => request.search.includes('QQ+mix_')))
+  } finally {
+    rmSync(rawPath, { force: true })
+    process.env.EMBY_SOURCE_WEBDAV_DSN = originalWebdavDsn
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('emby sync job waits for asynchronous Emby scan results', async () => {
   const originalFetch = globalThis.fetch
   const originalWebdavDsn = process.env.EMBY_SOURCE_WEBDAV_DSN

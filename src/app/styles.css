@@ -138,7 +138,7 @@ a {
 
 .sidebar-collapsed .brand-lockup {
   grid-template-columns: 44px;
-  justify-items: center;
+  justify-items: start;
 }
 
 .sidebar-collapsed .brand-copy,
@@ -159,7 +159,7 @@ a {
 }
 
 .sidebar-collapsed .collapse-button {
-  right: 10px;
+  right: -30px;
 }
 
 .sidebar-collapsed .tabs button {

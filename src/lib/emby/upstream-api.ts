@@ -32,7 +32,7 @@ export async function searchEmbyAudioByName(song: MusicInfo): Promise<string | u
   const match = data.Items?.find(item => {
     const artist = normalize(item.Artists?.join(' ') ?? '')
     return normalize(item.Name) === normalize(song.name) && (!normalizedArtist || artist.includes(normalizedArtist) || normalizedArtist.includes(artist))
-  }) ?? data.Items?.[0]
+  })
 
   return match?.Id
 }
@@ -55,7 +55,7 @@ export async function searchEmbyAudioByPath(path: string): Promise<string | unde
       ...(item.MediaSources ?? []).map(source => source.Path),
     ]
     return paths.some(candidate => normalizePath(candidate) === normalizedPath)
-  }) ?? data.Items?.[0]
+  })
 
   return match?.Id
 }
@@ -70,7 +70,6 @@ export async function searchEmbyPlaylistByName(name: string): Promise<string | u
     Limit: '10',
   })}`)
   return data.Items?.find(item => normalize(item.Name) === normalize(name))?.Id
-    ?? data.Items?.[0]?.Id
 }
 
 export async function createOrUpdateEmbyPlaylist(input: {
