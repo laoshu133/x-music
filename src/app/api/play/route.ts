@@ -2,7 +2,7 @@ import { ensureTrack, getPlayableTrackFile, insertPlayEvent, upsertTrackFileStat
 import { createUpstreamTeeResponse, streamLocalFile } from '@/lib/cache/stream'
 import { MusicUrlConfigError, MusicUrlResolveError, parseRequestedQuality, qualityFallbacks, resolveMusicUrlWithFallback } from '@/lib/music-url/resolve'
 import { getQQLoginState, syncQQPlayHistoryBestEffort } from '@/lib/qq'
-import { markRequestSource } from '@/lib/request-log'
+import { logCompletedRequest, logFailedRequest, markRequestSource } from '@/lib/request-log'
 import type { MusicInfo, MusicQuality, OnlineSource } from '@/lib/types'
 
 export const runtime = 'nodejs'
@@ -15,7 +15,7 @@ type PlayRequest = Partial<MusicInfo> & {
 
 export async function GET(request: Request): Promise<Response> {
   const url = new URL(request.url)
-  return handlePlayRequest(request, Object.fromEntries(url.searchParams.entries()))
+  return handleLoggedPlayRequest(request, Object.fromEntries(url.searchParams.entries()))
 }
 
 export async function POST(request: Request): Promise<Response> {
@@ -27,7 +27,22 @@ export async function POST(request: Request): Promise<Response> {
   const body = (await request.json().catch(() => undefined)) as PlayRequest | undefined
   if (!body) return jsonError('Invalid JSON body', 400)
 
-  return handlePlayRequest(request, body)
+  return handleLoggedPlayRequest(request, body)
+}
+
+const handleLoggedPlayRequest = async (request: Request, input: PlayRequest): Promise<Response> => {
+  const startedAt = Date.now()
+  try {
+    const response = await handlePlayRequest(request, input)
+    return logCompletedRequest(request, response, startedAt, {
+      route: '/api/play',
+      songmid: typeof input.songmid === 'string' ? input.songmid : undefined,
+      quality: typeof input.quality === 'string' ? input.quality : undefined,
+    })
+  } catch (error) {
+    logFailedRequest(request, startedAt, error, { route: '/api/play' })
+    throw error
+  }
 }
 
 const handlePlayRequest = async (request: Request, input: PlayRequest): Promise<Response> => {

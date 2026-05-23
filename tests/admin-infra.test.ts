@@ -19,6 +19,7 @@ import { updateAccountEmbyPassword } from '@/lib/db/accounts'
 import { ensureTrack, insertPlayEvent } from '@/lib/cache/store'
 import type { MusicInfo } from '@/lib/types'
 import { syncMappedEmbyFavoriteBestEffort } from '@/lib/emby/favorites'
+import { logCompletedRequest, requestLoggingEnabled, safeRequestPath } from '@/lib/request-log'
 
 function markAccountUpstreamBound(qqUin: string, embyUserId = `emby-user-${qqUin}`, embyAccessToken?: string): void {
   db.prepare('UPDATE accounts SET emby_user_id = ?, emby_access_token = COALESCE(?, emby_access_token) WHERE qq_uin = ?').run(embyUserId, embyAccessToken ?? null, qqUin)
@@ -98,6 +99,57 @@ test('account summaries include login ip and per-account playback and favorite c
     db.prepare("DELETE FROM account_favorites WHERE qq_uin = '555123'").run()
     db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run(song.songmid)
     clearQQLoginCookie()
+  }
+})
+
+test('request logging is opt-in during tests and redacts token-like query values', () => {
+  const previous = process.env.X_MUSIC_REQUEST_LOGS
+  const originalInfo = console.info
+  const messages: string[] = []
+  try {
+    delete process.env.X_MUSIC_REQUEST_LOGS
+    assert.equal(requestLoggingEnabled(), false)
+
+    process.env.X_MUSIC_REQUEST_LOGS = 'true'
+    assert.equal(requestLoggingEnabled(), true)
+    assert.equal(
+      safeRequestPath('http://local/Items/1?api_key=secret&Token=abc&plain=ok'),
+      '/Items/1?api_key=%5Bredacted%5D&Token=%5Bredacted%5D&plain=ok',
+    )
+
+    console.info = (message?: unknown) => {
+      messages.push(String(message))
+    }
+    const request = new Request('http://local/Audio/item/stream?api_key=secret', {
+      headers: {
+        'user-agent': 'test-agent',
+        range: 'bytes=0-',
+        'x-forwarded-for': '203.0.113.10, 10.0.0.1',
+      },
+    })
+    logCompletedRequest(request, new Response(null, {
+      status: 206,
+      headers: {
+        'x-x-music-source': 'local',
+        'content-range': 'bytes 0-9/100',
+      },
+    }), Date.now() - 5, { route: '/Audio' })
+
+    assert.equal(messages.length, 1)
+    const payload = JSON.parse(messages[0]!) as Record<string, unknown>
+    assert.equal(payload.event, 'http_request_complete')
+    assert.equal(payload.status, 206)
+    assert.equal(payload.path, '/Audio/item/stream?api_key=%5Bredacted%5D')
+    assert.equal(payload.source, 'local')
+    assert.equal(payload.ip, '203.0.113.10')
+    assert.equal(payload.range, 'bytes=0-')
+  } finally {
+    console.info = originalInfo
+    if (previous === undefined) {
+      delete process.env.X_MUSIC_REQUEST_LOGS
+    } else {
+      process.env.X_MUSIC_REQUEST_LOGS = previous
+    }
   }
 })
 
