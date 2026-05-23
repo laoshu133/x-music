@@ -27,12 +27,17 @@ test('job lifecycle claim complete and retry states', () => {
   assert.equal(claimed?.attempts, 1)
 
   requeueJob(created.id, 'transient')
-  assert.equal(getJob(created.id)?.status, 'queued')
-  assert.equal(getJob(created.id)?.error, 'transient')
+  const requeued = getJob(created.id)
+  assert.equal(requeued?.status, 'queued')
+  assert.equal(requeued?.error, 'transient')
+  assert.ok(requeued?.nextRunAt)
 
+  assert.equal(claimNextJob({ type: 'tag_track_file' }), null)
+  db.prepare("UPDATE jobs SET next_run_at = datetime('now', '-1 second') WHERE id = ?").run(created.id)
   const claimedAgain = claimNextJob({ type: 'tag_track_file' })
   assert.equal(claimedAgain?.id, created.id)
   assert.equal(claimedAgain?.attempts, 2)
+  assert.equal(claimedAgain?.nextRunAt, null)
 
   failJob(created.id, new Error('terminal'))
   assert.equal(getJob(created.id)?.status, 'failed')
@@ -66,24 +71,33 @@ test('job status helpers list jobs and summarize states', () => {
   assert.ok(listed.some(job => job.id === failed.id))
 })
 
-test('stale running jobs are cleared as failed', () => {
+test('stale running jobs are recovered until max attempts', () => {
   db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track'").run()
 
-  const stale = createJob({
+  const retryable = createJob({
     type: 'sync_emby_track',
     status: 'running',
     payload: { source: 'tx', songmid: `STALE_${Date.now()}`, musicInfo: { source: 'tx', songmid: 'a', name: 'A', singer: 'B' } },
+  })
+  const exhausted = createJob({
+    type: 'sync_emby_track',
+    status: 'running',
+    payload: { source: 'tx', songmid: `STALE_EXHAUSTED_${Date.now()}`, musicInfo: { source: 'tx', songmid: 'b', name: 'B', singer: 'C' } },
   })
   const fresh = createJob({
     type: 'sync_emby_track',
     status: 'running',
     payload: { source: 'tx', songmid: `FRESH_${Date.now()}`, musicInfo: { source: 'tx', songmid: 'c', name: 'C', singer: 'D' } },
   })
-  db.prepare("UPDATE jobs SET attempts = 1, updated_at = datetime('now', '-1 hour') WHERE id = ?").run(stale.id)
+  db.prepare("UPDATE jobs SET attempts = 1, updated_at = datetime('now', '-1 hour') WHERE id = ?").run(retryable.id)
+  db.prepare("UPDATE jobs SET attempts = 3, updated_at = datetime('now', '-1 hour') WHERE id = ?").run(exhausted.id)
 
-  assert.equal(clearStaleRunningJobs({ olderThanSeconds: 60 }), 1)
-  assert.equal(getJob(stale.id)?.status, 'failed')
-  assert.equal(getJob(stale.id)?.error, 'Cleared stale running job')
+  assert.deepEqual(clearStaleRunningJobs({ olderThanSeconds: 60, maxAttempts: 3 }), { requeued: 1, failed: 1 })
+  assert.equal(getJob(retryable.id)?.status, 'queued')
+  assert.equal(getJob(retryable.id)?.error, 'Recovered stale running job')
+  assert.ok(getJob(retryable.id)?.nextRunAt)
+  assert.equal(getJob(exhausted.id)?.status, 'failed')
+  assert.equal(getJob(exhausted.id)?.error, 'Cleared stale running job after max attempts')
   assert.equal(getJob(fresh.id)?.status, 'running')
 })
 

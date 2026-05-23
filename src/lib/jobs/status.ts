@@ -8,6 +8,7 @@ interface JobRecord {
   payload_json: string
   attempts: number
   error: string | null
+  next_run_at: string | null
   created_at: string
   updated_at: string
 }
@@ -106,6 +107,7 @@ function parseJobRecord(record: JobRecord): JobRow {
     payload: JSON.parse(record.payload_json) as unknown,
     attempts: record.attempts,
     error: record.error,
+    nextRunAt: record.next_run_at,
     createdAt: record.created_at,
     updatedAt: record.updated_at,
   }

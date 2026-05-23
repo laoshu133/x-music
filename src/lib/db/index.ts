@@ -33,6 +33,7 @@ export const db = withDatabaseInitLock(() => {
     'ALTER TABLE play_events ADD COLUMN qq_uin TEXT',
     'ALTER TABLE favorite_sync ADD COLUMN qq_uin TEXT',
     'ALTER TABLE resource_cache ADD COLUMN last_accessed_at TEXT',
+    'ALTER TABLE jobs ADD COLUMN next_run_at TEXT',
   ]) {
     try {
       database.exec(statement)

@@ -11,6 +11,7 @@ export interface JobRow<TPayload = unknown> {
   payload: TPayload
   attempts: number
   error: string | null
+  nextRunAt: string | null
   createdAt: string
   updatedAt: string
 }
@@ -22,6 +23,7 @@ interface JobRecord {
   payload_json: string
   attempts: number
   error: string | null
+  next_run_at: string | null
   created_at: string
   updated_at: string
 }
@@ -39,7 +41,15 @@ export interface ClaimJobOptions {
 
 export interface ClearStaleJobsOptions {
   olderThanSeconds: number
+  maxAttempts?: number
 }
+
+export interface StaleRunningJobsResult {
+  requeued: number
+  failed: number
+}
+
+const retryBackoffSeconds = [30, 60, 180]
 
 const parseJobRecord = <TPayload>(record: JobRecord): JobRow<TPayload> => ({
   id: record.id,
@@ -48,6 +58,7 @@ const parseJobRecord = <TPayload>(record: JobRecord): JobRow<TPayload> => ({
   payload: JSON.parse(record.payload_json) as TPayload,
   attempts: record.attempts,
   error: record.error,
+  nextRunAt: record.next_run_at,
   createdAt: record.created_at,
   updatedAt: record.updated_at,
 })
@@ -61,13 +72,19 @@ export function ensureJobsTable(): void {
       payload_json TEXT NOT NULL,
       attempts INTEGER NOT NULL DEFAULT 0,
       error TEXT,
+      next_run_at TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
     CREATE INDEX IF NOT EXISTS idx_jobs_claim
-      ON jobs(type, status, attempts, created_at);
+      ON jobs(type, status, next_run_at, attempts, created_at);
   `)
+  try {
+    db.exec('ALTER TABLE jobs ADD COLUMN next_run_at TEXT')
+  } catch (error) {
+    if (!String(error).includes('duplicate column name')) throw error
+  }
 }
 
 export function createJob<TPayload>(input: CreateJobInput<TPayload>): JobRow<TPayload> {
@@ -106,6 +123,7 @@ export function claimNextJob<TPayload = unknown>(
     SET status = 'running',
         attempts = attempts + 1,
         error = NULL,
+        next_run_at = NULL,
         updated_at = CURRENT_TIMESTAMP
     WHERE id = (
       SELECT id
@@ -113,6 +131,7 @@ export function claimNextJob<TPayload = unknown>(
       WHERE type = @type
         AND status = 'queued'
         AND attempts < @maxAttempts
+        AND (next_run_at IS NULL OR next_run_at <= CURRENT_TIMESTAMP)
       ORDER BY created_at ASC, id ASC
       LIMIT 1
     )
@@ -132,6 +151,7 @@ export function completeJob(id: number): void {
     UPDATE jobs
     SET status = 'completed',
         error = NULL,
+        next_run_at = NULL,
         updated_at = CURRENT_TIMESTAMP
     WHERE id = @id
   `).run({ id })
@@ -144,6 +164,7 @@ export function failJob(id: number, error: unknown): void {
     UPDATE jobs
     SET status = 'failed',
         error = @error,
+        next_run_at = NULL,
         updated_at = CURRENT_TIMESTAMP
     WHERE id = @id
   `).run({
@@ -155,33 +176,60 @@ export function failJob(id: number, error: unknown): void {
 export function requeueJob(id: number, error: unknown): void {
   ensureJobsTable()
 
+  const job = getJob(id)
+  const nextRunAt = retryDelaySql(job?.attempts ?? 1)
+
   db.prepare(`
     UPDATE jobs
     SET status = 'queued',
         error = @error,
+        next_run_at = datetime('now', @delay),
         updated_at = CURRENT_TIMESTAMP
     WHERE id = @id
   `).run({
     id,
     error: error instanceof Error ? error.message : String(error),
+    delay: nextRunAt,
   })
 }
 
-export function clearStaleRunningJobs(options: ClearStaleJobsOptions): number {
+export function clearStaleRunningJobs(options: ClearStaleJobsOptions): StaleRunningJobsResult {
   ensureJobsTable()
+  const maxAttempts = options.maxAttempts ?? 3
 
-  const result = db.prepare(`
+  const requeued = db.prepare(`
     UPDATE jobs
-    SET status = 'failed',
-        error = 'Cleared stale running job',
+    SET status = 'queued',
+        error = 'Recovered stale running job',
+        next_run_at = datetime('now', CASE
+          WHEN attempts <= 1 THEN '+30 seconds'
+          WHEN attempts = 2 THEN '+60 seconds'
+          ELSE '+180 seconds'
+        END),
         updated_at = CURRENT_TIMESTAMP
     WHERE status = 'running'
       AND updated_at < datetime('now', @age)
+      AND attempts < @maxAttempts
   `).run({
     age: `-${Math.max(1, Math.trunc(options.olderThanSeconds))} seconds`,
+    maxAttempts,
   })
 
-  return result.changes
+  const failed = db.prepare(`
+    UPDATE jobs
+    SET status = 'failed',
+        error = 'Cleared stale running job after max attempts',
+        next_run_at = NULL,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE status = 'running'
+      AND updated_at < datetime('now', @age)
+      AND attempts >= @maxAttempts
+  `).run({
+    age: `-${Math.max(1, Math.trunc(options.olderThanSeconds))} seconds`,
+    maxAttempts,
+  })
+
+  return { requeued: requeued.changes, failed: failed.changes }
 }
 
 export function clearJobsByStatus(status: Extract<JobStatus, 'completed' | 'failed'>): number {
@@ -193,4 +241,9 @@ export function clearJobsByStatus(status: Extract<JobStatus, 'completed' | 'fail
   `).run({ status })
 
   return result.changes
+}
+
+function retryDelaySql(attempts: number): string {
+  const index = Math.max(0, Math.min(Math.trunc(attempts) - 1, retryBackoffSeconds.length - 1))
+  return `+${retryBackoffSeconds[index]} seconds`
 }

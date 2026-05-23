@@ -57,6 +57,7 @@ function serializeJob(job: JobRow) {
     status: job.status,
     attempts: job.attempts,
     error: job.error,
+    nextRunAt: job.nextRunAt,
     payload: job.payload,
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,

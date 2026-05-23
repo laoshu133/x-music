@@ -183,12 +183,15 @@ async function main(): Promise<void> {
   enqueueRefreshUmCryptoJob({ reason: 'startup' })
   const cleared = clearStaleRunningJobs({
     olderThanSeconds: staleRunningJobSeconds,
+    maxAttempts,
   })
 
   console.log('XMusic worker started')
   console.log(`data dir: ${appConfig.dataDir}`)
   console.log(`poll interval: ${pollIntervalMs}ms`)
-  if (cleared) console.log(`cleared ${cleared} stale running jobs`)
+  if (cleared.requeued || cleared.failed) {
+    console.log(`recovered stale running jobs: requeued ${cleared.requeued}, failed ${cleared.failed}`)
+  }
 
   while (!stopping) {
     const didWork = await processWorkerTick()
