@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
+import { spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import path from 'node:path'
 import { db } from '@/lib/db'
 import { appConfig } from '@/lib/config'
 import { ensureTrack, upsertTrackFileStatus } from '@/lib/cache/store'
 import { processOneEmbySyncJob } from '@/lib/emby/sync-worker'
+import { enqueueRefreshUmCliJob } from '@/lib/cache/um-cli-job'
 import { claimNextJob, clearJobsByStatus, clearStaleRunningJobs, completeJob, createJob, failJob, getJob, requeueJob } from '@/lib/jobs'
 import { getJobSummary, listJobs } from '@/lib/jobs/status'
 import { processWorkerTick } from '@/worker/index'
@@ -206,6 +209,101 @@ test('worker tick gives emby sync a turn when tag processing did work', async ()
 
   assert.equal(didWork, true)
   assert.deepEqual(calls, ['tag', 'emby', 'cleanup'])
+})
+
+test('worker tick processes queued UM CLI refresh jobs', async () => {
+  const calls: string[] = []
+  const didWork = await processWorkerTick({
+    scheduleCleanupResourceCacheJob: false,
+    async processRefreshUmCliJob() {
+      calls.push('um')
+      return true
+    },
+    async processTagJob() {
+      calls.push('tag')
+      return false
+    },
+    async processEmbySyncJob() {
+      calls.push('emby')
+      return false
+    },
+    async processCleanupResourceCacheJob() {
+      calls.push('cleanup')
+      return false
+    },
+  })
+
+  assert.equal(didWork, true)
+  assert.deepEqual(calls, ['um', 'tag', 'emby', 'cleanup'])
+})
+
+test('UM CLI refresh job downloads latest release once and reuses local version', async () => {
+  const originalFetch = globalThis.fetch
+  const tag = `vjob-${Date.now()}`
+  const toolDir = path.join(appConfig.toolsDir, 'um', tag)
+  const archivePath = `/tmp/x-music-um-job-${tag}.tar.gz`
+  const fixtureDir = `/tmp/x-music-um-job-fixture-${tag}`
+
+  try {
+    db.prepare("DELETE FROM jobs WHERE type = 'refresh_um_cli'").run()
+    rmSync(toolDir, { recursive: true, force: true })
+    rmSync(fixtureDir, { recursive: true, force: true })
+    mkdirSync(fixtureDir, { recursive: true })
+    writeFileSync(path.join(fixtureDir, 'um'), '#!/bin/sh\nexit 0\n')
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn('tar', ['-czf', archivePath, '-C', fixtureDir, 'um'])
+      child.on('error', reject)
+      child.on('exit', code => code === 0 ? resolve() : reject(new Error(`tar exited ${code}`)))
+    })
+
+    const archive = readFileSync(archivePath)
+    const hash = createHash('sha256').update(archive).digest('hex')
+    const assetName = `um-${process.platform === 'darwin' ? 'darwin' : 'linux'}-${process.arch === 'x64' ? 'amd64' : 'arm64'}-${tag}.tar.gz`
+    let archiveDownloads = 0
+
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const requestUrl = String(url)
+      if (requestUrl.includes('/api/v1/repos/um/cli/releases/latest')) {
+        return Response.json({
+          tag_name: tag,
+          assets: [
+            { name: 'sha256sum.txt', browser_download_url: 'https://release.example/sha256sum.txt' },
+            { name: assetName, browser_download_url: `https://release.example/${assetName}` },
+          ],
+        })
+      }
+      if (requestUrl.endsWith('/sha256sum.txt')) return new Response(`${hash}  ${assetName}\n`)
+      if (requestUrl.endsWith(`/${assetName}`)) {
+        archiveDownloads += 1
+        return new Response(new Uint8Array(archive))
+      }
+      return new Response('not found', { status: 404 })
+    }) as typeof fetch
+
+    enqueueRefreshUmCliJob({ reason: 'startup' })
+    assert.equal(await processWorkerTick({
+      scheduleCleanupResourceCacheJob: false,
+      processTagJob: async () => false,
+      processEmbySyncJob: async () => false,
+      processCleanupResourceCacheJob: async () => false,
+    }), true)
+    assert.equal(archiveDownloads, 1)
+
+    enqueueRefreshUmCliJob({ reason: 'startup' })
+    assert.equal(await processWorkerTick({
+      scheduleCleanupResourceCacheJob: false,
+      processTagJob: async () => false,
+      processEmbySyncJob: async () => false,
+      processCleanupResourceCacheJob: async () => false,
+    }), true)
+    assert.equal(archiveDownloads, 1)
+  } finally {
+    rmSync(toolDir, { recursive: true, force: true })
+    rmSync(fixtureDir, { recursive: true, force: true })
+    rmSync(archivePath, { force: true })
+    db.prepare("DELETE FROM jobs WHERE type = 'refresh_um_cli'").run()
+    globalThis.fetch = originalFetch
+  }
 })
 
 test('emby sync job does not complete when scan cannot find item', async () => {

@@ -39,6 +39,7 @@ interface PlayHistoryRow extends TrackRow {
 }
 
 const now = () => new Date().toISOString()
+const playableAudioExtensions = new Set(['.flac', '.mp3', '.m4a', '.mp4', '.ogg', '.opus', '.wav'])
 
 export const ensureTrack = (musicInfo: MusicInfo): TrackRecord => {
   const rawJson = JSON.stringify(musicInfo.raw ?? musicInfo)
@@ -84,7 +85,7 @@ export const getReadyTrackFile = (source: OnlineSource, songmid: string, quality
   `).get(source, songmid, quality) as TrackFileRow | undefined
 
   const record = row ? mapTrackFile(row) : undefined
-  if (!record?.finalPath || !fs.existsSync(record.finalPath)) return undefined
+  if (!record?.finalPath || !isPlayableAudioPath(record.finalPath)) return undefined
   return record
 }
 
@@ -107,9 +108,21 @@ export const getPlayableTrackFile = (source: OnlineSource, songmid: string, qual
   `).get(source, songmid, quality) as TrackFileRow | undefined
 
   const record = row ? mapTrackFile(row) : undefined
-  if (record?.finalPath && fs.existsSync(record.finalPath)) return record
-  if (record?.rawPath && fs.existsSync(record.rawPath)) return record
+  if (record?.finalPath && isPlayableAudioPath(record.finalPath)) return record
+  if (record?.rawPath && isPlayableAudioPath(record.rawPath)) return record
   return undefined
+}
+
+export const isPlayableAudioFileName = (filePath: string): boolean => {
+  const pathname = safeUrlPathname(filePath)
+  const ext = pathname.startsWith('.') && !pathname.includes('/')
+    ? pathname.toLowerCase()
+    : path.extname(pathname).toLowerCase()
+  return playableAudioExtensions.has(ext)
+}
+
+export const isPlayableAudioPath = (filePath: string): boolean => {
+  return isPlayableAudioFileName(filePath) && fs.existsSync(filePath)
 }
 
 export const hasActiveTrackFile = (source: OnlineSource, songmid: string, qualities: MusicQuality[]): boolean => {

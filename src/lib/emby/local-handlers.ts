@@ -1,7 +1,8 @@
 import { ensureTrack, getPlayableTrackFile, getTrack, hasActiveTrackFile, insertPlayEvent, listPlayHistory, upsertTrackFileStatus } from '@/lib/cache/store'
 import { cachedResourceResponse } from '@/lib/cache/resources'
 import { createUpstreamTeeResponse, streamLocalFile } from '@/lib/cache/stream'
-import { MusicUrlConfigError, MusicUrlResolveError, qualityFallbacks, resolveMusicUrlWithFallback } from '@/lib/music-url/resolve'
+import { encryptedQQAudioRequiresKeyMessage, isEncryptedQQAudioFileName, isEncryptedQQAudioRequiresKeyError } from '@/lib/cache/decrypt'
+import { MusicUrlConfigError, MusicUrlResolveError, qualityFallbacks, resolveMusicUrl, resolveMusicUrlWithFallback } from '@/lib/music-url/resolve'
 import {
   getQQPlaylistDetail,
   getQQFavoriteSongs,
@@ -1150,9 +1151,8 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
   }
 
   const track = ensureTrack(musicInfo)
-  upsertTrackFileStatus(track.id, preferredQuality, 'resolving_url')
   try {
-    const resolved = await resolveMusicUrlWithFallback(musicInfo, preferredQuality)
+    const resolved = await resolvePlayableUpstreamResponse(musicInfo, preferredQuality, track, request)
     insertPlayEvent(track.id, resolved.quality, authorizedLocalAccount(request)?.qqUin)
     syncQQPlayHistoryBestEffort({
       cookie: qqCookieForRequest(request),
@@ -1166,18 +1166,60 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
       playlistId: decoded.playlistId ?? stored.playlistId,
       musicInfo,
     })
-    const { response, completion } = await createUpstreamTeeResponse(resolved.url, track, resolved.quality, request)
-    completion.catch((error: unknown) => {
+    resolved.completion.catch((error: unknown) => {
       upsertTrackFileStatus(track.id, resolved.quality, 'failed', {
         error: error instanceof Error ? error.message : String(error),
       })
     })
-    return markRequestSource(response, 'upstream')
+    return markRequestSource(resolved.response, 'upstream')
   } catch (error) {
     const message = playbackErrorMessage(error)
     upsertTrackFileStatus(track.id, preferredQuality, 'failed', { error: message })
     return Response.json({ error: message }, { status: 502 })
   }
+}
+
+async function resolvePlayableUpstreamResponse(
+  musicInfo: MusicInfo,
+  preferredQuality: MusicQuality,
+  track: TrackRecord,
+  request: Request,
+): Promise<{
+  url: string
+  quality: MusicQuality
+  response: Response
+  completion: Promise<void>
+}> {
+  const attempts: Array<{ quality: MusicQuality; error: string }> = []
+  let encryptedQQRequiresKey = false
+
+  for (const quality of qualityFallbacks(preferredQuality)) {
+    upsertTrackFileStatus(track.id, quality, 'resolving_url')
+    try {
+      const resolved = await resolveMusicUrl(musicInfo, quality)
+      if (encryptedQQRequiresKey && isEncryptedQQAudioFileName(resolved.url)) {
+        const message = 'Skipped encrypted QQ audio because a previous encrypted quality already required a local QQ Music key'
+        attempts.push({ quality, error: message })
+        upsertTrackFileStatus(track.id, quality, 'failed', { error: message })
+        continue
+      }
+      const { response, completion } = await createUpstreamTeeResponse(resolved.url, track, resolved.quality, request)
+      return {
+        url: resolved.url,
+        quality: resolved.quality,
+        response,
+        completion,
+      }
+    } catch (error) {
+      if (error instanceof MusicUrlConfigError) throw error
+      const message = error instanceof Error ? error.message : String(error)
+      attempts.push({ quality, error: message })
+      upsertTrackFileStatus(track.id, quality, 'failed', { error: message })
+      if (isEncryptedQQAudioRequiresKeyError(error)) encryptedQQRequiresKey = true
+    }
+  }
+
+  throw new MusicUrlResolveError('Unable to resolve a playable music URL', attempts)
 }
 
 async function loadOrFetchVirtualSong(songmid: string, playlistId?: string): Promise<{ song: MusicInfo; playlistId?: string } | undefined> {
@@ -1317,6 +1359,9 @@ function playbackErrorMessage(error: unknown): string {
 
   if (error instanceof MusicUrlResolveError) {
     const detail = error.attempts.map((attempt) => `${attempt.quality}: ${attempt.error}`).join('; ')
+    if (error.attempts.some(attempt => attempt.error.includes('QQ encrypted audio requires a matching QQ Music local key'))) {
+      return `${encryptedQQAudioRequiresKeyMessage} ${detail}`
+    }
     return `Unable to resolve a playable music URL. ${detail}`
   }
 
@@ -2386,7 +2431,8 @@ function wantsRawLyrics(request: Request): boolean {
 }
 
 function subtitleStreamFormat(path: string): string {
-  return path.match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase() ?? 'lrc'
+  const pathname = path.split('?', 1)[0] ?? path
+  return pathname.match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase() ?? 'lrc'
 }
 
 function subtitleContentType(format: string): string {

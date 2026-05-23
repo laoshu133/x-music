@@ -1,6 +1,7 @@
 import { ensureTrack, getPlayableTrackFile, insertPlayEvent, upsertTrackFileStatus } from '@/lib/cache/store'
 import { createUpstreamTeeResponse, streamLocalFile } from '@/lib/cache/stream'
-import { MusicUrlConfigError, MusicUrlResolveError, parseRequestedQuality, qualityFallbacks, resolveMusicUrlWithFallback } from '@/lib/music-url/resolve'
+import { encryptedQQAudioRequiresKeyMessage, isEncryptedQQAudioFileName, isEncryptedQQAudioRequiresKeyError } from '@/lib/cache/decrypt'
+import { MusicUrlConfigError, MusicUrlResolveError, parseRequestedQuality, qualityFallbacks, resolveMusicUrl, resolveMusicUrlWithFallback } from '@/lib/music-url/resolve'
 import { getQQLoginState, syncQQPlayHistoryBestEffort } from '@/lib/qq'
 import { logCompletedRequest, logFailedRequest, markRequestSource } from '@/lib/request-log'
 import type { MusicInfo, MusicQuality, OnlineSource } from '@/lib/types'
@@ -71,10 +72,8 @@ const handlePlayRequest = async (request: Request, input: PlayRequest): Promise<
   }
 
   const track = ensureTrack(musicInfo)
-  upsertTrackFileStatus(track.id, preferredQuality, 'resolving_url')
-
   try {
-    const resolved = await resolveMusicUrlWithFallback(musicInfo, preferredQuality)
+    const resolved = await resolvePlayableUpstreamResponse(musicInfo, preferredQuality, track, request)
     if (shouldRecordPlayback) {
       insertPlayEvent(track.id, resolved.quality)
       syncQQPlayHistoryBestEffort({
@@ -84,15 +83,14 @@ const handlePlayRequest = async (request: Request, input: PlayRequest): Promise<
         playUrl: resolved.url,
       })
     }
-    const { response, completion } = await createUpstreamTeeResponse(resolved.url, track, resolved.quality, request)
 
-    completion.catch((error: unknown) => {
+    resolved.completion.catch((error: unknown) => {
       upsertTrackFileStatus(track.id, resolved.quality, 'failed', {
         error: error instanceof Error ? error.message : String(error),
       })
     })
 
-    return markRequestSource(response, 'upstream')
+    return markRequestSource(resolved.response, 'upstream')
   } catch (error) {
     const message = playbackErrorMessage(error)
     upsertTrackFileStatus(track.id, preferredQuality, 'failed', {
@@ -100,6 +98,49 @@ const handlePlayRequest = async (request: Request, input: PlayRequest): Promise<
     })
     return jsonError(message, 502)
   }
+}
+
+const resolvePlayableUpstreamResponse = async (
+  musicInfo: MusicInfo,
+  preferredQuality: MusicQuality,
+  track: ReturnType<typeof ensureTrack>,
+  request: Request,
+): Promise<{
+  url: string
+  quality: MusicQuality
+  response: Response
+  completion: Promise<void>
+}> => {
+  const attempts: Array<{ quality: MusicQuality; error: string }> = []
+  let encryptedQQRequiresKey = false
+
+  for (const quality of qualityFallbacks(preferredQuality)) {
+    upsertTrackFileStatus(track.id, quality, 'resolving_url')
+    try {
+      const resolved = await resolveMusicUrl(musicInfo, quality)
+      if (encryptedQQRequiresKey && isEncryptedQQAudioFileName(resolved.url)) {
+        const message = 'Skipped encrypted QQ audio because a previous encrypted quality already required a local QQ Music key'
+        attempts.push({ quality, error: message })
+        upsertTrackFileStatus(track.id, quality, 'failed', { error: message })
+        continue
+      }
+      const { response, completion } = await createUpstreamTeeResponse(resolved.url, track, resolved.quality, request)
+      return {
+        url: resolved.url,
+        quality: resolved.quality,
+        response,
+        completion,
+      }
+    } catch (error) {
+      if (error instanceof MusicUrlConfigError) throw error
+      const message = error instanceof Error ? error.message : String(error)
+      attempts.push({ quality, error: message })
+      upsertTrackFileStatus(track.id, quality, 'failed', { error: message })
+      if (isEncryptedQQAudioRequiresKeyError(error)) encryptedQQRequiresKey = true
+    }
+  }
+
+  throw new MusicUrlResolveError('Unable to resolve a playable music URL', attempts)
 }
 
 const isPlaybackStartRequest = (request: Request): boolean => {
@@ -144,6 +185,9 @@ const playbackErrorMessage = (error: unknown): string => {
 
   if (error instanceof MusicUrlResolveError) {
     const detail = error.attempts.map((attempt) => `${attempt.quality}: ${attempt.error}`).join('; ')
+    if (error.attempts.some(attempt => attempt.error.includes('QQ encrypted audio requires a matching QQ Music local key'))) {
+      return `${encryptedQQAudioRequiresKeyMessage} ${detail}`
+    }
     return `Unable to resolve a playable music URL. ${detail}`
   }
 

@@ -4,10 +4,11 @@ import { mkdir, rename, stat, unlink } from 'node:fs/promises'
 import path from 'node:path'
 import { Readable } from 'node:stream'
 import { appConfig } from '@/lib/config'
-import { enqueueTagJob, fileExtensionFromContentType, upsertTrackFileStatus } from '@/lib/cache/store'
+import { enqueueTagJob, fileExtensionFromContentType, isPlayableAudioFileName, upsertTrackFileStatus } from '@/lib/cache/store'
 import { enqueueEmbyTrackSync } from '@/lib/emby/sync'
 import { triggerInlineTagging } from '@/lib/tagging/inline'
-import type { MusicQuality, TrackRecord } from '@/lib/types'
+import type { MusicInfo, MusicQuality, TrackRecord } from '@/lib/types'
+import { decryptEncryptedQQAudioFile, isEncryptedQQAudioFileName } from './decrypt'
 
 interface TeeResult {
   response: Response
@@ -67,8 +68,9 @@ export const createUpstreamTeeResponse = async (
     accept: '*/*',
   })
 
+  const encryptedUpstream = isEncryptedQQAudioFileName(upstreamUrl)
   const range = request.headers.get('range')
-  if (range) upstreamHeaders.set('range', range)
+  if (range && !encryptedUpstream) upstreamHeaders.set('range', range)
 
   const upstream = await fetch(upstreamUrl, {
     headers: upstreamHeaders,
@@ -84,6 +86,19 @@ export const createUpstreamTeeResponse = async (
   }
 
   const extension = fileExtensionFromContentType(upstream.headers.get('content-type'), upstreamUrl)
+  if (encryptedUpstream) {
+    if (upstream.status === 206) throw new Error('encrypted upstream returned partial content')
+    return createEncryptedUpstreamResponse({
+      upstreamBody: upstream.body,
+      extension: path.extname(safeUrlPathname(upstreamUrl)).toLowerCase(),
+      track,
+      quality,
+      request,
+    })
+  }
+  if (!isPlayableAudioFileName(extension)) {
+    throw new Error(`upstream returned unsupported audio container: ${extension}`)
+  }
   const cacheKey = `${track.source}-${safeFilePart(track.songmid)}-${quality}-${Date.now()}`
   const partPath = path.join(appConfig.stagingDir, `${cacheKey}.part`)
   const inboxPath = path.join(appConfig.inboxDir, `${cacheKey}${extension}`)
@@ -109,6 +124,79 @@ export const createUpstreamTeeResponse = async (
       headers,
     }),
     completion,
+  }
+}
+
+async function createEncryptedUpstreamResponse({
+  upstreamBody,
+  extension,
+  track,
+  quality,
+  request,
+}: {
+  upstreamBody: ReadableStream<Uint8Array>
+  extension: string
+  track: TrackRecord
+  quality: MusicQuality
+  request: Request
+}): Promise<TeeResult> {
+  const cacheKey = `${track.source}-${safeFilePart(track.songmid)}-${quality}-${Date.now()}`
+  const encryptedPath = path.join(appConfig.stagingDir, `${cacheKey}${extension}`)
+  upsertTrackFileStatus(track.id, quality, 'streaming_and_caching', {
+    rawPath: encryptedPath,
+  })
+
+  let decryptedPath: string | undefined
+  const completion = writeEncryptedCache({
+    upstreamBody,
+    encryptedPath,
+    track,
+    quality,
+  }).then((result) => {
+    decryptedPath = result.finalPath
+  })
+  await completion
+  return {
+    response: await streamLocalFile(decryptedPath ?? encryptedPath, request),
+    completion,
+  }
+}
+
+async function writeEncryptedCache({
+  upstreamBody,
+  encryptedPath,
+  track,
+  quality,
+}: {
+  upstreamBody: ReadableStream<Uint8Array>
+  encryptedPath: string
+  track: TrackRecord
+  quality: MusicQuality
+}): Promise<{ finalPath: string }> {
+  try {
+    await writeStreamToFile(upstreamBody, encryptedPath)
+    const decrypted = await decryptEncryptedQQAudioFile(encryptedPath)
+    const sha256 = await hashFile(decrypted.finalPath)
+    const completedFile = upsertTrackFileStatus(track.id, quality, 'tagging', {
+      rawPath: decrypted.finalPath,
+      finalPath: decrypted.finalPath,
+      sizeBytes: decrypted.sizeBytes,
+      sha256,
+    })
+    enqueueTagJob(completedFile, track)
+    enqueueEmbyTrackSync({
+      source: track.source,
+      songmid: track.songmid,
+      musicInfo: trackToMusicInfo(track),
+    })
+    triggerInlineTagging()
+    return { finalPath: decrypted.finalPath }
+  } catch (error) {
+    await unlink(encryptedPath).catch(() => undefined)
+    upsertTrackFileStatus(track.id, quality, 'failed', {
+      error: error instanceof Error ? error.message : String(error),
+    })
+    throw error
   }
 }
 
@@ -167,16 +255,7 @@ const teeUpstreamToClientAndCache = ({
       enqueueEmbyTrackSync({
         source: track.source,
         songmid: track.songmid,
-        musicInfo: {
-          source: track.source,
-          songmid: track.songmid,
-          name: track.name,
-          singer: track.singer,
-          albumName: track.albumName,
-          albumId: track.albumId,
-          interval: track.interval,
-          img: track.imageUrl,
-        },
+        musicInfo: trackToMusicInfo(track),
       })
       triggerInlineTagging()
       resolveCompletion()
@@ -284,21 +363,105 @@ const contentTypeFromPath = (filePath: string): string => {
   return 'audio/mpeg'
 }
 
+async function writeStreamToFile(stream: ReadableStream<Uint8Array>, filePath: string): Promise<number> {
+  const reader = stream.getReader()
+  const writeStream = fs.createWriteStream(filePath)
+  let writtenBytes = 0
+  let writeFailed: Error | undefined
+  writeStream.on('error', (error) => {
+    writeFailed = error
+  })
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      const buffer = Buffer.from(value)
+      writtenBytes += buffer.length
+      if (!writeStream.write(buffer)) await waitForWritableDrain(writeStream)
+      if (writeFailed) throw writeFailed
+    }
+    writeStream.end()
+    await waitForWritable(writeStream)
+    if (writeFailed) throw writeFailed
+    return writtenBytes
+  } catch (error) {
+    writeStream.destroy()
+    throw error
+  }
+}
+
+async function hashFile(filePath: string): Promise<string> {
+  const hash = crypto.createHash('sha256')
+  await new Promise<void>((resolve, reject) => {
+    const stream = fs.createReadStream(filePath)
+    stream.on('data', chunk => hash.update(chunk))
+    stream.on('end', resolve)
+    stream.on('error', reject)
+  })
+  return hash.digest('hex')
+}
+
+function trackToMusicInfo(track: TrackRecord): MusicInfo {
+  return {
+    source: track.source,
+    songmid: track.songmid,
+    name: track.name,
+    singer: track.singer,
+    albumName: track.albumName,
+    albumId: track.albumId,
+    interval: track.interval,
+    img: track.imageUrl,
+  }
+}
+
 const waitForWritable = async (stream: fs.WriteStream): Promise<void> => {
   if (stream.closed) return
   await new Promise<void>((resolve, reject) => {
-    stream.once('finish', resolve)
-    stream.once('error', reject)
+    const cleanup = () => {
+      stream.off('finish', onFinish)
+      stream.off('error', onError)
+    }
+    const onFinish = () => {
+      cleanup()
+      resolve()
+    }
+    const onError = (error: Error) => {
+      cleanup()
+      reject(error)
+    }
+    stream.once('finish', onFinish)
+    stream.once('error', onError)
   })
 }
 
 const waitForWritableDrain = async (stream: fs.WriteStream): Promise<void> => {
   await new Promise<void>((resolve, reject) => {
-    stream.once('drain', resolve)
-    stream.once('error', reject)
+    const cleanup = () => {
+      stream.off('drain', onDrain)
+      stream.off('error', onError)
+    }
+    const onDrain = () => {
+      cleanup()
+      resolve()
+    }
+    const onError = (error: Error) => {
+      cleanup()
+      reject(error)
+    }
+    stream.once('drain', onDrain)
+    stream.once('error', onError)
   })
 }
 
 const safeFilePart = (value: string): string => {
   return value.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80)
+}
+
+const safeUrlPathname = (value: string): string => {
+  try {
+    return new URL(value).pathname
+  } catch {
+    return value
+  }
 }

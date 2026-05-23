@@ -1,8 +1,13 @@
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import test from 'node:test'
 import { ensureTrack, getPlayableTrackFile, getReadyTrackFile, insertPlayEvent, listPlayHistory, upsertTrackFileStatus } from '@/lib/cache/store'
 import { cachedResourceResponse, cleanupResourceCache } from '@/lib/cache/resources'
+import { createUpstreamTeeResponse } from '@/lib/cache/stream'
+import { EncryptedQQAudioRequiresKeyError } from '@/lib/cache/decrypt'
+import { resolveUmCliPath } from '@/lib/cache/um-cli'
 import { appConfig } from '@/lib/config'
 import { db } from '@/lib/db'
 import type { MusicInfo } from '@/lib/types'
@@ -45,6 +50,257 @@ test('cache store can serve cached raw files before tagging finishes', () => {
     assert.equal(file?.finalPath, rawPath)
   } finally {
     fs.unlinkSync(rawPath)
+  }
+})
+
+test('cache store does not serve encrypted QQ cache files as playable audio', () => {
+  const songmid = `ENCRYPTED_PLAYABLE_${Date.now()}`
+  const finalPath = `/tmp/x-music-encrypted-${songmid}.mgg`
+  fs.writeFileSync(finalPath, 'fake encrypted audio')
+  try {
+    const musicInfo: MusicInfo = {
+      source: 'tx',
+      songmid,
+      name: 'Encrypted Playable Test',
+      singer: 'Tester',
+    }
+
+    const track = ensureTrack(musicInfo)
+    upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath })
+
+    assert.equal(getReadyTrackFile('tx', songmid, '320k'), undefined)
+    assert.equal(getPlayableTrackFile('tx', songmid, '320k'), undefined)
+  } finally {
+    fs.unlinkSync(finalPath)
+  }
+})
+
+test('upstream stream rejects encrypted QQ audio containers when UM CLI cannot be resolved', async () => {
+  const originalFetch = globalThis.fetch
+  const songmid = `ENCRYPTED_STREAM_${Date.now()}`
+  const musicInfo: MusicInfo = {
+    source: 'tx',
+    songmid,
+    name: 'Encrypted Stream Test',
+    singer: 'Tester',
+  }
+
+  try {
+    const track = ensureTrack(musicInfo)
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const requestUrl = String(url)
+      if (requestUrl.includes('/api/v1/repos/um/cli/releases/latest')) {
+        return Response.json({ tag_name: 'v0.0.0', assets: [] })
+      }
+      return new Response('fake encrypted audio', {
+        headers: { 'content-type': 'audio/mpeg' },
+      })
+    }) as typeof fetch
+
+    await assert.rejects(
+      createUpstreamTeeResponse(
+        `https://ws.stream.qqmusic.qq.com/${songmid}.mgg?vkey=test`,
+        track,
+        '320k',
+        new Request('http://local/play'),
+      ),
+      /UM CLI release has no asset|compatible asset/,
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('upstream stream decrypts encrypted QQ audio containers through UM CLI', async () => {
+  const originalFetch = globalThis.fetch
+  const songmid = `DECRYPTED_STREAM_${Date.now()}`
+  const tag = `vdecrypt-${Date.now()}`
+  const toolDir = `${appConfig.dataDir}/tools/um/${tag}`
+  const archivePath = `/tmp/x-music-um-${tag}.tar.gz`
+  const fixtureDir = `/tmp/x-music-um-fixture-${tag}`
+  const musicInfo: MusicInfo = {
+    source: 'tx',
+    songmid,
+    name: 'Decrypted Stream Test',
+    singer: 'Tester',
+  }
+
+  try {
+    const archive = await createUmReleaseArchive({
+      fixtureDir,
+      archivePath,
+      script: `#!/usr/bin/env node
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { basename, extname, join } from 'node:path'
+const args = process.argv.slice(2)
+const outputDir = args[args.indexOf('--output') + 1]
+const input = args.at(-1)
+mkdirSync(outputDir, { recursive: true })
+const name = basename(input, extname(input))
+writeFileSync(join(outputDir, name + '.mp3'), readFileSync(input))
+`,
+    })
+    fs.rmSync(toolDir, { recursive: true, force: true })
+    const hash = createHash('sha256').update(archive).digest('hex')
+    const assetName = umAssetName(tag)
+
+    const track = ensureTrack(musicInfo)
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const requestUrl = String(url)
+      if (requestUrl.includes('/api/v1/repos/um/cli/releases/latest')) {
+        return Response.json({
+          tag_name: tag,
+          assets: [
+            { name: 'sha256sum.txt', browser_download_url: 'https://release.example/sha256sum.txt' },
+            { name: assetName, browser_download_url: `https://release.example/${assetName}` },
+          ],
+        })
+      }
+      if (requestUrl.endsWith('/sha256sum.txt')) return new Response(`${hash}  ${assetName}\n`)
+      if (requestUrl.endsWith(`/${assetName}`)) return new Response(new Uint8Array(archive))
+      return new Response('decrypted audio bytes', {
+        headers: { 'content-type': 'audio/mpeg' },
+      })
+    }) as typeof fetch
+
+    const { response, completion } = await createUpstreamTeeResponse(
+      `https://ws.stream.qqmusic.qq.com/${songmid}.mgg?vkey=test`,
+      track,
+      '320k',
+      new Request('http://local/play'),
+    )
+    assert.equal(response.status, 200)
+    assert.equal(await response.text(), 'decrypted audio bytes')
+    await completion
+
+    const file = getPlayableTrackFile('tx', songmid, '320k')
+    assert.match(file?.finalPath ?? '', /\.mp3$/)
+    assert.equal(fs.existsSync(file?.finalPath ?? ''), true)
+  } finally {
+    fs.rmSync(toolDir, { recursive: true, force: true })
+    fs.rmSync(fixtureDir, { recursive: true, force: true })
+    fs.rmSync(archivePath, { force: true })
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('upstream stream classifies encrypted QQ audio that needs local QQ Music keys', async () => {
+  const originalFetch = globalThis.fetch
+  const songmid = `QMC_KEY_REQUIRED_${Date.now()}`
+  const tag = `vkey-required-${Date.now()}`
+  const toolDir = `${appConfig.dataDir}/tools/um/${tag}`
+  const archivePath = `/tmp/x-music-um-${tag}.tar.gz`
+  const fixtureDir = `/tmp/x-music-um-fixture-${tag}`
+  const musicInfo: MusicInfo = {
+    source: 'tx',
+    songmid,
+    name: 'QMC Key Required Test',
+    singer: 'Tester',
+  }
+
+  try {
+    const archive = await createUmReleaseArchive({
+      fixtureDir,
+      archivePath,
+      script: `#!/usr/bin/env node
+process.stderr.write('qmc: detect file type failed\\nno any decoder can resolve the file')
+process.exit(2)
+`,
+    })
+    fs.rmSync(toolDir, { recursive: true, force: true })
+    const hash = createHash('sha256').update(archive).digest('hex')
+    const assetName = umAssetName(tag)
+
+    const track = ensureTrack(musicInfo)
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const requestUrl = String(url)
+      if (requestUrl.includes('/api/v1/repos/um/cli/releases/latest')) {
+        return Response.json({
+          tag_name: tag,
+          assets: [
+            { name: 'sha256sum.txt', browser_download_url: 'https://release.example/sha256sum.txt' },
+            { name: assetName, browser_download_url: `https://release.example/${assetName}` },
+          ],
+        })
+      }
+      if (requestUrl.endsWith('/sha256sum.txt')) return new Response(`${hash}  ${assetName}\n`)
+      if (requestUrl.endsWith(`/${assetName}`)) return new Response(new Uint8Array(archive))
+      return new Response('encrypted audio bytes', {
+        headers: { 'content-type': 'application/octet-stream' },
+      })
+    }) as typeof fetch
+
+    await assert.rejects(
+      createUpstreamTeeResponse(
+        `https://ws.stream.qqmusic.qq.com/${songmid}.mgg?vkey=test`,
+        track,
+        '320k',
+        new Request('http://local/play'),
+      ),
+      EncryptedQQAudioRequiresKeyError,
+    )
+  } finally {
+    fs.rmSync(toolDir, { recursive: true, force: true })
+    fs.rmSync(fixtureDir, { recursive: true, force: true })
+    fs.rmSync(archivePath, { force: true })
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('UM CLI resolver downloads and reuses latest release asset', async () => {
+  const originalFetch = globalThis.fetch
+  const tag = `vtest-${Date.now()}`
+  const toolDir = `${appConfig.dataDir}/tools/um/${tag}`
+  const archivePath = `/tmp/x-music-um-${tag}.tar.gz`
+  const fixtureDir = `/tmp/x-music-um-fixture-${tag}`
+
+  try {
+    fs.rmSync(toolDir, { recursive: true, force: true })
+    fs.rmSync(fixtureDir, { recursive: true, force: true })
+    fs.mkdirSync(fixtureDir, { recursive: true })
+    fs.writeFileSync(`${fixtureDir}/um`, '#!/bin/sh\nexit 0\n')
+    fs.chmodSync(`${fixtureDir}/um`, 0o755)
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn('tar', ['-czf', archivePath, '-C', fixtureDir, 'um'])
+      child.on('error', reject)
+      child.on('exit', (code: number) => code === 0 ? resolve() : reject(new Error(`tar exited ${code}`)))
+    })
+    const archive = fs.readFileSync(archivePath)
+    const hash = createHash('sha256').update(archive).digest('hex')
+    const assetName = `um-${process.platform === 'darwin' ? 'darwin' : 'linux'}-${process.arch === 'x64' ? 'amd64' : 'arm64'}-${tag}.tar.gz`
+    let archiveDownloads = 0
+
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const requestUrl = String(url)
+      if (requestUrl.includes('/api/v1/repos/um/cli/releases/latest')) {
+        return Response.json({
+          tag_name: tag,
+          assets: [
+            { name: 'sha256sum.txt', browser_download_url: 'https://release.example/sha256sum.txt' },
+            { name: assetName, browser_download_url: `https://release.example/${assetName}` },
+          ],
+        })
+      }
+      if (requestUrl.endsWith('/sha256sum.txt')) {
+        return new Response(`${hash}  ${assetName}\n`)
+      }
+      if (requestUrl.endsWith(`/${assetName}`)) {
+        archiveDownloads += 1
+        return new Response(new Uint8Array(archive))
+      }
+      return new Response('not found', { status: 404 })
+    }) as typeof fetch
+
+    const first = await resolveUmCliPath()
+    const second = await resolveUmCliPath()
+    assert.equal(first, second)
+    assert.equal(fs.existsSync(first), true)
+    assert.equal(archiveDownloads, 1)
+  } finally {
+    fs.rmSync(toolDir, { recursive: true, force: true })
+    fs.rmSync(fixtureDir, { recursive: true, force: true })
+    fs.rmSync(archivePath, { force: true })
+    globalThis.fetch = originalFetch
   }
 })
 
@@ -236,3 +492,24 @@ test('resource response streams first miss while caching for later hits', async 
     globalThis.fetch = originalFetch
   }
 })
+
+function umAssetName(tag: string): string {
+  return `um-${process.platform === 'darwin' ? 'darwin' : 'linux'}-${process.arch === 'x64' ? 'amd64' : 'arm64'}-${tag}.tar.gz`
+}
+
+async function createUmReleaseArchive(input: {
+  fixtureDir: string
+  archivePath: string
+  script: string
+}): Promise<Buffer> {
+  fs.rmSync(input.fixtureDir, { recursive: true, force: true })
+  fs.mkdirSync(input.fixtureDir, { recursive: true })
+  fs.writeFileSync(`${input.fixtureDir}/um`, input.script)
+  fs.chmodSync(`${input.fixtureDir}/um`, 0o755)
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn('tar', ['-czf', input.archivePath, '-C', input.fixtureDir, 'um'])
+    child.on('error', reject)
+    child.on('exit', (code: number) => code === 0 ? resolve() : reject(new Error(`tar exited ${code}`)))
+  })
+  return fs.readFileSync(input.archivePath)
+}

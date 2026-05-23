@@ -26,6 +26,7 @@ export const appConfig = {
   stagingDir: path.resolve(env.MUSIC_DATA_DIR, 'staging'),
   inboxDir: path.resolve(env.MUSIC_DATA_DIR, 'inbox'),
   musicDir: path.resolve(env.MUSIC_DATA_DIR, 'music'),
+  toolsDir: path.resolve(env.MUSIC_DATA_DIR, 'tools'),
   get lxMusicSourceScript() {
     return currentEnv().LX_MUSIC_SOURCE_SCRIPT
   },

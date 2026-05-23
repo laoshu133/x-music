@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { db } from '@/lib/db'
 import { deleteSetting, getEffectiveSettings, getSetting, setSetting, updateEffectiveSettings } from '@/lib/db/settings'
@@ -3283,7 +3285,7 @@ test('local emby virtual song lyrics return timed lyric lines', async () => {
       new Request(`http://local/Items/${encodeURIComponent(songId)}/${encodeURIComponent(songId)}/Subtitles/1/Stream.js?MediaBrowser%20Client=Musiver&Device=Mi-Mini-M2&Version=1.3.9&Token=${authPayload.AccessToken}`, {
         headers: { 'user-agent': 'musiver/1.3.9 (Macintosh)' },
       }),
-      stripOptionalEmbyPrefix(`/Items/${encodeURIComponent(songId)}/${encodeURIComponent(songId)}/Subtitles/1/Stream.js`),
+      stripOptionalEmbyPrefix(`/Items/${encodeURIComponent(songId)}/${encodeURIComponent(songId)}/Subtitles/1/Stream.js?MediaBrowser%20Client=Musiver&Device=Mi-Mini-M2&Version=1.3.9&Token=${authPayload.AccessToken}`),
     )
     assert.equal(queryTokenSubtitle.status, 200)
     assert.match(queryTokenSubtitle.headers.get('content-type') ?? '', /application\/json/)
@@ -3769,6 +3771,274 @@ test('musiver virtual audio stream prefers mp3 quality requested by client', asy
   }
 })
 
+test('local emby virtual audio falls back when encrypted preferred quality cannot decrypt', async () => {
+  const originalFetch = globalThis.fetch
+  const originalLxMusicSourceScript = process.env.LX_MUSIC_SOURCE_SCRIPT
+  const tag = `vfallback-${Date.now()}`
+  const toolDir = join(process.cwd(), 'data/tools/um', tag)
+  const archivePath = `/tmp/x-music-um-fallback-${tag}.tar.gz`
+  const fixtureDir = `/tmp/x-music-um-fallback-fixture-${tag}`
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999034')
+    process.env.LX_MUSIC_SOURCE_SCRIPT = 'https://script.example/legacy-lx?key=test-key'
+    saveQQLoginCookie('uin=o999034; qm_keyst=test-key')
+    markAccountUpstreamBound('999034')
+    const account = getAccountByQQ('999034')
+    assert.ok(account)
+
+    const archive = await createUmReleaseArchive({
+      fixtureDir,
+      archivePath,
+      script: `#!/usr/bin/env node
+process.stderr.write('fixture decrypt failure')
+process.exit(2)
+`,
+    })
+    rmSync(toolDir, { recursive: true, force: true })
+    const archiveHash = createHash('sha256').update(archive).digest('hex')
+    const assetName = umAssetName(tag)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const songmid = 'qq-encrypted-fallback-song-1'
+    const songId = encodeVirtualId({ kind: 'qq-song', songmid })
+    const authHeader = `MediaBrowser Client="ampcast", Version="0.9.28", Device="PC", Token="${authPayload.AccessToken}"`
+
+    db.prepare(`
+      INSERT INTO app_settings (key, value_json, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP
+    `).run(`virtual.song.${songmid}`, JSON.stringify({
+      song: {
+        source: 'tx',
+        songmid,
+        name: 'QQ Encrypted Fallback Song',
+        singer: 'QQ Artist',
+        albumName: 'QQ Album',
+        albumId: 'qq-album',
+        interval: '03:08',
+        types: [{ type: 'flac', size: '10 MB' }, { type: '320k', size: '4 MB' }],
+        raw: { songId: 123, songType: 0, strMediaMid: 'qq-media-1' },
+      },
+    }))
+
+    const requestedQualities: string[] = []
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'script.example') {
+        if (requestUrl.searchParams.get('action') !== 'musicUrl') {
+          return new Response('https://cdn.example/audio.mflac')
+        }
+        const quality = requestUrl.searchParams.get('quality') ?? 'flac'
+        requestedQualities.push(quality)
+        return new Response(`https://cdn.example/${quality === 'flac' ? 'audio.mflac' : 'audio.mp3'}`)
+      }
+      if (requestUrl.hostname === 'cdn.example' && requestUrl.pathname.endsWith('.mflac')) {
+        return new Response('encrypted-bytes', { headers: { 'content-type': 'application/octet-stream' } })
+      }
+      if (requestUrl.hostname === 'cdn.example' && requestUrl.pathname.endsWith('.mp3')) {
+        return new Response('fallback-audio', { headers: { 'content-type': 'audio/mpeg' } })
+      }
+      if (String(url).includes('/api/v1/repos/um/cli/releases/latest')) {
+        return Response.json({
+          tag_name: tag,
+          assets: [
+            { name: 'sha256sum.txt', browser_download_url: 'https://release.example/sha256sum.txt' },
+            { name: assetName, browser_download_url: `https://release.example/${assetName}` },
+          ],
+        })
+      }
+      if (requestUrl.hostname === 'release.example' && requestUrl.pathname.endsWith('/sha256sum.txt')) {
+        return new Response(`${archiveHash}  ${assetName}\n`)
+      }
+      if (requestUrl.hostname === 'release.example' && requestUrl.pathname.endsWith(`/${assetName}`)) {
+        return new Response(new Uint8Array(archive))
+      }
+      if (requestUrl.hostname === 'stat6.y.qq.com') return new Response('{}')
+      return Response.json({ Items: [], TotalRecordCount: 0 })
+    }) as typeof fetch
+
+    const response = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Audio/${encodeURIComponent(songId)}/universal?api_key=${authPayload.AccessToken}`, {
+        headers: { 'X-Emby-Authorization': authHeader },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Audio/${encodeURIComponent(songId)}/universal`),
+    )
+    assert.equal(response.status, 200)
+    assert.equal(await response.text(), 'fallback-audio')
+    assert.deepEqual(requestedQualities, ['flac', '320k'])
+
+    await waitFor(() => {
+      const row = db.prepare(`
+        SELECT tf.final_path AS finalPath
+        FROM track_files tf
+        INNER JOIN tracks t ON t.id = tf.track_id
+        WHERE t.source = 'tx' AND t.songmid = ? AND tf.quality = '320k'
+      `).get(songmid) as { finalPath?: string } | undefined
+      return Boolean(row?.finalPath?.endsWith('.mp3'))
+    })
+
+    const statuses = db.prepare(`
+      SELECT tf.quality, tf.status, tf.error, tf.final_path AS finalPath
+      FROM track_files tf
+      INNER JOIN tracks t ON t.id = tf.track_id
+      WHERE t.source = 'tx' AND t.songmid = ?
+      ORDER BY tf.quality
+    `).all(songmid) as Array<{ quality: string; status: string; error?: string; finalPath?: string }>
+    assert.ok(statuses.some(row => row.quality === 'flac' && row.status === 'failed' && row.error?.includes('fixture decrypt failure')))
+    assert.ok(statuses.some(row => row.quality === '320k' && row.finalPath?.endsWith('.mp3')))
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999034')
+    clearQQLoginCookie()
+    db.prepare('DELETE FROM app_settings WHERE key = ?').run('virtual.song.qq-encrypted-fallback-song-1')
+    db.prepare("DELETE FROM tracks WHERE songmid = ? AND source = 'tx'").run('qq-encrypted-fallback-song-1')
+    db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track' AND json_extract(payload_json, '$.songmid') = ?").run('qq-encrypted-fallback-song-1')
+    rmSync(toolDir, { recursive: true, force: true })
+    rmSync(fixtureDir, { recursive: true, force: true })
+    rmSync(archivePath, { force: true })
+    globalThis.fetch = originalFetch
+    if (originalLxMusicSourceScript === undefined) {
+      delete process.env.LX_MUSIC_SOURCE_SCRIPT
+    } else {
+      process.env.LX_MUSIC_SOURCE_SCRIPT = originalLxMusicSourceScript
+    }
+  }
+})
+
+test('local emby virtual audio reports QQ encrypted key requirement when every quality is encrypted', async () => {
+  const originalFetch = globalThis.fetch
+  const originalLxMusicSourceScript = process.env.LX_MUSIC_SOURCE_SCRIPT
+  const tag = `vrequires-key-${Date.now()}`
+  const toolDir = join(process.cwd(), 'data/tools/um', tag)
+  const archivePath = `/tmp/x-music-um-requires-key-${tag}.tar.gz`
+  const fixtureDir = `/tmp/x-music-um-requires-key-fixture-${tag}`
+  const songmid = `qq-encrypted-requires-key-${Date.now()}`
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999035')
+    process.env.LX_MUSIC_SOURCE_SCRIPT = 'https://script.example/legacy-lx?key=test-key'
+    saveQQLoginCookie('uin=o999035; qm_keyst=test-key')
+    markAccountUpstreamBound('999035')
+    const account = getAccountByQQ('999035')
+    assert.ok(account)
+
+    const archive = await createUmReleaseArchive({
+      fixtureDir,
+      archivePath,
+      script: `#!/usr/bin/env node
+process.stderr.write('qmc: detect file type failed\\nno any decoder can resolve the file')
+process.exit(2)
+`,
+    })
+    rmSync(toolDir, { recursive: true, force: true })
+    const archiveHash = createHash('sha256').update(archive).digest('hex')
+    const assetName = umAssetName(tag)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const songId = encodeVirtualId({ kind: 'qq-song', songmid })
+    const authHeader = `MediaBrowser Client="Amcfy Music for iOS", Version="1.0.20", Device="iPhone", Token="${authPayload.AccessToken}"`
+
+    db.prepare(`
+      INSERT INTO app_settings (key, value_json, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP
+    `).run(`virtual.song.${songmid}`, JSON.stringify({
+      song: {
+        source: 'tx',
+        songmid,
+        name: 'QQ Encrypted Requires Key Song',
+        singer: 'QQ Artist',
+        albumName: 'QQ Album',
+        albumId: 'qq-album',
+        interval: '03:08',
+        types: [{ type: 'flac', size: '10 MB' }, { type: '320k', size: '4 MB' }, { type: '128k', size: '2 MB' }],
+        raw: { songId: 123, songType: 0, strMediaMid: 'qq-media-key-required' },
+      },
+    }))
+
+    const requestedQualities: string[] = []
+    const downloadedAudioPaths: string[] = []
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'script.example') {
+        if (requestUrl.searchParams.get('action') !== 'musicUrl') {
+          return new Response('https://cdn.example/audio.mflac')
+        }
+        const quality = requestUrl.searchParams.get('quality') ?? 'flac'
+        requestedQualities.push(quality)
+        return new Response(`https://cdn.example/${quality === 'flac' ? 'audio.mflac' : `audio-${quality}.mgg`}`)
+      }
+      if (requestUrl.hostname === 'cdn.example' && (requestUrl.pathname.endsWith('.mflac') || requestUrl.pathname.endsWith('.mgg'))) {
+        downloadedAudioPaths.push(requestUrl.pathname)
+        return new Response('encrypted-bytes', { headers: { 'content-type': 'application/octet-stream' } })
+      }
+      if (String(url).includes('/api/v1/repos/um/cli/releases/latest')) {
+        return Response.json({
+          tag_name: tag,
+          assets: [
+            { name: 'sha256sum.txt', browser_download_url: 'https://release.example/sha256sum.txt' },
+            { name: assetName, browser_download_url: `https://release.example/${assetName}` },
+          ],
+        })
+      }
+      if (requestUrl.hostname === 'release.example' && requestUrl.pathname.endsWith('/sha256sum.txt')) {
+        return new Response(`${archiveHash}  ${assetName}\n`)
+      }
+      if (requestUrl.hostname === 'release.example' && requestUrl.pathname.endsWith(`/${assetName}`)) {
+        return new Response(new Uint8Array(archive))
+      }
+      if (requestUrl.hostname === 'stat6.y.qq.com') return new Response('{}')
+      return Response.json({ Items: [], TotalRecordCount: 0 })
+    }) as typeof fetch
+
+    const response = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Audio/${encodeURIComponent(songId)}/universal?api_key=${authPayload.AccessToken}`, {
+        headers: { 'X-Emby-Authorization': authHeader },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Audio/${encodeURIComponent(songId)}/universal`),
+    )
+    assert.equal(response.status, 502)
+    const payload = await response.json() as { error?: string }
+    assert.match(payload.error ?? '', /QQ encrypted audio requires a matching QQ Music local key/)
+    assert.deepEqual(requestedQualities, ['flac', '320k', '128k'])
+    assert.deepEqual(downloadedAudioPaths, ['/audio.mflac'])
+
+    const statuses = db.prepare(`
+      SELECT tf.quality, tf.status, tf.error
+      FROM track_files tf
+      INNER JOIN tracks t ON t.id = tf.track_id
+      WHERE t.source = 'tx' AND t.songmid = ?
+      ORDER BY tf.quality
+    `).all(songmid) as Array<{ quality: string; status: string; error?: string }>
+    assert.ok(statuses.some(row => row.quality === 'flac' && row.error?.includes('QQ encrypted audio requires a matching QQ Music local key')))
+    assert.ok(statuses.some(row => row.quality === '320k' && row.error?.includes('Skipped encrypted QQ audio')))
+    assert.ok(statuses.some(row => row.quality === '128k' && row.error?.includes('Skipped encrypted QQ audio')))
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999035')
+    clearQQLoginCookie()
+    db.prepare('DELETE FROM app_settings WHERE key = ?').run(`virtual.song.${songmid}`)
+    db.prepare("DELETE FROM tracks WHERE songmid = ? AND source = 'tx'").run(songmid)
+    db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track' AND json_extract(payload_json, '$.songmid') = ?").run(songmid)
+    rmSync(toolDir, { recursive: true, force: true })
+    rmSync(fixtureDir, { recursive: true, force: true })
+    rmSync(archivePath, { force: true })
+    globalThis.fetch = originalFetch
+    if (originalLxMusicSourceScript === undefined) {
+      delete process.env.LX_MUSIC_SOURCE_SCRIPT
+    } else {
+      process.env.LX_MUSIC_SOURCE_SCRIPT = originalLxMusicSourceScript
+    }
+  }
+})
+
 test('local emby virtual playback reports are consumed locally', async () => {
   const originalFetch = globalThis.fetch
   try {
@@ -4094,4 +4364,24 @@ async function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<void
     if (predicate()) return
     await new Promise(resolve => setTimeout(resolve, 10))
   }
+}
+
+function umAssetName(tag: string): string {
+  return `um-${process.platform === 'darwin' ? 'darwin' : 'linux'}-${process.arch === 'x64' ? 'amd64' : 'arm64'}-${tag}.tar.gz`
+}
+
+async function createUmReleaseArchive(input: {
+  fixtureDir: string
+  archivePath: string
+  script: string
+}): Promise<Buffer> {
+  rmSync(input.fixtureDir, { recursive: true, force: true })
+  mkdirSync(input.fixtureDir, { recursive: true })
+  writeFileSync(`${input.fixtureDir}/um`, input.script, { mode: 0o755 })
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn('tar', ['-czf', input.archivePath, '-C', input.fixtureDir, 'um'])
+    child.on('error', reject)
+    child.on('exit', code => code === 0 ? resolve() : reject(new Error(`tar exited ${code}`)))
+  })
+  return readFileSync(input.archivePath)
 }

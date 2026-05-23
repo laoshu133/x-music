@@ -1,6 +1,7 @@
 import { appConfig } from '@/lib/config'
 import { db } from '@/lib/db'
 import { cleanupResourceCache } from '@/lib/cache/resources'
+import { enqueueRefreshUmCliJob, processOneRefreshUmCliJob } from '@/lib/cache/um-cli-job'
 import {
   createJob,
   claimNextJob,
@@ -160,21 +161,26 @@ interface WorkerTickProcessors {
   processTagJob?: () => Promise<boolean>
   processEmbySyncJob?: () => Promise<boolean>
   processCleanupResourceCacheJob?: () => Promise<boolean>
+  processRefreshUmCliJob?: () => Promise<boolean>
   scheduleCleanupResourceCacheJob?: boolean
 }
 
 export async function processWorkerTick(processors: WorkerTickProcessors = {}): Promise<boolean> {
   if (processors.scheduleCleanupResourceCacheJob !== false) ensureCleanupResourceCacheJob()
+  const processedRefreshUmCliJob = await (
+    processors.processRefreshUmCliJob ?? (() => processOneRefreshUmCliJob(maxAttempts))
+  )()
   const processedTagJob = await (processors.processTagJob ?? processTagJob)()
   const processedEmbySyncJob = await (processors.processEmbySyncJob ?? processEmbySyncJob)()
   const processedCleanupResourceCacheJob = await (
     processors.processCleanupResourceCacheJob ?? processCleanupResourceCacheJob
   )()
-  return processedTagJob || processedEmbySyncJob || processedCleanupResourceCacheJob
+  return processedRefreshUmCliJob || processedTagJob || processedEmbySyncJob || processedCleanupResourceCacheJob
 }
 
 async function main(): Promise<void> {
   ensureJobsTable()
+  enqueueRefreshUmCliJob({ reason: 'startup' })
   const cleared = clearStaleRunningJobs({
     olderThanSeconds: staleRunningJobSeconds,
   })

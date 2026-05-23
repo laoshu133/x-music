@@ -1,4 +1,5 @@
 import { db } from '@/lib/db'
+import { isPlayableAudioPath } from '@/lib/cache/store'
 import { deleteCachedResourcesForTrack } from '@/lib/cache/resources'
 import { appConfig } from '@/lib/config'
 import { getEffectiveSettings } from '@/lib/db/settings'
@@ -38,7 +39,6 @@ const defaultCacheWaitMs = Number(process.env.EMBY_SYNC_CACHE_WAIT_MS ?? 30000)
 const defaultCachePollIntervalMs = Number(process.env.EMBY_SYNC_CACHE_POLL_INTERVAL_MS ?? 2000)
 const defaultScanWaitMs = Number(process.env.EMBY_SYNC_SCAN_WAIT_MS ?? 60000)
 const defaultScanPollIntervalMs = Number(process.env.EMBY_SYNC_SCAN_POLL_INTERVAL_MS ?? 5000)
-const embySyncableAudioExtensions = new Set(['.flac', '.mp3', '.m4a', '.mp4', '.ogg', '.opus', '.wav'])
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -76,7 +76,7 @@ export async function processOneEmbySyncJob(options: number | EmbySyncJobOptions
       }
       return true
     }
-    if (!isEmbySyncableAudioPath(mediaPath)) {
+    if (!isPlayableAudioPath(mediaPath)) {
       failJob(job.id, `Cached file format is not syncable to Emby: ${mediaPath}`)
       return true
     }
@@ -175,10 +175,6 @@ function isSyncableCachedMedia(
 function isPathInside(candidate: string, directory: string): boolean {
   const relative = path.relative(path.resolve(directory), path.resolve(candidate))
   return Boolean(relative) && !relative.startsWith('..') && !path.isAbsolute(relative)
-}
-
-function isEmbySyncableAudioPath(filePath: string): boolean {
-  return embySyncableAudioExtensions.has(path.extname(filePath).toLowerCase())
 }
 
 function syncedPlaylistName(playlistId?: string): string | undefined {
