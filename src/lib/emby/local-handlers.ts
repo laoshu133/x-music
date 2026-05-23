@@ -76,114 +76,167 @@ type TimedResult<T> = {
   durationMs: number
 }
 
+type LocalRouteContext = {
+  request: Request
+  embyPath: string
+}
+
+type LocalRoute = {
+  name: string
+  authorize?: boolean
+  match: (context: LocalRouteContext) => boolean
+  handle: (context: LocalRouteContext) => Response | Promise<Response | undefined> | undefined
+}
+
+type MatchedLocalRoute = {
+  route: LocalRoute
+  context: LocalRouteContext
+}
+
 const favoriteTotalCache = new Map<string, number>()
 
-export async function handleLocalEmbyRequest(request: Request, embyPath: string): Promise<Response | undefined> {
-  if (request.method === 'GET' && pathEquals(embyPath, '/System/Info/Public')) {
-    return Response.json({
+const LOCAL_ROUTES: LocalRoute[] = [
+  {
+    name: 'public-system-info',
+    match: ({ request, embyPath }) => request.method === 'GET' && pathEquals(embyPath, '/System/Info/Public'),
+    handle: () => Response.json({
       LocalAddress: '',
       ServerName: 'XMusic',
       Version: '0.1.0',
       ProductName: 'XMusic Emby Gateway',
       Id: LOCAL_SERVER_ID,
       StartupWizardCompleted: true,
-    })
-  }
+    }),
+  },
+  {
+    name: 'authenticate-by-name',
+    match: ({ request, embyPath }) => request.method === 'POST' && pathEquals(embyPath, '/Users/AuthenticateByName'),
+    handle: ({ request }) => handleAuthenticateByName(request),
+  },
+  {
+    name: 'public-users',
+    match: ({ request, embyPath }) => request.method === 'GET' && pathEquals(embyPath, '/Users/Public'),
+    handle: () => handlePublicUsers(),
+  },
+  {
+    name: 'system-endpoint',
+    match: ({ request, embyPath }) => request.method === 'GET' && pathEquals(embyPath, '/System/Endpoint'),
+    handle: () => Response.json({ IsLocal: true, IsInNetwork: true }),
+  },
+  {
+    name: 'delete-items',
+    authorize: true,
+    match: ({ request, embyPath }) => (request.method === 'POST' && pathEquals(embyPath, '/Items/Delete'))
+      || (request.method === 'DELETE' && isItemRequest(embyPath)),
+    handle: ({ request, embyPath }) => handleItemsDeleteRequest(request, embyPath),
+  },
+  {
+    name: 'favorite-item-mutation',
+    authorize: true,
+    match: ({ request, embyPath }) => (request.method === 'POST' || request.method === 'DELETE')
+      && isFavoriteItemMutationRequest(embyPath)
+      && isVirtualFavoriteItemMutation(embyPath),
+    handle: ({ request, embyPath }) => handleFavoriteItemMutationRequest(
+      request,
+      extractFavoriteItemId(embyPath)!,
+      favoriteItemMutationState(request, embyPath),
+    ),
+  },
+  {
+    name: 'user',
+    authorize: true,
+    match: ({ request, embyPath }) => request.method === 'GET' && isUserRequest(embyPath),
+    handle: ({ embyPath }) => handleUserRequest(embyPath),
+  },
+  {
+    name: 'user-views',
+    authorize: true,
+    match: ({ request, embyPath }) => request.method === 'GET' && isUserViewsRequest(embyPath),
+    handle: ({ embyPath }) => handleUserViewsRequest(embyPath),
+  },
+  {
+    name: 'health',
+    match: ({ request, embyPath }) => request.method === 'GET' && pathEquals(embyPath, '/x-music/health'),
+    handle: () => Response.json({ ok: true, service: 'x-music-emby-gateway' }),
+  },
+  {
+    name: 'playback-report',
+    authorize: true,
+    match: ({ request, embyPath }) => request.method === 'POST' && isPlaybackReportRequest(embyPath),
+    handle: ({ request, embyPath }) => handlePlaybackReportRequest(request, embyPath),
+  },
+  {
+    name: 'local-empty-collection',
+    authorize: true,
+    match: ({ request, embyPath }) => request.method === 'GET' && isLocalEmptyCollectionRequest(embyPath),
+    handle: ({ request, embyPath }) => handleCollectionRequest(request, embyPath),
+  },
+  {
+    name: 'image',
+    match: ({ request, embyPath }) => request.method === 'GET' && isImageRequest(embyPath),
+    handle: ({ request, embyPath }) => handleImageRequest(request, embyPath),
+  },
+  {
+    name: 'subtitle-stream',
+    authorize: true,
+    match: ({ request, embyPath }) => (request.method === 'GET' || request.method === 'HEAD') && isSubtitleStreamRequest(embyPath),
+    handle: ({ request, embyPath }) => handleSubtitleStreamRequest(request, embyPath),
+  },
+  {
+    name: 'item',
+    authorize: true,
+    match: ({ request, embyPath }) => request.method === 'GET' && isItemRequest(embyPath),
+    handle: ({ embyPath }) => handleItemRequest(embyPath),
+  },
+  {
+    name: 'playback-info',
+    authorize: true,
+    match: ({ request, embyPath }) => (request.method === 'GET' || request.method === 'POST') && isPlaybackInfoRequest(embyPath),
+    handle: ({ embyPath }) => handlePlaybackInfoRequest(embyPath),
+  },
+  {
+    name: 'similar-items',
+    authorize: true,
+    match: ({ request, embyPath }) => request.method === 'GET' && isSimilarItemsRequest(embyPath),
+    handle: ({ request, embyPath }) => handleSimilarItemsRequest(request, embyPath),
+  },
+  {
+    name: 'lyrics',
+    authorize: true,
+    match: ({ request, embyPath }) => request.method === 'GET' && isLyricsRequest(embyPath),
+    handle: ({ request, embyPath }) => handleLyricsRequest(request, embyPath),
+  },
+  {
+    name: 'items',
+    authorize: true,
+    match: ({ request, embyPath }) => request.method === 'GET' && isItemsRequest(embyPath),
+    handle: ({ request, embyPath }) => handleItemsRequest(request, embyPath),
+  },
+  {
+    name: 'playlist-items',
+    authorize: true,
+    match: ({ request, embyPath }) => request.method === 'GET' && isPlaylistItemsRequest(embyPath),
+    handle: ({ request, embyPath }) => handlePlaylistItemsRequest(request, embyPath),
+  },
+  {
+    name: 'audio',
+    authorize: true,
+    match: ({ request, embyPath }) => (request.method === 'GET' || request.method === 'HEAD') && isAudioRequest(embyPath),
+    handle: ({ request, embyPath }) => handleAudioRequest(request, embyPath),
+  },
+]
 
-  if (request.method === 'POST' && pathEquals(embyPath, '/Users/AuthenticateByName')) {
-    return handleAuthenticateByName(request)
-  }
+export async function handleLocalEmbyRequest(request: Request, embyPath: string): Promise<Response | undefined> {
+  const matched = matchLocalRoute({ request, embyPath })
+  if (!matched) return undefined
+  const { route, context } = matched
+  if (route.authorize && !isAuthorizedLocalRequest(request)) return unauthorizedResponse()
+  return route.handle(context)
+}
 
-  if (request.method === 'GET' && pathEquals(embyPath, '/Users/Public')) {
-    return handlePublicUsers()
-  }
-
-  if (request.method === 'GET' && pathEquals(embyPath, '/System/Endpoint')) {
-    return Response.json({ IsLocal: true, IsInNetwork: true })
-  }
-
-  if ((request.method === 'POST' && pathEquals(embyPath, '/Items/Delete')) || (request.method === 'DELETE' && isItemRequest(embyPath))) {
-    if (!isAuthorizedLocalRequest(request)) return unauthorizedResponse()
-    return handleItemsDeleteRequest(request, embyPath)
-  }
-
-  if ((request.method === 'POST' || request.method === 'DELETE') && isFavoriteItemMutationRequest(embyPath)) {
-    const itemId = extractFavoriteItemId(embyPath)
-    if (itemId && decodeVirtualId(itemId)) {
-      if (!isAuthorizedLocalRequest(request)) return unauthorizedResponse()
-      return handleFavoriteItemMutationRequest(request, itemId, favoriteItemMutationState(request, embyPath))
-    }
-  }
-
-  if (request.method === 'GET' && isUserRequest(embyPath)) {
-    if (!isAuthorizedLocalRequest(request)) return unauthorizedResponse()
-    return handleUserRequest(embyPath)
-  }
-
-  if (request.method === 'GET' && isUserViewsRequest(embyPath)) {
-    if (!isAuthorizedLocalRequest(request)) return unauthorizedResponse()
-    return handleUserViewsRequest(embyPath)
-  }
-
-  if (request.method === 'GET' && pathEquals(embyPath, '/x-music/health')) {
-    return Response.json({ ok: true, service: 'x-music-emby-gateway' })
-  }
-
-  if (request.method === 'POST' && isPlaybackReportRequest(embyPath)) {
-    if (!isAuthorizedLocalRequest(request)) return unauthorizedResponse()
-    return handlePlaybackReportRequest(request, embyPath)
-  }
-
-  if (request.method === 'GET' && isLocalEmptyCollectionRequest(embyPath)) {
-    if (!isAuthorizedLocalRequest(request)) return unauthorizedResponse()
-    return handleCollectionRequest(request, embyPath)
-  }
-
-  if (request.method === 'GET' && isImageRequest(embyPath)) {
-    return handleImageRequest(request, embyPath)
-  }
-
-  if ((request.method === 'GET' || request.method === 'HEAD') && isSubtitleStreamRequest(embyPath)) {
-    if (!isAuthorizedLocalRequest(request)) return unauthorizedResponse()
-    return handleSubtitleStreamRequest(request, embyPath)
-  }
-
-  if (request.method === 'GET' && isItemRequest(embyPath)) {
-    if (!isAuthorizedLocalRequest(request)) return unauthorizedResponse()
-    return handleItemRequest(embyPath)
-  }
-
-  if ((request.method === 'GET' || request.method === 'POST') && isPlaybackInfoRequest(embyPath)) {
-    if (!isAuthorizedLocalRequest(request)) return unauthorizedResponse()
-    return handlePlaybackInfoRequest(embyPath)
-  }
-
-  if (request.method === 'GET' && isSimilarItemsRequest(embyPath)) {
-    if (!isAuthorizedLocalRequest(request)) return unauthorizedResponse()
-    return handleSimilarItemsRequest(request, embyPath)
-  }
-
-  if (request.method === 'GET' && isLyricsRequest(embyPath)) {
-    if (!isAuthorizedLocalRequest(request)) return unauthorizedResponse()
-    return handleLyricsRequest(request, embyPath)
-  }
-
-  if (request.method === 'GET' && isItemsRequest(embyPath)) {
-    if (!isAuthorizedLocalRequest(request)) return unauthorizedResponse()
-    return handleItemsRequest(request, embyPath)
-  }
-
-  if (request.method === 'GET' && isPlaylistItemsRequest(embyPath)) {
-    if (!isAuthorizedLocalRequest(request)) return unauthorizedResponse()
-    return handlePlaylistItemsRequest(request, embyPath)
-  }
-
-  if ((request.method === 'GET' || request.method === 'HEAD') && isAudioRequest(embyPath)) {
-    if (!isAuthorizedLocalRequest(request)) return unauthorizedResponse()
-    return handleAudioRequest(request, embyPath)
-  }
-
-  return undefined
+function matchLocalRoute(context: LocalRouteContext): MatchedLocalRoute | undefined {
+  const route = LOCAL_ROUTES.find(candidate => candidate.match(context))
+  return route ? { route, context } : undefined
 }
 
 async function handleAuthenticateByName(request: Request): Promise<Response> {
@@ -511,6 +564,11 @@ function isItemRequest(path: string): boolean {
 
 function isFavoriteItemMutationRequest(path: string): boolean {
   return /^\/Users\/[^/]+\/FavoriteItems\/[^/]+(?:\/Delete)?$/i.test(path)
+}
+
+function isVirtualFavoriteItemMutation(path: string): boolean {
+  const itemId = extractFavoriteItemId(path)
+  return Boolean(itemId && decodeVirtualId(itemId))
 }
 
 function isPlaybackInfoRequest(path: string): boolean {
