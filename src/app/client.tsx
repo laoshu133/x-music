@@ -64,7 +64,7 @@ interface LoginQrState {
   qrsig: string
 }
 
-type LoginQrPhase = 'idle' | 'active' | 'checking' | 'expired' | 'error'
+type LoginQrPhase = 'idle' | 'active' | 'checking' | 'scanned' | 'expired' | 'error'
 
 interface UserAvatarResult {
   source: 'tx'
@@ -347,8 +347,7 @@ export default function MusicClient() {
     })
 
       if (!result.isOk) {
-        setMessage(result.message)
-        setLoginQrPhase(result.refresh ? 'expired' : 'active')
+        setLoginQrPhase(result.refresh || result.status === 'expired' ? 'expired' : result.status === 'scanned' ? 'scanned' : 'active')
         return
       }
 
@@ -481,7 +480,6 @@ export default function MusicClient() {
           loginQr={loginQr}
           loginQrPhase={loginQrPhase}
           onRequestLoginQr={requestLoginQr}
-          onCheckLoginQr={checkLoginQr}
           message={message}
         />
       </main>
@@ -623,7 +621,6 @@ function LoginPage({
   loginQr,
   loginQrPhase,
   onRequestLoginQr,
-  onCheckLoginQr,
   message,
 }: {
   account: ApiState<AccountState>
@@ -633,13 +630,14 @@ function LoginPage({
   loginQr: ApiState<LoginQrState>
   loginQrPhase: LoginQrPhase
   onRequestLoginQr: () => void
-  onCheckLoginQr: () => void
   message: string
 }) {
   const [loginMethod, setLoginMethod] = useState<'qr' | 'cookie'>('qr')
   const qrDisabled = loginQrPhase === 'expired' || loginQrPhase === 'error'
   const qrStatusText = loginQrPhase === 'checking'
     ? '正在检查扫码状态...'
+    : loginQrPhase === 'scanned'
+      ? '已扫码，请在手机上确认登录'
     : loginQrPhase === 'expired'
       ? '二维码已失效，请刷新后重新扫码'
       : loginQrPhase === 'error'
@@ -687,13 +685,11 @@ function LoginPage({
               <div className="qr-login large">
                 <div className={`qr-code ${qrDisabled ? 'disabled' : ''}`}>
                   <img src={loginQr.data.img} alt="QQ 登录二维码" />
+                  {qrStatusText ? <p className={`qr-status ${qrDisabled ? 'attention' : ''}`}>{qrStatusText}</p> : null}
                 </div>
-                {qrStatusText ? <p className={`qr-status ${qrDisabled ? 'attention' : ''}`}>{qrStatusText}</p> : null}
+                <p className="qr-help">请用手机 QQ 扫描二维码。若在手机端打开，请改用电脑或另一台设备打开本页后扫码。</p>
                 <div className="qr-actions">
                   <button onClick={onRequestLoginQr} disabled={loginQr.loading || account.loading}><RefreshCw size={16} />刷新二维码</button>
-                  <button onClick={onCheckLoginQr} disabled={account.loading || qrDisabled || loginQrPhase === 'checking'}>
-                    <RefreshCw size={16} className={loginQrPhase === 'checking' ? 'spin' : undefined} />检查扫码状态
-                  </button>
                 </div>
               </div>
             ) : (
