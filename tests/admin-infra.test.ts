@@ -16,7 +16,7 @@ import { decodeVirtualId, encodeVirtualId, songVirtualId } from '@/lib/emby/virt
 import { getFavoriteStatus, setLocalFavoriteSynced } from '@/lib/db/favorites'
 import { upsertRemoteMapping } from '@/lib/db/remote-mappings'
 import { updateAccountEmbyPassword } from '@/lib/db/accounts'
-import { ensureTrack, insertPlayEvent } from '@/lib/cache/store'
+import { ensureTrack, insertPlayEvent, upsertTrackFileStatus } from '@/lib/cache/store'
 import type { MusicInfo } from '@/lib/types'
 import { syncMappedEmbyFavoriteBestEffort } from '@/lib/emby/favorites'
 import { logCompletedRequest, logFailedRequest, requestLoggingEnabled, safeRequestPath } from '@/lib/request-log'
@@ -2637,7 +2637,7 @@ test('musiver favorite list keeps selected virtual song ids stable across detail
     const detailPayload = await detail.json()
     assert.equal(detailPayload.Id, targetId)
     assert.equal(detailPayload.Name, '萬千花蕊慈母悲哀')
-    assert.equal(detailPayload.MediaSources[0].Path, `/Audio/${encodeURIComponent(targetId)}/universal`)
+    assert.equal(detailPayload.MediaSources[0].Path, target.MediaSources[0].Path)
 
     const playbackInfo = await dispatchEmbyRequest(
       new Request(`http://local/Items/${encodeURIComponent(targetId)}/PlaybackInfo`, {
@@ -2649,7 +2649,7 @@ test('musiver favorite list keeps selected virtual song ids stable across detail
     const playbackPayload = await playbackInfo.json()
     assert.equal(playbackPayload.MediaSources[0].Id, targetId)
     assert.equal(playbackPayload.MediaSources[0].ItemId, targetId)
-    assert.equal(playbackPayload.MediaSources[0].Path, `/Audio/${encodeURIComponent(targetId)}/universal`)
+    assert.equal(playbackPayload.MediaSources[0].Path, target.MediaSources[0].Path)
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999043')
     clearQQLoginCookie()
@@ -3473,6 +3473,79 @@ test('musiver subtitle js stream returns empty track events when QQ lyrics are u
   }
 })
 
+test('virtual song lyrics prefer cached sidecar lyrics before upstream sources', async () => {
+  const originalFetch = globalThis.fetch
+  const songmid = 'qq-sidecar-lyrics-song'
+  const audioPath = join(process.cwd(), 'data/test-sidecar-lyrics-song.mp3')
+  const lyricsPath = join(process.cwd(), 'data/test-sidecar-lyrics-song.lrc')
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999045')
+    db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run(songmid)
+    saveQQLoginCookie('uin=o999045; qm_keyst=test-key')
+    markAccountUpstreamBound('999045')
+    const account = getAccountByQQ('999045')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const songId = encodeVirtualId({ kind: 'qq-song', songmid })
+    const song: MusicInfo = {
+      source: 'tx',
+      songmid,
+      name: 'QQ Sidecar Lyrics Song',
+      singer: 'QQ Lyrics Artist',
+      albumName: 'QQ Lyrics Album',
+      interval: '03:08',
+      types: [{ type: '320k', size: '1 MB' }],
+      raw: { strMediaMid: 'qq-media-sidecar-lyrics' },
+    }
+
+    db.prepare(`
+      INSERT INTO app_settings (key, value_json, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP
+    `).run(`virtual.song.${songmid}`, JSON.stringify({ song }))
+
+    mkdirSync(join(process.cwd(), 'data'), { recursive: true })
+    writeFileSync(audioPath, 'audio-bytes')
+    writeFileSync(lyricsPath, '[00:01.00]本地歌词')
+    const track = ensureTrack(song)
+    upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath: audioPath, sizeBytes: 11, sha256: 'sidecarsha' })
+
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.pathname.includes('/lyric/fcgi-bin/fcg_query_lyric_new.fcg')) {
+        return Response.json({
+          lyric: Buffer.from('[00:01.00]QQ歌词', 'utf8').toString('base64'),
+        })
+      }
+      return Response.json({ error: 'unexpected upstream request' }, { status: 500 })
+    }) as typeof fetch
+
+    const subtitle = await dispatchEmbyRequest(
+      new Request(`http://local/Items/${encodeURIComponent(songId)}/Subtitles/2/Stream.js?Token=${authPayload.AccessToken}`, {
+        headers: { 'user-agent': 'musiver/1.3.9 (Macintosh)' },
+      }),
+      stripOptionalEmbyPrefix(`/Items/${encodeURIComponent(songId)}/Subtitles/2/Stream.js?Token=${authPayload.AccessToken}`),
+    )
+    assert.equal(subtitle.status, 200)
+    const payload = await subtitle.json()
+    assert.equal(payload.TrackEvents[0].Text, '本地歌词')
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999045')
+    clearQQLoginCookie()
+    db.prepare("DELETE FROM app_settings WHERE key = ?").run(`virtual.song.${songmid}`)
+    db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run(songmid)
+    rmSync(audioPath, { force: true })
+    rmSync(lyricsPath, { force: true })
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('local emby virtual artist filters stay local instead of leaking invalid ids upstream', async () => {
   const originalFetch = globalThis.fetch
   try {
@@ -4276,7 +4349,9 @@ test('local emby image requests fetch cached QQ virtual artwork', async () => {
 
     const imageRequests: string[] = []
     globalThis.fetch = (async (url: string | URL | Request) => {
-      imageRequests.push(String(url))
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'img.example') imageRequests.push(String(url))
+      if (requestUrl.pathname.endsWith('/Items')) return Response.json({ Items: [] })
       return new Response('qq-image-bytes', {
         headers: { 'content-type': 'image/png' },
       })
@@ -4315,6 +4390,62 @@ test('local emby image requests fetch cached QQ virtual artwork', async () => {
     db.prepare('DELETE FROM app_settings WHERE key = ?').run('virtual.song.qq-image-song')
     db.prepare('DELETE FROM app_settings WHERE key = ?').run('virtual.song.qq-stream-song-1')
     db.prepare('DELETE FROM resource_cache WHERE url = ?').run('https://img.example/qq-image.jpg')
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('local emby image requests prefer cached sidecar cover before QQ artwork', async () => {
+  const originalFetch = globalThis.fetch
+  const songmid = 'qq-sidecar-cover-song'
+  const virtualId = encodeVirtualId({ kind: 'qq-song', songmid })
+  const coverDir = join(process.cwd(), 'data/test-sidecar-cover-song')
+  const audioPath = join(coverDir, 'test-sidecar-cover-song.mp3')
+  const coverPath = join(coverDir, 'cover.jpg')
+  try {
+    const song: MusicInfo = {
+      source: 'tx',
+      songmid,
+      name: 'QQ Sidecar Cover Song',
+      singer: 'QQ Artist',
+      albumName: 'QQ Album',
+      albumId: 'qq-album',
+      img: 'https://img.example/qq-sidecar-cover.jpg',
+      interval: '03:00',
+      types: [{ type: '320k', size: '1 MB' }],
+    }
+    db.prepare(`
+      INSERT INTO app_settings (key, value_json, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP
+    `).run(`virtual.song.${songmid}`, JSON.stringify({ song }))
+
+    mkdirSync(coverDir, { recursive: true })
+    writeFileSync(audioPath, 'audio-bytes')
+    writeFileSync(coverPath, 'sidecar-cover-bytes')
+    const track = ensureTrack(song)
+    upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath: audioPath, sizeBytes: 11, sha256: 'coversha' })
+
+    const imageRequests: string[] = []
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      imageRequests.push(String(url))
+      return new Response('qq-image-bytes', {
+        headers: { 'content-type': 'image/png' },
+      })
+    }) as typeof fetch
+
+    const response = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Items/${encodeURIComponent(virtualId)}/Images/Primary?maxWidth=480&maxHeight=480`),
+      stripOptionalEmbyPrefix(`/emby/Items/${encodeURIComponent(virtualId)}/Images/Primary`),
+    )
+
+    assert.equal(response.status, 200)
+    assert.equal(response.headers.get('content-type'), 'image/jpeg')
+    assert.equal(await response.text(), 'sidecar-cover-bytes')
+    assert.deepEqual(imageRequests, [])
+  } finally {
+    db.prepare('DELETE FROM app_settings WHERE key = ?').run(`virtual.song.${songmid}`)
+    db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run(songmid)
+    rmSync(coverDir, { recursive: true, force: true })
     globalThis.fetch = originalFetch
   }
 })

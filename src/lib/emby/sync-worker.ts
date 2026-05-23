@@ -4,6 +4,7 @@ import { deleteCachedResourcesForTrack } from '@/lib/cache/resources'
 import { appConfig } from '@/lib/config'
 import { getEffectiveSettings } from '@/lib/db/settings'
 import path from 'node:path'
+import { rm } from 'node:fs/promises'
 import { upsertRemoteMapping } from '@/lib/db/remote-mappings'
 import { claimNextJob, completeJob, failJob, requeueJob } from '@/lib/jobs'
 import {
@@ -129,6 +130,13 @@ export async function processOneEmbySyncJob(options: number | EmbySyncJobOptions
       imageUrl: job.payload.musicInfo.img,
       lyricsUrls: [qqLyricsUrl(job.payload.songmid)],
     }).catch(() => undefined)
+    if (syncedMedia) {
+      await deleteLocalSyncedMedia({
+        source: job.payload.source,
+        songmid: job.payload.songmid,
+        uploadedPaths: syncedMedia.uploadedPaths,
+      }).catch(() => undefined)
+    }
 
     completeJob(job.id)
   } catch (error) {
@@ -199,9 +207,65 @@ function getCachedMedia(payload: SyncEmbyTrackJobPayload): CachedMediaRow | unde
       AND tf.status IN ('ready', 'tagging', 'cached_raw')
     ORDER BY
       CASE tf.status WHEN 'ready' THEN 0 WHEN 'tagging' THEN 1 WHEN 'cached_raw' THEN 2 ELSE 3 END,
+      CASE tf.quality WHEN 'flac' THEN 0 WHEN '320k' THEN 1 WHEN '128k' THEN 2 ELSE 3 END,
       tf.updated_at DESC
     LIMIT 1
   `).get(payload.source, payload.songmid) as CachedMediaRow | undefined
+}
+
+async function deleteLocalSyncedMedia(input: {
+  source: string
+  songmid: string
+  uploadedPaths: string[]
+}): Promise<void> {
+  if (!input.uploadedPaths.length) return
+
+  const rows = db.prepare(`
+    SELECT
+      tf.id,
+      tf.raw_path AS rawPath,
+      tf.final_path AS finalPath,
+      tf.lyrics_path AS lyricsPath,
+      tf.cover_path AS coverPath
+    FROM track_files tf
+    INNER JOIN tracks t ON t.id = tf.track_id
+    WHERE t.source = ? AND t.songmid = ?
+  `).all(input.source, input.songmid) as Array<{
+    id: number
+    rawPath?: string | null
+    finalPath?: string | null
+    lyricsPath?: string | null
+    coverPath?: string | null
+  }>
+
+  const uploaded = new Set(input.uploadedPaths.map(uploadedPath => normalizeRelativeMusicPath(uploadedPath)))
+  for (const row of rows) {
+    const columns = {
+      raw_path: row.rawPath ?? undefined,
+      final_path: row.finalPath ?? undefined,
+      lyrics_path: row.lyricsPath ?? undefined,
+      cover_path: row.coverPath ?? undefined,
+    }
+    const deletedColumns: string[] = []
+    for (const [column, filePath] of Object.entries(columns)) {
+      if (!filePath) continue
+      if (!uploaded.has(normalizeRelativeMusicPath(path.relative(appConfig.musicDir, filePath)))) continue
+      await rm(filePath, { force: true }).catch(() => undefined)
+      deletedColumns.push(column)
+    }
+    if (deletedColumns.length) {
+      db.prepare(`
+        UPDATE track_files
+        SET ${deletedColumns.map(column => `${column} = NULL`).join(', ')},
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `).run(row.id)
+    }
+  }
+}
+
+function normalizeRelativeMusicPath(value: string): string {
+  return value.split(path.sep).join('/').replace(/^\/+/, '')
 }
 
 async function waitForEmbyAudio(

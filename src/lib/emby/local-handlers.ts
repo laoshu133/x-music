@@ -35,7 +35,7 @@ import {
   rememberVirtualSong,
 } from './virtual-store'
 import { getRemoteMapping, upsertRemoteMapping } from '@/lib/db/remote-mappings'
-import { deleteEmbyItems, fetchEmbyJson, searchEmbyAudioByName, searchEmbyPlaylistByName } from './upstream-api'
+import { deleteEmbyItems, fetchEmbyJson, fetchEmbyText, searchEmbyAudioByName, searchEmbyPlaylistByName } from './upstream-api'
 import { proxyToUpstreamEmby } from './upstream-proxy'
 import { getAccountByEmbyUsername, getAccountByEmbyUserId, listAccounts, markAccountActive, markAccountLogin, type AccountRecord } from '@/lib/db/accounts'
 import { ensureUpstreamEmbyUserForAccount, getDefaultUpstreamMusicLibraryId } from './auth'
@@ -64,11 +64,12 @@ import {
   isUserViewsRequest,
 } from './local-route-patterns'
 import crypto from 'node:crypto'
-import { stat } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { createLocalAccessToken } from './tokens'
 import { readClientAccessToken } from './client-compat'
 import { readRequestIp } from '@/lib/request-ip'
+import fs from 'node:fs'
 
 const LOCAL_SERVER_ID = 'x-music'
 const MUSIC_LIBRARY_ID = 'x-music-music'
@@ -596,6 +597,20 @@ async function handleImageRequest(request: Request, embyPath: string): Promise<R
   const decoded = decodeVirtualId(itemId)
   if (!decoded) return proxyToUpstreamEmby(request, embyPath)
 
+  if (decoded.kind === 'qq-song') {
+    const localCover = await readCachedTrackCover({ source: 'tx', songmid: decoded.songmid })
+    if (localCover) return markRequestSource(localCover, 'local')
+
+    const stored = await loadOrFetchVirtualSong(decoded.songmid, decoded.playlistId)
+    if (stored) {
+      const mapped = await resolveEmbyTrackMapping(stored.song)
+      if (mapped) {
+        const proxied = await proxyToUpstreamEmby(request, `/Items/${encodeURIComponent(mapped)}/Images/Primary`).catch(() => undefined)
+        if (proxied?.ok || proxied?.status === 304) return proxied
+      }
+    }
+  }
+
   const imageUrl = virtualImageUrl(decoded)
   if (!imageUrl) return emptyImageResponse()
 
@@ -920,7 +935,7 @@ async function handleLyricsRequest(request: Request, embyPath: string): Promise<
   const decoded = itemId ? decodeVirtualId(itemId) : undefined
   if (!decoded || decoded.kind !== 'qq-song') return undefined
 
-  const lyrics = await fetchQQLyrics(decoded.songmid)
+  const lyrics = await fetchLyrics(decoded.songmid, decoded.playlistId)
   if (wantsRawLyrics(request)) {
     return new Response(lyrics ?? '', {
       status: lyrics ? 200 : 404,
@@ -958,7 +973,7 @@ async function handleSubtitleStreamRequest(request: Request, embyPath: string): 
   const decoded = itemId ? decodeVirtualId(itemId) : undefined
   if (!decoded || decoded.kind !== 'qq-song') return undefined
 
-  const lyrics = await fetchQQLyrics(decoded.songmid)
+  const lyrics = await fetchLyrics(decoded.songmid, decoded.playlistId)
   const format = subtitleStreamFormat(embyPath)
   const headers = {
     'content-type': subtitleContentType(format),
@@ -1104,21 +1119,6 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
     return markRequestSource(new Response(null, { status: 200, headers: playableHeaders }), playableHeaders.get('content-length') ? 'local' : 'upstream')
   }
 
-  const mapped = validEmbyTrackMapping(musicInfo)
-    ?? await searchEmbyAudioByName(musicInfo).catch(() => undefined)
-  if (mapped) {
-    upsertRemoteMapping({
-      localType: 'track',
-      localKey: `${musicInfo.source}:${musicInfo.songmid}`,
-      remote: 'emby',
-      remoteId: mapped,
-      raw: musicInfo,
-    })
-    const action = embyPath.split('/')[3] ?? 'universal'
-    const proxied = await proxyToUpstreamEmby(request, `/Audio/${encodeURIComponent(mapped)}/${action}`).catch(() => undefined)
-    if (proxied?.ok || proxied?.status === 206) return proxied
-  }
-
   const preferredQuality = preferredAudioQualityForRequest(request, musicInfo)
   const playableFile = qualityFallbacks(preferredQuality)
     .map((quality) => getPlayableTrackFile(musicInfo.source, musicInfo.songmid, quality))
@@ -1150,6 +1150,13 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
       musicInfo,
     })
     return markRequestSource(await streamLocalFile(waitedPath, request), 'local')
+  }
+
+  const mapped = await resolveEmbyTrackMapping(musicInfo)
+  if (mapped) {
+    const action = embyPath.split('/')[3] ?? 'universal'
+    const proxied = await proxyToUpstreamEmby(request, `/Audio/${encodeURIComponent(mapped)}/${action}`).catch(() => undefined)
+    if (proxied?.ok || proxied?.status === 206) return proxied
   }
 
   const track = ensureTrack(musicInfo)
@@ -1296,6 +1303,20 @@ function validEmbyTrackMapping(musicInfo: MusicInfo): string | undefined {
     return undefined
   }
   return undefined
+}
+
+async function resolveEmbyTrackMapping(musicInfo: MusicInfo): Promise<string | undefined> {
+  const mapped = validEmbyTrackMapping(musicInfo)
+    ?? await searchEmbyAudioByName(musicInfo).catch(() => undefined)
+  if (!mapped) return undefined
+  upsertRemoteMapping({
+    localType: 'track',
+    localKey: `${musicInfo.source}:${musicInfo.songmid}`,
+    remote: 'emby',
+    remoteId: mapped,
+    raw: musicInfo,
+  })
+  return mapped
 }
 
 async function virtualAudioHeadHeaders(musicInfo: MusicInfo): Promise<Headers> {
@@ -2069,6 +2090,141 @@ async function fetchQQLyrics(songmid: string): Promise<string | undefined> {
     },
   }).catch(() => undefined)
   return text?.trim() ? text : undefined
+}
+
+async function fetchLyrics(songmid: string, playlistId?: string): Promise<string | undefined> {
+  const cachedLyrics = await readCachedTrackLyrics({ source: 'tx', songmid })
+  if (cachedLyrics) return cachedLyrics
+
+  const stored = await loadOrFetchVirtualSong(songmid, playlistId)
+
+  if (stored) {
+    const embyLyrics = await fetchEmbyLyrics(stored.song)
+    if (embyLyrics) return embyLyrics
+  }
+
+  return await fetchQQLyrics(songmid)
+}
+
+async function readCachedTrackLyrics(song: Pick<MusicInfo, 'source' | 'songmid'>): Promise<string | undefined> {
+  const qualities = qualityFallbacks('flac')
+  for (const quality of qualities) {
+    const file = getPlayableTrackFile(song.source, song.songmid, quality)
+    const explicitLyrics = await readTextFileIfPresent(file?.lyricsPath)
+    if (explicitLyrics) return normalizeLyrics(explicitLyrics)
+
+    const audioPath = file?.finalPath ?? file?.rawPath
+    const sidecar = audioPath ? await readTextFileIfPresent(replaceAudioExtension(audioPath, '.lrc')) : undefined
+    if (sidecar) return normalizeLyrics(sidecar)
+  }
+  return undefined
+}
+
+async function fetchEmbyLyrics(song: MusicInfo): Promise<string | undefined> {
+  const mapped = await resolveEmbyTrackMapping(song)
+  if (!mapped) return undefined
+
+  const raw = await fetchEmbyRawLyrics(mapped)
+  if (raw) return raw
+
+  const json = await fetchEmbyStructuredLyrics(mapped)
+  if (json) return json
+
+  return undefined
+}
+
+async function fetchEmbyRawLyrics(itemId: string): Promise<string | undefined> {
+  for (const path of [
+    `/Items/${encodeURIComponent(itemId)}/Lyrics?format=lrc`,
+    `/Items/${encodeURIComponent(itemId)}/Subtitles/2/Stream.lrc`,
+  ]) {
+    const text = await fetchEmbyText(path).catch(() => undefined)
+    const normalized = text?.trim()
+    if (normalized && !looksLikeJson(normalized)) return normalizeLyrics(normalized)
+  }
+  return undefined
+}
+
+async function fetchEmbyStructuredLyrics(itemId: string): Promise<string | undefined> {
+  const data = await fetchEmbyJson<any>(`/Items/${encodeURIComponent(itemId)}/Lyrics`).catch(() => undefined)
+  const text = typeof data?.Text === 'string' ? data.Text : undefined
+  if (text?.trim()) return normalizeLyrics(text)
+
+  const lines = Array.isArray(data?.Lyrics) ? data.Lyrics : Array.isArray(data?.Lines) ? data.Lines : []
+  const lrc = structuredLyricsToLrc(lines)
+  return lrc || undefined
+}
+
+function structuredLyricsToLrc(lines: unknown[]): string | undefined {
+  const result: string[] = []
+  for (const line of lines) {
+    if (!line || typeof line !== 'object') continue
+    const record = line as Record<string, unknown>
+    const text = typeof record.Text === 'string' ? record.Text : ''
+    const start = Number(record.Start ?? record.StartPositionTicks ?? record.start)
+    if (!text || !Number.isFinite(start)) continue
+    result.push(`[${ticksToLrcTime(start)}]${text}`)
+  }
+  return result.length ? result.join('\n') : undefined
+}
+
+function ticksToLrcTime(ticks: number): string {
+  const totalMs = Math.max(0, Math.floor(ticks / 10_000))
+  const minutes = Math.floor(totalMs / 60_000)
+  const seconds = Math.floor((totalMs % 60_000) / 1000)
+  const centiseconds = Math.floor((totalMs % 1000) / 10)
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(centiseconds).padStart(2, '0')}`
+}
+
+function looksLikeJson(value: string): boolean {
+  const trimmed = value.trimStart()
+  return trimmed.startsWith('{') || trimmed.startsWith('[')
+}
+
+async function readTextFileIfPresent(filePath?: string): Promise<string | undefined> {
+  if (!filePath) return undefined
+  const text = await readFile(filePath, 'utf8').catch(() => undefined)
+  return text?.trim() ? text : undefined
+}
+
+async function readCachedTrackCover(song: Pick<MusicInfo, 'source' | 'songmid'>): Promise<Response | undefined> {
+  for (const quality of qualityFallbacks('flac')) {
+    const file = getPlayableTrackFile(song.source, song.songmid, quality)
+    const coverPath = file?.coverPath ?? await firstExistingImageSidecar(file?.finalPath ?? file?.rawPath)
+    if (!coverPath) continue
+    const fileStat = await stat(coverPath).catch(() => undefined)
+    if (!fileStat) continue
+    return new Response(fs.createReadStream(coverPath) as unknown as BodyInit, {
+      status: 200,
+      headers: {
+        'content-type': imageContentTypeFromPath(coverPath),
+        'content-length': String(fileStat.size),
+        'cache-control': 'public, max-age=86400',
+      },
+    })
+  }
+  return undefined
+}
+
+async function firstExistingImageSidecar(audioPath?: string): Promise<string | undefined> {
+  if (!audioPath) return undefined
+  const dir = path.dirname(audioPath)
+  for (const candidate of ['cover.jpg', 'cover.jpeg', 'cover.png']) {
+    const filePath = path.join(dir, candidate)
+    if (await stat(filePath).then(stat => stat.isFile()).catch(() => false)) return filePath
+  }
+  return undefined
+}
+
+function imageContentTypeFromPath(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase()
+  if (ext === '.png') return 'image/png'
+  if (ext === '.webp') return 'image/webp'
+  return 'image/jpeg'
+}
+
+function replaceAudioExtension(filePath: string, ext: string): string {
+  return filePath.slice(0, -path.extname(filePath).length) + ext
 }
 
 function qqLyricsUrl(songmid: string): string {

@@ -10,6 +10,10 @@ export async function fetchEmbyJson<T = unknown>(path: string, init: RequestInit
   return embyFetch<T>(path, init)
 }
 
+export async function fetchEmbyText(path: string, init: RequestInit = {}): Promise<string> {
+  return embyFetchText(path, init)
+}
+
 export async function notifyEmbyMediaUpdated(path?: string): Promise<unknown> {
   return embyFetch('/Library/Media/Updated', {
     method: 'POST',
@@ -113,6 +117,12 @@ export async function setEmbyFavorite(input: {
 }
 
 async function embyFetch<T = unknown>(path: string, init: RequestInit = {}, options: { token?: string } = {}): Promise<T> {
+  const text = await embyFetchText(path, init, options)
+  if (!text) return undefined as T
+  return JSON.parse(text) as T
+}
+
+async function embyFetchText(path: string, init: RequestInit = {}, options: { token?: string } = {}): Promise<string> {
   const settings = getEffectiveSettings()
   if (!settings.emby.baseUrl) throw new Error('Upstream Emby is not configured')
   let token = options.token ?? await getEmbyAccessToken()
@@ -134,8 +144,7 @@ async function embyFetch<T = unknown>(path: string, init: RequestInit = {}, opti
   if (!response.ok) {
     throw new Error(`Emby request ${path} failed with ${response.status}: ${text.slice(0, 300)}`)
   }
-  if (!text) return undefined as T
-  return JSON.parse(text) as T
+  return text
 }
 
 function applyPathAndSearch(url: URL, path: string): void {

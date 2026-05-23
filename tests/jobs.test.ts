@@ -189,6 +189,85 @@ test('emby sync job waits for cached media before failing', async () => {
   }
 })
 
+test('emby sync job prefers highest ready quality over newer low quality cache', async () => {
+  const originalFetch = globalThis.fetch
+  const originalWebdavDsn = process.env.EMBY_SOURCE_WEBDAV_DSN
+  const songmid = `SYNC_BEST_QUALITY_${Date.now()}`
+  const dir = path.join(appConfig.musicDir, 'Best Quality Artist', songmid)
+  const flacPath = path.join(dir, 'Best Quality Artist - Best Quality Song.flac')
+  const oggPath = path.join(dir, 'Best Quality Artist - Best Quality Song.ogg')
+  const scanPaths: string[] = []
+
+  db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track'").run()
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(flacPath, 'flac audio')
+  writeFileSync(oggPath, 'ogg audio')
+  process.env.EMBY_SOURCE_WEBDAV_DSN = 'https://webdav-user:webdav-pass@webdav.example/dav/music'
+  try {
+    const musicInfo = { source: 'tx' as const, songmid, name: 'Best Quality Song', singer: 'Best Quality Artist' }
+    const track = ensureTrack(musicInfo)
+    upsertTrackFileStatus(track.id, 'flac', 'ready', { finalPath: flacPath, sizeBytes: 49_000_000 })
+    upsertTrackFileStatus(track.id, '128k', 'ready', { finalPath: oggPath, sizeBytes: 3_000_000 })
+    const created = createJob({
+      type: 'sync_emby_track',
+      payload: { source: 'tx', songmid, musicInfo },
+    })
+
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = new URL(String(url))
+      const method = init?.method ?? 'GET'
+      if (requestUrl.hostname === 'webdav.example') {
+        if (method === 'PUT' && init?.body && typeof (init.body as { resume?: unknown }).resume === 'function') {
+          await new Promise<void>((resolve, reject) => {
+            const stream = init.body as unknown as NodeJS.ReadableStream
+            stream.on('end', resolve)
+            stream.on('error', reject)
+            stream.resume()
+          })
+        }
+        return new Response(null, { status: method === 'PUT' ? 204 : 201 })
+      }
+      if (requestUrl.pathname.endsWith('/Library/VirtualFolders')) {
+        return Response.json([{
+          Name: '音乐',
+          CollectionType: 'music',
+          ItemId: 'music-root',
+          Guid: 'music-guid',
+          Locations: ['/volume1/music'],
+        }])
+      }
+      if (requestUrl.pathname.endsWith('/Library/Media/Updated')) return new Response(null, { status: 204 })
+      if (requestUrl.pathname.endsWith('/Items') && requestUrl.searchParams.has('Path')) {
+        scanPaths.push(requestUrl.searchParams.get('Path') ?? '')
+        return Response.json({
+          Items: [{
+            Id: 'emby-best-quality-song',
+            Name: 'Best Quality Song',
+            Artists: ['Best Quality Artist'],
+            Path: requestUrl.searchParams.get('Path'),
+          }],
+        })
+      }
+      return Response.json({ Items: [] })
+    }) as typeof fetch
+
+    assert.equal(await processOneEmbySyncJob(1), true)
+    assert.equal(getJob(created.id)?.status, 'completed')
+    assert.equal(path.extname(scanPaths[0] ?? ''), '.flac')
+    const flacRow = db.prepare(`
+      SELECT final_path AS finalPath
+      FROM track_files tf
+      INNER JOIN tracks t ON t.id = tf.track_id
+      WHERE t.source = 'tx' AND t.songmid = ? AND tf.quality = 'flac'
+    `).get(songmid) as { finalPath: string | null } | undefined
+    assert.equal(flacRow?.finalPath, null)
+  } finally {
+    rmSync(path.join(appConfig.musicDir, 'Best Quality Artist'), { recursive: true, force: true })
+    process.env.EMBY_SOURCE_WEBDAV_DSN = originalWebdavDsn
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('worker tick gives emby sync a turn when tag processing did work', async () => {
   const calls: string[] = []
   const didWork = await processWorkerTick({
