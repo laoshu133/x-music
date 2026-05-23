@@ -39,10 +39,34 @@ import { proxyToUpstreamEmby } from './upstream-proxy'
 import { getAccountByEmbyUsername, getAccountByEmbyUserId, listAccounts, markAccountActive, markAccountLogin, type AccountRecord } from '@/lib/db/accounts'
 import { ensureUpstreamEmbyUserForAccount, getDefaultUpstreamMusicLibraryId } from './auth'
 import { syncMappedEmbyFavoriteBestEffort } from './favorites'
+import {
+  extractFavoriteItemId,
+  extractImageItemId,
+  extractItemId,
+  extractNestedItemId,
+  extractPlaylistId,
+  extractSubtitleItemId,
+  isAudioRequest,
+  isFavoriteItemMutation,
+  isGenresCollectionPath,
+  isImageRequest,
+  isItemRequest,
+  isItemsDeleteRequest,
+  isItemsRequest,
+  isLyricsRequest,
+  isPlaybackInfoRequest,
+  isPlaybackReportRequest,
+  isPlaylistItemsRequest,
+  isSimilarItemsRequest,
+  isSubtitleStreamRequest,
+  isUserRequest,
+  isUserViewsRequest,
+} from './local-route-patterns'
 import crypto from 'node:crypto'
 import { stat } from 'node:fs/promises'
 import path from 'node:path'
-import { createLocalAccessToken, readEmbyAccessToken } from './tokens'
+import { createLocalAccessToken } from './tokens'
+import { readClientAccessToken } from './client-compat'
 import { readRequestIp } from '@/lib/request-ip'
 
 const LOCAL_SERVER_ID = 'x-music'
@@ -126,15 +150,13 @@ const LOCAL_ROUTES: LocalRoute[] = [
   {
     name: 'delete-items',
     authorize: true,
-    match: ({ request, embyPath }) => (request.method === 'POST' && pathEquals(embyPath, '/Items/Delete'))
-      || (request.method === 'DELETE' && isItemRequest(embyPath)),
+    match: ({ request, embyPath }) => isItemsDeleteRequest(request.method, embyPath),
     handle: ({ request, embyPath }) => handleItemsDeleteRequest(request, embyPath),
   },
   {
     name: 'favorite-item-mutation',
     authorize: true,
-    match: ({ request, embyPath }) => (request.method === 'POST' || request.method === 'DELETE')
-      && isFavoriteItemMutationRequest(embyPath)
+    match: ({ request, embyPath }) => isFavoriteItemMutation(request.method, embyPath)
       && isVirtualFavoriteItemMutation(embyPath),
     handle: ({ request, embyPath }) => handleFavoriteItemMutationRequest(
       request,
@@ -327,7 +349,7 @@ function localAuthenticateResponse(account: AccountRecord, accessToken: string):
 }
 
 function authorizedLocalAccount(request: Request): AccountRecord | undefined {
-  const token = readEmbyAccessToken(request)
+  const token = readClientAccessToken(request)
   if (!token) return undefined
   const account = listAccounts().find(account => token === createLocalAccessToken(account))
   if (account) markAccountActive(account.qqUin)
@@ -517,14 +539,6 @@ function localUser(account: AccountRecord) {
   }
 }
 
-function isUserRequest(path: string): boolean {
-  return /^\/Users\/[^/]+$/i.test(path)
-}
-
-function isUserViewsRequest(path: string): boolean {
-  return /^\/Users\/[^/]+\/Views$/i.test(path)
-}
-
 function handleUserViewsRequest(path: string): Response {
   const requestedUserId = decodeURIComponent(path.split('/')[2] ?? '')
   const account = findAccountByLocalOrUpstreamUserId(requestedUserId)
@@ -554,67 +568,15 @@ function findAccountByLocalOrUpstreamUserId(userId: string): AccountRecord | und
   return getAccountByEmbyUserId(userId) ?? listAccounts().find(account => localUserId(account) === userId)
 }
 
-function isItemsRequest(path: string): boolean {
-  return /^\/Users\/[^/]+\/Items$/i.test(path) || path === '/Items'
-}
-
-function isItemRequest(path: string): boolean {
-  return /^\/Users\/[^/]+\/Items\/[^/]+\/?$/i.test(path) || /^\/Items\/[^/]+\/?$/i.test(path)
-}
-
-function isFavoriteItemMutationRequest(path: string): boolean {
-  return /^\/Users\/[^/]+\/FavoriteItems\/[^/]+(?:\/Delete)?$/i.test(path)
-}
-
 function isVirtualFavoriteItemMutation(path: string): boolean {
   const itemId = extractFavoriteItemId(path)
   return Boolean(itemId && decodeVirtualId(itemId))
-}
-
-function isPlaybackInfoRequest(path: string): boolean {
-  return /^\/Items\/[^/]+\/PlaybackInfo$/i.test(path) || /^\/Users\/[^/]+\/Items\/[^/]+\/PlaybackInfo$/i.test(path)
-}
-
-function isSimilarItemsRequest(path: string): boolean {
-  return /^\/Items\/[^/]+\/Similar$/i.test(path) || /^\/Users\/[^/]+\/Items\/[^/]+\/Similar$/i.test(path)
-}
-
-function isLyricsRequest(path: string): boolean {
-  return /^\/Items\/[^/]+\/Lyrics(?:\/[^/]+)?$/i.test(path) || /^\/Users\/[^/]+\/Items\/[^/]+\/Lyrics(?:\/[^/]+)?$/i.test(path)
-}
-
-function isSubtitleStreamRequest(path: string): boolean {
-  return /^\/Items\/[^/]+\/[^/]+\/Subtitles\/\d+(?:\/\d+)?\/Stream\.[^/]+$/i.test(path)
-    || /^\/Items\/[^/]+\/Subtitles\/\d+(?:\/\d+)?\/Stream\.[^/]+$/i.test(path)
-    || /^\/Videos\/[^/]+\/[^/]+\/Subtitles\/\d+(?:\/\d+)?\/Stream\.[^/]+$/i.test(path)
-    || /^\/Videos\/[^/]+\/Subtitles\/\d+(?:\/\d+)?\/Stream\.[^/]+$/i.test(path)
-}
-
-function isPlaylistItemsRequest(path: string): boolean {
-  return /^\/Playlists\/[^/]+\/Items$/i.test(path) || /^\/Users\/[^/]+\/Items\/[^/]+\/Items$/i.test(path)
-}
-
-function isAudioRequest(path: string): boolean {
-  return /^\/Audio\/[^/]+\/(?:universal|stream)$/i.test(path)
-}
-
-function isPlaybackReportRequest(path: string): boolean {
-  return /^\/Sessions\/Playing(?:\/(?:Progress|Stopped))?$/i.test(path)
 }
 
 function isLocalEmptyCollectionRequest(path: string): boolean {
   return /^\/Users\/[^/]+\/(?:Albums|Artists|AlbumArtists|Genres|FavoriteItems|Items\/Latest|Items\/Resume)$/i.test(path)
     || /^\/Artists\/AlbumArtists$/i.test(path)
     || /^\/(?:Albums|Artists|AlbumArtists|Genres|MusicGenres|Years|Studios|Persons)$/i.test(path)
-}
-
-function isGenresCollectionPath(path: string): boolean {
-  return /^\/Users\/[^/]+\/Genres$/i.test(path) || /^\/(?:Genres|MusicGenres)$/i.test(path)
-}
-
-function isImageRequest(path: string): boolean {
-  return /^\/Items\/[^/]+\/Images\/[^/]+(?:\/[^/]+)?$/i.test(path)
-    || /^\/Users\/[^/]+\/Images\/[^/]+(?:\/[^/]+)?$/i.test(path)
 }
 
 function emptyItemsResponse(): Response {
@@ -2080,44 +2042,6 @@ function parseLrcLyrics(value: string): Array<{ Start: number; Text: string }> {
     }
   }
   return lines.sort((a, b) => a.Start - b.Start)
-}
-
-function extractPlaylistId(path: string): string | undefined {
-  const playlistMatch = path.match(/^\/Playlists\/([^/]+)\/Items$/i)
-  if (playlistMatch?.[1]) return decodeURIComponent(playlistMatch[1])
-  const userItemMatch = path.match(/^\/Users\/[^/]+\/Items\/([^/]+)\/Items$/i)
-  return userItemMatch?.[1] ? decodeURIComponent(userItemMatch[1]) : undefined
-}
-
-function extractItemId(path: string): string | undefined {
-  const itemMatch = path.match(/^\/Items\/([^/]+)$/i)
-  if (itemMatch?.[1]) return decodeURIComponent(itemMatch[1])
-  const userItemMatch = path.match(/^\/Users\/[^/]+\/Items\/([^/]+)$/i)
-  return userItemMatch?.[1] ? decodeURIComponent(userItemMatch[1]) : undefined
-}
-
-function extractFavoriteItemId(path: string): string | undefined {
-  const favoriteItemMatch = path.match(/^\/Users\/[^/]+\/FavoriteItems\/([^/]+)(?:\/Delete)?$/i)
-  return favoriteItemMatch?.[1] ? decodeURIComponent(favoriteItemMatch[1]) : undefined
-}
-
-function extractNestedItemId(path: string, action: string): string | undefined {
-  const itemMatch = path.match(new RegExp(`^/Items/([^/]+)/${action}(?:/[^/]+)?$`, 'i'))
-  if (itemMatch?.[1]) return decodeURIComponent(itemMatch[1])
-  const userItemMatch = path.match(new RegExp(`^/Users/[^/]+/Items/([^/]+)/${action}(?:/[^/]+)?$`, 'i'))
-  return userItemMatch?.[1] ? decodeURIComponent(userItemMatch[1]) : undefined
-}
-
-function extractSubtitleItemId(path: string): string | undefined {
-  const itemMatch = path.match(/^\/(?:Items|Videos)\/([^/]+)(?:\/[^/]+)?\/Subtitles\/\d+(?:\/\d+)?\/Stream\.[^/]+$/i)
-  return itemMatch?.[1] ? decodeURIComponent(itemMatch[1]) : undefined
-}
-
-function extractImageItemId(path: string): string | undefined {
-  const itemMatch = path.match(/^\/Items\/([^/]+)\/Images\/[^/]+(?:\/[^/]+)?$/i)
-  if (itemMatch?.[1]) return decodeURIComponent(itemMatch[1])
-  const userMatch = path.match(/^\/Users\/([^/]+)\/Images\/[^/]+(?:\/[^/]+)?$/i)
-  return userMatch?.[1] ? decodeURIComponent(userMatch[1]) : undefined
 }
 
 function dedupeSongs(songs: MusicInfo[]): MusicInfo[] {
