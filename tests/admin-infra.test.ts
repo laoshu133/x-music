@@ -102,13 +102,17 @@ test('account summaries include login ip and per-account playback and favorite c
   }
 })
 
-test('request logging is opt-in during tests and redacts token-like query values', () => {
+test('request logging defaults to production only and redacts token-like query values', () => {
   const previous = process.env.X_MUSIC_REQUEST_LOGS
+  const previousNodeEnv = process.env.NODE_ENV
   const originalInfo = console.info
   const messages: string[] = []
   try {
     delete process.env.X_MUSIC_REQUEST_LOGS
     assert.equal(requestLoggingEnabled(), false)
+    Object.defineProperty(process.env, 'NODE_ENV', { value: 'production', configurable: true, enumerable: true, writable: true })
+    assert.equal(requestLoggingEnabled(), true)
+    Object.defineProperty(process.env, 'NODE_ENV', { value: previousNodeEnv, configurable: true, enumerable: true, writable: true })
 
     process.env.X_MUSIC_REQUEST_LOGS = 'true'
     assert.equal(requestLoggingEnabled(), true)
@@ -150,6 +154,7 @@ test('request logging is opt-in during tests and redacts token-like query values
     } else {
       process.env.X_MUSIC_REQUEST_LOGS = previous
     }
+    Object.defineProperty(process.env, 'NODE_ENV', { value: previousNodeEnv, configurable: true, enumerable: true, writable: true })
   }
 })
 

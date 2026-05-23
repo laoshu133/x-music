@@ -72,8 +72,8 @@ export function logFailedRequest(
 
 export function requestLoggingEnabled(): boolean {
   const setting = process.env.X_MUSIC_REQUEST_LOGS?.trim().toLowerCase()
-  if (setting) return !['0', 'false', 'off', 'no'].includes(setting)
-  return process.env.NODE_ENV !== 'test'
+  if (setting && setting !== 'auto') return ['1', 'true', 'on', 'yes'].includes(setting)
+  return process.env.NODE_ENV === 'production'
 }
 
 export function safeRequestPath(rawUrl: string): string {
