@@ -207,7 +207,11 @@ function syncedPlaylistName(playlistId?: string): string | undefined {
 }
 
 function preferredSyncQuality(payload: SyncEmbyTrackJobPayload): MusicQuality {
-  return highestAvailableQuality(payload.musicInfo)
+  const hasDeclaredQuality = (payload.musicInfo.types ?? [])
+    .some(item => item.type === 'flac' || item.type === '320k' || item.type === '128k')
+  return hasDeclaredQuality
+    ? highestAvailableQuality(payload.musicInfo)
+    : getCachedQualities(payload)[0] ?? highestAvailableQuality(payload.musicInfo)
 }
 
 function getCachedQualities(payload: SyncEmbyTrackJobPayload): MusicQuality[] {

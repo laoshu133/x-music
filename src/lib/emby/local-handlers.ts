@@ -40,7 +40,7 @@ import { getRemoteMapping, upsertRemoteMapping } from '@/lib/db/remote-mappings'
 import { deleteEmbyItems, fetchEmbyAudioMediaInfo, fetchEmbyJson, fetchEmbyText, searchEmbyAudioByName, searchEmbyPlaylistByName } from './upstream-api'
 import { proxyToUpstreamEmby } from './upstream-proxy'
 import { ensureEmbyMasterCachedBestEffort } from './master'
-import { getAccountByEmbyUsername, getAccountByEmbyUserId, listAccounts, markAccountActive, markAccountLogin, type AccountRecord } from '@/lib/db/accounts'
+import { getAccountByEmbyUsername, getAccountByEmbyUserId, getAccountByQQ, listAccounts, markAccountActive, markAccountLogin, type AccountRecord } from '@/lib/db/accounts'
 import { ensureUpstreamEmbyUserForAccount, getDefaultUpstreamMusicLibraryId } from './auth'
 import { syncMappedEmbyFavoriteBestEffort } from './favorites'
 import {
@@ -231,19 +231,16 @@ const LOCAL_ROUTES: LocalRoute[] = [
   },
   {
     name: 'lyrics',
-    authorize: true,
     match: ({ request, embyPath }) => request.method === 'GET' && isLyricsRequest(embyPath),
     handle: ({ request, embyPath }) => handleLyricsRequest(request, embyPath),
   },
   {
     name: 'subsonic-get-song',
-    authorize: true,
     match: ({ request, embyPath }) => request.method === 'GET' && isSubsonicGetSongRequest(embyPath),
     handle: ({ request }) => handleSubsonicGetSongRequest(request),
   },
   {
     name: 'subsonic-lyrics',
-    authorize: true,
     match: ({ request, embyPath }) => request.method === 'GET' && isSubsonicLyricsRequest(embyPath),
     handle: ({ request }) => handleSubsonicLyricsRequest(request),
   },
@@ -371,6 +368,14 @@ function authorizedLocalAccount(request: Request): AccountRecord | undefined {
   const token = readClientAccessToken(request)
   if (!token) return undefined
   const account = listAccounts().find(account => token === createLocalAccessToken(account))
+  if (account) markAccountActive(account.qqUin)
+  return account
+}
+
+function subsonicAccountForRequest(request: Request): AccountRecord | undefined {
+  const username = new URL(request.url).searchParams.get('u')?.trim()
+  if (!username) return undefined
+  const account = getAccountByEmbyUsername(username) ?? getAccountByQQ(username.replace(/^QQ/i, ''))
   if (account) markAccountActive(account.qqUin)
   return account
 }
@@ -603,7 +608,7 @@ function emptyItemsResponse(): Response {
 }
 
 function emptyImageResponse(): Response {
-  return new Response(null, { status: 204 })
+  return new Response(null, { status: 204, headers: { 'x-x-music-source': 'local' } })
 }
 
 async function handleImageRequest(request: Request, embyPath: string): Promise<Response> {
@@ -611,8 +616,16 @@ async function handleImageRequest(request: Request, embyPath: string): Promise<R
   if (!itemId) return emptyImageResponse()
   if (isMusicLibraryId(itemId)) return emptyImageResponse()
 
-  const decoded = decodeVirtualId(itemId)
-  if (!decoded) return proxyToUpstreamEmby(request, embyPath)
+  const decoded = decodeClientVirtualId(itemId)
+  if (!decoded) {
+    const songmid = songmidForExternalItemId(itemId) ?? (looksLikeQQSongMid(itemId) ? itemId : undefined)
+    if (!songmid) return proxyToUpstreamEmby(request, embyPath)
+    const localCover = await readCachedTrackCover({ source: 'tx', songmid })
+    if (localCover) return markRequestSource(localCover, 'local')
+    const stored = await loadOrFetchVirtualSong(songmid)
+    const imageUrl = stored?.song.img
+    return imageUrl ? fetchVirtualImageResponse(imageUrl) : markRequestSource(emptyImageResponse(), 'local')
+  }
 
   if (decoded.kind === 'qq-song') {
     const localCover = await readCachedTrackCover({ source: 'tx', songmid: decoded.songmid })
@@ -631,6 +644,10 @@ async function handleImageRequest(request: Request, embyPath: string): Promise<R
   const imageUrl = virtualImageUrl(decoded)
   if (!imageUrl) return emptyImageResponse()
 
+  return fetchVirtualImageResponse(imageUrl)
+}
+
+async function fetchVirtualImageResponse(imageUrl: string): Promise<Response> {
   const cached = await cachedResourceResponse({
     source: 'tx',
     resourceType: 'image',
@@ -948,6 +965,7 @@ async function handleSimilarItemsRequest(request: Request, embyPath: string): Pr
 }
 
 async function handleLyricsRequest(request: Request, embyPath: string): Promise<Response | undefined> {
+  if (!isAuthorizedLocalRequest(request) && !subsonicAccountForRequest(request)) return unauthorizedResponse()
   const itemId = extractNestedItemId(embyPath, 'Lyrics')
   const decoded = itemId ? await resolveSongVirtualId(itemId) : undefined
   if (!decoded) return undefined
@@ -986,6 +1004,7 @@ async function handleLyricsRequest(request: Request, embyPath: string): Promise<
 }
 
 async function handleSubsonicGetSongRequest(request: Request): Promise<Response> {
+  if (!isAuthorizedLocalRequest(request) && !subsonicAccountForRequest(request)) return subsonicResponse(request, { error: { code: 40, message: 'Unauthorized' } }, 401)
   const url = new URL(request.url)
   const rawId = url.searchParams.get('id') ?? ''
   const decoded = await resolveSongVirtualId(rawId)
@@ -998,6 +1017,7 @@ async function handleSubsonicGetSongRequest(request: Request): Promise<Response>
 }
 
 async function handleSubsonicLyricsRequest(request: Request): Promise<Response> {
+  if (!isAuthorizedLocalRequest(request) && !subsonicAccountForRequest(request)) return subsonicResponse(request, { error: { code: 40, message: 'Unauthorized' } }, 401)
   const url = new URL(request.url)
   const rawId = url.searchParams.get('id') ?? ''
   const decoded = await resolveSongVirtualId(rawId)
@@ -1302,7 +1322,7 @@ async function loadOrFetchVirtualSong(songmid: string, playlistId?: string): Pro
 }
 
 async function resolveSongVirtualId(itemId: string): Promise<Extract<VirtualId, { kind: 'qq-song' }> | undefined> {
-  const decoded = decodeVirtualId(itemId)
+  const decoded = decodeClientVirtualId(itemId)
   if (decoded?.kind === 'qq-song') return decoded
 
   const songmid = songmidForExternalItemId(itemId)
@@ -2089,6 +2109,14 @@ function virtualImageUrl(id: ReturnType<typeof decodeVirtualId>): string | undef
   if (id.kind === 'qq-daily') return loadVirtualPlaylist('__daily__')?.img || undefined
   if (id.kind === 'qq-guess') return loadVirtualPlaylist('__guess__')?.img || undefined
   return undefined
+}
+
+function decodeClientVirtualId(id: string): VirtualId | undefined {
+  return decodeVirtualId(id.startsWith('pl-') ? id.slice(3) : id)
+}
+
+function looksLikeQQSongMid(value: string): boolean {
+  return /^[A-Za-z0-9]{14}$/.test(value) && /[A-Za-z]/.test(value)
 }
 
 function songToEmbyItem(song: MusicInfo, _playlistId?: string, isFavorite = false) {

@@ -169,7 +169,13 @@ test('emby sync job waits for cached media before failing', async () => {
   writeFileSync(rawPath, 'fake audio')
   delete process.env.EMBY_SOURCE_WEBDAV_DSN
   try {
-    const musicInfo = { source: 'tx' as const, songmid, name: 'Delayed Cache Sync', singer: 'Tester' }
+    const musicInfo = {
+      source: 'tx' as const,
+      songmid,
+      name: 'Delayed Cache Sync',
+      singer: 'Tester',
+      types: [{ type: '320k' as const, size: '5 MB' }],
+    }
     const track = ensureTrack(musicInfo)
     const created = createJob({
       type: 'sync_emby_track',
@@ -282,13 +288,12 @@ test('emby sync job prefers highest ready quality over newer low quality cache',
   }
 })
 
-test('emby sync job marks stale missing cache and falls back after preferred quality wait', async () => {
+test('emby sync job marks stale missing highest quality without falling back to lower quality', async () => {
   const originalFetch = globalThis.fetch
   const originalWebdavDsn = process.env.EMBY_SOURCE_WEBDAV_DSN
   const songmid = `SYNC_STALE_CACHE_${Date.now()}`
   const missingFlacPath = path.join(appConfig.musicDir, 'missing', `${songmid}.flac`)
   const oggPath = path.join(appConfig.musicDir, 'Tester', 'Unknown Album', `Tester - ${songmid}.ogg`)
-  const scanPaths: string[] = []
 
   db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track'").run()
   mkdirSync(path.dirname(oggPath), { recursive: true })
@@ -310,16 +315,54 @@ test('emby sync job marks stale missing cache and falls back after preferred qua
       payload: { source: 'tx', songmid, musicInfo },
     })
 
+    globalThis.fetch = (async () => Response.json({ error: 'should not scan lower quality' }, { status: 500 })) as typeof fetch
+
+    assert.equal(await processOneEmbySyncJob({
+      maxAttempts: 1,
+      cacheWaitMs: 0,
+      scanWaitMs: 0,
+    }), true)
+    const job = getJob(created.id)
+    assert.equal(job?.status, 'failed')
+    assert.equal(job?.error, 'No cached file is ready for Emby sync yet')
+    const flacRow = db.prepare('SELECT status, error FROM track_files WHERE id = ?').get(flac.id) as { status: string; error: string | null }
+    assert.equal(flacRow.status, 'missing')
+    assert.match(flacRow.error ?? '', /missing or not playable/)
+  } finally {
+    rmSync(oggPath, { force: true })
+    process.env.EMBY_SOURCE_WEBDAV_DSN = originalWebdavDsn
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('emby sync job does not sync low quality when highest quality is missing', async () => {
+  const originalFetch = globalThis.fetch
+  const originalWebdavDsn = process.env.EMBY_SOURCE_WEBDAV_DSN
+  const songmid = `SYNC_MASTER_ONLY_${Date.now()}`
+  const lowPath = path.join(appConfig.musicDir, 'Tester', 'Unknown Album', `Tester - ${songmid}.mp3`)
+  const requests: string[] = []
+
+  db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track'").run()
+  mkdirSync(path.dirname(lowPath), { recursive: true })
+  writeFileSync(lowPath, 'mp3 audio')
+  delete process.env.EMBY_SOURCE_WEBDAV_DSN
+  try {
+    const musicInfo = {
+      source: 'tx' as const,
+      songmid,
+      name: 'Master Only Sync',
+      singer: 'Tester',
+      types: [{ type: 'flac' as const, size: '49 MB' }, { type: '320k' as const, size: '5 MB' }],
+    }
+    const track = ensureTrack(musicInfo)
+    upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath: lowPath, sizeBytes: 5_000_000 })
+    const created = createJob({
+      type: 'sync_emby_track',
+      payload: { source: 'tx', songmid, musicInfo },
+    })
+
     globalThis.fetch = (async (url: string | URL | Request) => {
-      const requestUrl = new URL(String(url))
-      if (requestUrl.pathname.endsWith('/Library/Media/Updated')) return new Response(null, { status: 204 })
-      if (requestUrl.pathname.endsWith('/Items') && requestUrl.searchParams.has('Path')) {
-        const scanPath = requestUrl.searchParams.get('Path') ?? ''
-        scanPaths.push(scanPath)
-        return Response.json({
-          Items: [{ Id: 'emby-stale-cache-song', Name: 'Stale Cache Sync', Artists: ['Tester'], Path: scanPath }],
-        })
-      }
+      requests.push(String(url))
       return Response.json({ Items: [] })
     }) as typeof fetch
 
@@ -328,13 +371,12 @@ test('emby sync job marks stale missing cache and falls back after preferred qua
       cacheWaitMs: 0,
       scanWaitMs: 0,
     }), true)
-    assert.equal(getJob(created.id)?.status, 'completed')
-    assert.equal(scanPaths[0], oggPath)
-    const flacRow = db.prepare('SELECT status, error FROM track_files WHERE id = ?').get(flac.id) as { status: string; error: string | null }
-    assert.equal(flacRow.status, 'missing')
-    assert.match(flacRow.error ?? '', /missing or not playable/)
+    const job = getJob(created.id)
+    assert.equal(job?.status, 'failed')
+    assert.equal(job?.error, 'No cached file is ready for Emby sync yet')
+    assert.deepEqual(requests, [])
   } finally {
-    rmSync(oggPath, { force: true })
+    rmSync(lowPath, { force: true })
     process.env.EMBY_SOURCE_WEBDAV_DSN = originalWebdavDsn
     globalThis.fetch = originalFetch
   }
