@@ -1,5 +1,4 @@
 import type { Metadata } from 'next'
-import Script from 'next/script'
 import './styles.css'
 
 export const metadata: Metadata = {
@@ -12,22 +11,10 @@ export const metadata: Metadata = {
   },
 }
 
-const isProduction = process.env.NODE_ENV === 'production'
-
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="zh-CN">
-      <body>
-        {children}
-        {isProduction ? (
-          <Script
-            id="LA_COLLECT"
-            src="//sdk.51.la/js-sdk-pro.min.js?id=LCW93BU74YqqESL1&ck=LCW93BU74YqqESL1"
-            charSet="UTF-8"
-            strategy="afterInteractive"
-          />
-        ) : null}
-      </body>
+      <body>{children}</body>
     </html>
   )
 }

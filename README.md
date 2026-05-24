@@ -139,6 +139,24 @@ Optional:
 - The upstream Emby API key is a service credential. Player-facing passwords are maintained locally by XMusic.
 - Generated QQ upstream Emby users are intentionally restricted to the music library only.
 
+## Recent Changelog
+
+### 2026-05-24
+
+- Improved Narjo, Musiver, Subsonic, and ampcast compatibility for local Emby routes, including universal audio paths, lyrics/subtitle streams, image routes, and query/header token variants.
+- Added local handling for more virtual QQ Music playback paths so compatible clients can request audio, lyrics, and artwork without leaking virtual IDs to the upstream Emby server.
+- Aligned QQ lyric lookup with the LX playback flow and persisted fetched lyrics in the local cache for later tagging, sidecar generation, and client subtitle requests.
+- Added WebDAV-based duplicate cleanup tooling for upstream Emby libraries, with dry-run/apply modes and optional deletion through Emby or WebDAV.
+- Hardened Emby sync behavior around FLAC preference, exact path matching, empty directory pruning, stale jobs, and retry backoff.
+- Moved ampcast into the same-origin `@player` flow and fixed embedded resource proxying so the homepage can open the player directly without URL-passed credentials.
+
+### 2026-05-23
+
+- Migrated QQ encrypted audio handling to the local UM crypto path, removing the need for an external decryption CLI in normal playback/cache flows.
+- Reworked Emby virtual item mapping and playlist expansion for merged upstream Emby plus QQ Music library views.
+- Added admin/runtime management improvements for users, jobs, account connection details, and runtime settings.
+- Expanded automated coverage for Emby compatibility, cache reuse, job processing, QQ favorites/history, and admin infrastructure.
+
 ## Current Risks
 
 - QQ private APIs still need live-account validation for every account-dependent endpoint.
