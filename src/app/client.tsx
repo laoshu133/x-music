@@ -544,7 +544,7 @@ export default function MusicClient() {
         {view === 'home' && (
           <section className="workspace">
             <Status state={adminConfig} />
-            <HomePanel connection={connectionInfo} ampcastOfficialUrl={ampcastOfficialUrl} onOpenPlayer={() => openView('player')} onOpenConfig={() => openView('config')} />
+            <HomePanel connection={connectionInfo} playerPath={EMBEDDED_PLAYER_AUTO_INIT_PATH} ampcastOfficialUrl={ampcastOfficialUrl} onOpenConfig={() => openView('config')} />
           </section>
         )}
 
@@ -774,13 +774,13 @@ function AccountSummary({ account, avatarUrl, onLogout }: { account: AccountStat
 
 function HomePanel({
   connection,
+  playerPath,
   ampcastOfficialUrl,
-  onOpenPlayer,
   onOpenConfig,
 }: {
   connection: ConnectionInfo
+  playerPath: string
   ampcastOfficialUrl: string
-  onOpenPlayer: () => void
   onOpenConfig: () => void
 }) {
   return (
@@ -790,7 +790,7 @@ function HomePanel({
         <h3>把音乐装进自己口袋</h3>
         <p>连接 QQ 音乐和 Emby，打通收藏、歌单、记录，让音乐跟着你走。</p>
         <div className="hero-actions">
-          <button className="primary-link" onClick={onOpenPlayer}><ExternalLink size={16} />打开播放器</button>
+          <a className="primary-link" href={playerPath} target="_blank" rel="noreferrer"><ExternalLink size={16} />打开播放器</a>
           <button className="secondary-button" onClick={onOpenConfig}><Settings size={16} />管理连接</button>
         </div>
       </section>
