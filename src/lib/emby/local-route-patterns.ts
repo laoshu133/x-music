@@ -51,7 +51,7 @@ export function isPlaylistItemsRequest(path: string): boolean {
 }
 
 export function isAudioRequest(path: string): boolean {
-  return /^\/Audio\/[^/]+\/(?:universal|stream)$/i.test(path)
+  return /^\/Audio\/[^/]+\/(?:universal|stream)(?:\.[^/?]+)?$/i.test(path)
 }
 
 export function isPlaybackReportRequest(path: string): boolean {

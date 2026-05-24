@@ -1388,6 +1388,8 @@ function playableQualityForSong(musicInfo: MusicInfo): MusicQuality | undefined 
 
 function preferredAudioQualityForRequest(request: Request, musicInfo: MusicInfo): MusicQuality {
   const url = new URL(request.url)
+  const pathQuality = preferredAudioQualityForPath(url.pathname)
+  if (pathQuality && availableSongQualities(musicInfo).includes(pathQuality)) return pathQuality
   const container = (url.searchParams.get('Container') ?? url.searchParams.get('container') ?? '').toLowerCase()
   const audioCodec = (url.searchParams.get('AudioCodec') ?? url.searchParams.get('audioCodec') ?? '').toLowerCase()
   const available = availableSongQualities(musicInfo)
@@ -1395,6 +1397,13 @@ function preferredAudioQualityForRequest(request: Request, musicInfo: MusicInfo)
   if ((container.includes('mp3') || audioCodec.includes('mp3')) && available.includes('320k')) return '320k'
   if ((container.includes('mp3') || audioCodec.includes('mp3')) && available.includes('128k')) return '128k'
   return available[0] ?? 'flac'
+}
+
+function preferredAudioQualityForPath(pathname: string): MusicQuality | undefined {
+  const ext = path.extname(pathname).toLowerCase()
+  if (ext === '.flac') return 'flac'
+  if (ext === '.mp3') return '320k'
+  return undefined
 }
 
 function containerSupportsFlac(container: string): boolean {

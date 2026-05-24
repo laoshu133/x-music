@@ -4143,6 +4143,78 @@ test('local emby virtual audio GET records playback and syncs QQ history', async
   }
 })
 
+test('narjo virtual audio GET with extension suffix is handled locally', async () => {
+  const originalFetch = globalThis.fetch
+  const localAudioPath = join(process.cwd(), 'data/test-narjo-virtual-song.flac')
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999114')
+    saveQQLoginCookie('uin=o999114; qm_keyst=test-key')
+    markAccountUpstreamBound('999114')
+    const account = getAccountByQQ('999114')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const songId = encodeVirtualId({ kind: 'qq-song', songmid: 'qq-narjo-song-1' })
+    const authHeader = `MediaBrowser Client="Narjo", Version="93", Device="iOS", Token="${authPayload.AccessToken}"`
+
+    mkdirSync(join(process.cwd(), 'data'), { recursive: true })
+    writeFileSync(localAudioPath, 'narjo-audio-bytes')
+    const track = ensureTrack({
+      source: 'tx',
+      songmid: 'qq-narjo-song-1',
+      name: 'Narjo Song',
+      singer: 'QQ Artist',
+      albumName: 'QQ Album',
+      interval: '03:08',
+      types: [{ type: 'flac', size: '1 MB' }, { type: '320k', size: '1 MB' }],
+      raw: { songId: 321, songType: 0, strMediaMid: 'qq-media-narjo' },
+    })
+    upsertTrackFileStatus(track.id, 'flac', 'ready', { finalPath: localAudioPath, sizeBytes: 17, sha256: 'narjosha' })
+    db.prepare(`
+      INSERT INTO app_settings (key, value_json, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP
+    `).run('virtual.song.qq-narjo-song-1', JSON.stringify({
+      song: {
+        source: 'tx',
+        songmid: 'qq-narjo-song-1',
+        name: 'Narjo Song',
+        singer: 'QQ Artist',
+        albumName: 'QQ Album',
+        interval: '03:08',
+        types: [{ type: 'flac', size: '1 MB' }, { type: '320k', size: '1 MB' }],
+        raw: { songId: 321, songType: 0, strMediaMid: 'qq-media-narjo' },
+      },
+    }))
+
+    globalThis.fetch = (async () => Response.json({ error: 'should not proxy upstream' }, { status: 500 })) as typeof fetch
+
+    const response = await dispatchEmbyRequest(
+      new Request(`http://local/Audio/${encodeURIComponent(songId)}/universal.flac?DeviceId=Narjo-Device&api_key=${authPayload.AccessToken}`, {
+        headers: { 'X-Emby-Authorization': authHeader, 'user-agent': 'Narjo/93' },
+      }),
+      stripOptionalEmbyPrefix(`/Audio/${encodeURIComponent(songId)}/universal.flac`),
+    )
+    assert.equal(response.status, 200)
+    assert.equal(response.headers.get('x-x-music-source'), 'local')
+    assert.match(response.headers.get('content-type') ?? '', /audio\/flac/)
+    assert.equal(await response.text(), 'narjo-audio-bytes')
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999114')
+    clearQQLoginCookie()
+    db.prepare('DELETE FROM app_settings WHERE key = ?').run('virtual.song.qq-narjo-song-1')
+    db.prepare("DELETE FROM tracks WHERE songmid = ? AND source = 'tx'").run('qq-narjo-song-1')
+    db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track' AND json_extract(payload_json, '$.songmid') = ?").run('qq-narjo-song-1')
+    rmSync(localAudioPath, { force: true })
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('local emby virtual audio GET returns playable errors as 502 JSON', async () => {
   const originalFetch = globalThis.fetch
   const originalLxMusicSourceScript = process.env.LX_MUSIC_SOURCE_SCRIPT
