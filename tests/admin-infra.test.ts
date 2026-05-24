@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import crypto from 'node:crypto'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { db } from '@/lib/db'
@@ -11,7 +12,7 @@ import { ensureUpstreamEmbyUserForAccount } from '@/lib/emby/auth'
 import { handleLocalEmbyRequest } from '@/lib/emby/local-handlers'
 import { normalizeEmbyPath, stripOptionalEmbyPrefix } from '@/lib/emby/paths'
 import { proxyToUpstreamEmby } from '@/lib/emby/upstream-proxy'
-import { playerPathFromEmbyPath, proxyToAmpcast } from '@/lib/ampcast/proxy'
+import { ampcastAutoConnectConfig, ampcastAutoInitHtml, playerPathFromEmbyPath, proxyToAmpcast } from '@/lib/ampcast/proxy'
 import { readEmbyAccessToken } from '@/lib/emby/tokens'
 import { decodeVirtualId, encodeVirtualId, songVirtualId } from '@/lib/emby/virtual-ids'
 import { getFavoriteStatus, setLocalFavoriteSynced } from '@/lib/db/favorites'
@@ -463,11 +464,64 @@ test('emby path helpers normalize optional emby prefix', () => {
 test('ampcast player path maps to embedded proxy route', () => {
   assert.equal(playerPathFromEmbyPath('/@player'), '/')
   assert.equal(playerPathFromEmbyPath('/@Player'), '/')
+  assert.equal(playerPathFromEmbyPath('/@player/auto-init'), undefined)
   assert.equal(playerPathFromEmbyPath('/@player/assets/app.js'), '/assets/app.js')
   assert.equal(playerPathFromEmbyPath(normalizeEmbyPath(['@player'])), '/')
   assert.equal(playerPathFromEmbyPath(normalizeEmbyPath(['@player', 'assets', 'app.js'])), '/assets/app.js')
   assert.equal(playerPathFromEmbyPath('/v0.9.28/lib/media-services.js'), '/v0.9.28/lib/media-services.js')
   assert.equal(playerPathFromEmbyPath('/Items'), undefined)
+})
+
+test('ampcast auto-init html stores local config and redirects to embedded player', () => {
+  const body = ampcastAutoInitHtml(ampcastAutoConnectConfig({
+    qqUin: '555777',
+    embyUsername: 'player-user',
+    embyPassword: 'player-pass',
+  }, 'http://local'))
+
+  assert.match(body, /const currentHost = window\.location\.origin/)
+  assert.match(body, /localStorage\.setItem\(prefix \+ 'host', currentHost\)/)
+  assert.match(body, /"host":"http:\/\/local"/)
+  assert.match(body, /"userName":"player-user"/)
+  assert.match(body, new RegExp(`"userId":"${crypto.createHash('sha1').update('x-music:555777:player-user').digest('hex')}"`))
+  assert.match(body, /"libraryId":"x-music-music"/)
+  assert.match(body, /localStorage\.setItem\(prefix \+ 'deviceId', deviceId\)/)
+  assert.match(body, /localStorage\.setItem\(prefix \+ 'isLocal', 'true'\)/)
+  assert.match(body, /localStorage\.setItem\('ampcast\/installed-version', '0\.9\.28'\)/)
+  assert.match(body, /localStorage\.setItem\('ampcast\/playback\/repeatMode', localStorage\.getItem\('ampcast\/playback\/repeatMode'\) \|\| '0'\)/)
+  assert.match(body, /localStorage\.setItem\('ampcast\/services\/fields', localStorage\.getItem\('ampcast\/services\/fields'\) \|\| ''\)/)
+  assert.match(body, /const hiddenServices = \{"spotify\/charts":true/)
+  assert.match(body, /"emby":false/)
+  assert.match(body, /"subsonic":true/)
+  assert.match(body, /localStorage\.setItem\('ampcast\/services\/hidden', JSON\.stringify\(hiddenServices\)\)/)
+  assert.match(body, /localStorage\.setItem\('ampcast\/sources\/selectedId', config\.service\)/)
+  assert.match(body, /requestAnimationFrame\(\(\) => window\.location\.replace\('\/@player\/'\)\)/)
+})
+
+test('ampcast auto-init credentials pass startup validation requests', async () => {
+  db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('555778')
+  try {
+    saveQQLoginCookie('uin=o555778; qm_keyst=test-key')
+    const account = getAccountByQQ('555778')
+    assert.ok(account)
+
+    const config = ampcastAutoConnectConfig(account, 'http://local')
+    const authHeader = `MediaBrowser Client="ampcast", Version="0.9.28", Device="PC", DeviceId="test-device", Token="${config.token}"`
+    const endpoint = await handleLocalEmbyRequest(new Request('http://local/emby/System/Endpoint', {
+      headers: { 'X-Emby-Authorization': authHeader },
+    }), stripOptionalEmbyPrefix('/emby/System/Endpoint'))
+    assert.equal(endpoint?.status, 200)
+
+    const views = await handleLocalEmbyRequest(new Request(`http://local/emby/Users/${config.userId}/Views`, {
+      headers: { 'X-Emby-Authorization': authHeader },
+    }), stripOptionalEmbyPrefix(`/emby/Users/${config.userId}/Views`))
+    assert.equal(views?.status, 200)
+    const viewsPayload = await views!.json()
+    assert.equal(viewsPayload.Items?.[0]?.Id, 'x-music-music')
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('555778')
+    clearQQLoginCookie()
+  }
 })
 
 test('ampcast proxy forwards to configured upstream and rewrites embedded assets', async () => {
@@ -499,6 +553,35 @@ test('ampcast proxy forwards to configured upstream and rewrites embedded assets
     assert.match(text, /href="\/@player\/style\.css"/)
     assert.match(text, /"\/@player\/v0\.9\.28\/lib\/media-services\.js"/)
     assert.match(text, /action="\/@player\/login"/)
+  } finally {
+    if (originalAmpcastUrl === undefined) {
+      delete process.env.AMPCAST_URL
+    } else {
+      process.env.AMPCAST_URL = originalAmpcastUrl
+    }
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('ampcast proxy returns friendly unavailable page when upstream fails', async () => {
+  const originalFetch = globalThis.fetch
+  const originalAmpcastUrl = process.env.AMPCAST_URL
+  try {
+    process.env.AMPCAST_URL = 'https://ampcast.example/base/'
+    globalThis.fetch = (async () => {
+      throw new TypeError('connect failed')
+    }) as typeof fetch
+
+    const response = await proxyToAmpcast(new Request('http://local/@player/', {
+      headers: { accept: 'text/html' },
+    }), '/')
+    const body = await response.text()
+
+    assert.equal(response.status, 502)
+    assert.match(response.headers.get('content-type') ?? '', /text\/html/)
+    assert.match(body, /播放器暂时不可用/)
+    assert.match(body, /AMPCAST_URL/)
+    assert.match(body, /https:\/\/ampcast\.example\/base\//)
   } finally {
     if (originalAmpcastUrl === undefined) {
       delete process.env.AMPCAST_URL

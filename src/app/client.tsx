@@ -34,7 +34,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 type View = 'home' | 'player' | 'config' | 'status' | 'users' | 'jobs'
 
 const AMPCAST_OFFICIAL_URL = 'https://ampcast.app/'
-const EMBEDDED_PLAYER_PATH = '/@player/'
+const EMBEDDED_PLAYER_AUTO_INIT_PATH = '/@player/auto-init'
 
 interface ApiState<T> {
   loading: boolean
@@ -445,7 +445,9 @@ export default function MusicClient() {
   }, [account.data?.loggedIn, account.data?.isAdmin, view])
 
   useEffect(() => {
-    if (account.data?.loggedIn) void loadAccountEmbyConfig()
+    if (account.data?.loggedIn) {
+      void loadAccountEmbyConfig()
+    }
   }, [account.data?.loggedIn])
 
   useEffect(() => {
@@ -532,7 +534,7 @@ export default function MusicClient() {
           <header className="content-header">
             <h2>{headingFor(view)}</h2>
             {view === 'player' ? (
-              <a className="secondary-button compact-button" href={EMBEDDED_PLAYER_PATH} target="_blank" rel="noreferrer"><ExternalLink size={15} />新窗口打开</a>
+              <a className="secondary-button compact-button" href={EMBEDDED_PLAYER_AUTO_INIT_PATH} target="_blank" rel="noreferrer"><ExternalLink size={15} />新窗口打开</a>
             ) : null}
           </header>
         )}
@@ -542,14 +544,14 @@ export default function MusicClient() {
         {view === 'home' && (
           <section className="workspace">
             <Status state={adminConfig} />
-            <HomePanel connection={connectionInfo} playerPath={EMBEDDED_PLAYER_PATH} ampcastOfficialUrl={ampcastOfficialUrl} onOpenConfig={() => openView('config')} />
+            <HomePanel connection={connectionInfo} ampcastOfficialUrl={ampcastOfficialUrl} onOpenPlayer={() => openView('player')} onOpenConfig={() => openView('config')} />
           </section>
         )}
 
         {view === 'player' && (
           <section className="workspace">
             <Status state={adminConfig} />
-            <PlayerPanel playerPath={EMBEDDED_PLAYER_PATH} />
+            <PlayerPanel playerPath={EMBEDDED_PLAYER_AUTO_INIT_PATH} />
           </section>
         )}
 
@@ -772,13 +774,13 @@ function AccountSummary({ account, avatarUrl, onLogout }: { account: AccountStat
 
 function HomePanel({
   connection,
-  playerPath,
   ampcastOfficialUrl,
+  onOpenPlayer,
   onOpenConfig,
 }: {
   connection: ConnectionInfo
-  playerPath: string
   ampcastOfficialUrl: string
+  onOpenPlayer: () => void
   onOpenConfig: () => void
 }) {
   return (
@@ -788,7 +790,7 @@ function HomePanel({
         <h3>把音乐装进自己口袋</h3>
         <p>连接 QQ 音乐和 Emby，打通收藏、歌单、记录，让音乐跟着你走。</p>
         <div className="hero-actions">
-          <a className="primary-link" href={playerPath} target="_blank" rel="noreferrer"><ExternalLink size={16} />打开播放器</a>
+          <button className="primary-link" onClick={onOpenPlayer}><ExternalLink size={16} />打开播放器</button>
           <button className="secondary-button" onClick={onOpenConfig}><Settings size={16} />管理连接</button>
         </div>
       </section>
