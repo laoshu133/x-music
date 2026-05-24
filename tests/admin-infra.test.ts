@@ -2855,8 +2855,6 @@ test('musiver favorite list keeps selected virtual song ids stable across detail
     assert.equal(playbackPayload.MediaSources[0].Id, targetId)
     assert.equal(playbackPayload.MediaSources[0].ItemId, targetId)
     assert.equal(playbackPayload.MediaSources[0].Path, target.MediaSources[0].Path)
-    assert.equal(playbackPayload.MediaSources[0].DirectStreamUrl, target.MediaSources[0].Path)
-    assert.equal(playbackPayload.MediaSources[0].TranscodingUrl, target.MediaSources[0].Path)
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999043')
     clearQQLoginCookie()
@@ -2866,8 +2864,8 @@ test('musiver favorite list keeps selected virtual song ids stable across detail
   }
 })
 
-test('moonfin virtual album image requests use virtual song tag artwork', async () => {
-  const originalFetch = globalThis.fetch
+test('virtual song items omit invalid album ids while keeping primary image tag', async () => {
+  const songmid = 'qq-null-album-song'
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999118')
     saveQQLoginCookie('uin=o999118; qm_keyst=test-key')
@@ -2882,7 +2880,6 @@ test('moonfin virtual album image requests use virtual song tag artwork', async 
     assert.equal(auth?.status, 200)
     const authPayload = await auth!.json()
 
-    const songmid = '000vRmU843tv0b'
     const virtualId = encodeVirtualId({ kind: 'qq-song', songmid })
     db.prepare(`
       INSERT INTO app_settings (key, value_json, updated_at)
@@ -2892,45 +2889,33 @@ test('moonfin virtual album image requests use virtual song tag artwork', async 
       song: {
         source: 'tx',
         songmid,
-        name: 'Moonfin Image Song',
-        singer: 'Moonfin Artist',
-        albumName: 'Moonfin Album',
-        albumId: '0022sX134HQF6u',
-        img: 'https://img.example/moonfin-image.jpg',
+        name: 'Null Album Song',
+        singer: 'QQ Artist',
+        albumName: 'QQ Album',
+        albumId: 'null',
+        img: 'https://img.example/null-album.jpg',
         interval: '03:00',
         types: [],
       },
     }))
 
-    const imageRequests: string[] = []
-    globalThis.fetch = (async (url: string | URL | Request) => {
-      const requestUrl = new URL(String(url))
-      if (requestUrl.hostname === 'img.example') imageRequests.push(String(url))
-      return new Response('moonfin-image-bytes', {
-        headers: { 'content-type': 'image/jpeg' },
-      })
-    }) as typeof fetch
-
-    db.prepare('DELETE FROM resource_cache WHERE url = ?').run('https://img.example/moonfin-image.jpg')
-    rmSync(join(process.env.MUSIC_DATA_DIR ?? './data', 'resources', 'image'), { recursive: true, force: true })
-
-    const response = await dispatchEmbyRequest(
-      new Request(`http://local/Items/0022sX134HQF6u/Images/Primary?maxHeight=600&tag=${encodeURIComponent(virtualId)}&api_key=${authPayload.AccessToken}`, {
-        headers: { 'user-agent': 'Moonfin' },
+    const detail = await dispatchEmbyRequest(
+      new Request(`http://local/Items/${encodeURIComponent(virtualId)}`, {
+        headers: { 'X-Emby-Authorization': `MediaBrowser Client="musiver", Version="1.3.9", Device="Macintosh", Token="${authPayload.AccessToken}"` },
       }),
-      stripOptionalEmbyPrefix('/Items/0022sX134HQF6u/Images/Primary'),
+      stripOptionalEmbyPrefix(`/Items/${encodeURIComponent(virtualId)}`),
     )
 
-    assert.equal(response.status, 200)
-    assert.equal(response.headers.get('content-type'), 'image/jpeg')
-    assert.equal(await response.text(), 'moonfin-image-bytes')
-    assert.deepEqual(imageRequests, ['https://img.example/moonfin-image.jpg'])
+    assert.equal(detail.status, 200)
+    const payload = await detail.json()
+    assert.equal(payload.Id, virtualId)
+    assert.equal(payload.AlbumId, undefined)
+    assert.equal(payload.ImageTags.Primary, virtualId)
+    assert.equal(payload.AlbumPrimaryImageTag, virtualId)
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999118')
     clearQQLoginCookie()
-    db.prepare('DELETE FROM app_settings WHERE key = ?').run('virtual.song.000vRmU843tv0b')
-    db.prepare('DELETE FROM resource_cache WHERE url = ?').run('https://img.example/moonfin-image.jpg')
-    globalThis.fetch = originalFetch
+    db.prepare('DELETE FROM app_settings WHERE key = ?').run(`virtual.song.${songmid}`)
   }
 })
 

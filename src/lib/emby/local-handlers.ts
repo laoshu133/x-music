@@ -625,15 +625,6 @@ async function handleImageRequest(request: Request, embyPath: string): Promise<R
   if (isMusicLibraryId(itemId)) return emptyImageResponse()
   if (/^\/Users\/[^/]+\/Images\//i.test(embyPath) && findAccountByLocalOrUpstreamUserId(itemId)) return emptyImageResponse()
 
-  const taggedVirtualId = virtualImageTagId(request)
-  if (taggedVirtualId?.kind === 'qq-song') {
-    const response = await virtualSongImageResponse(request, taggedVirtualId)
-    if (response) return response
-  } else if (taggedVirtualId) {
-    const imageUrl = virtualImageUrl(taggedVirtualId)
-    if (imageUrl) return fetchVirtualImageResponse(imageUrl)
-  }
-
   const decoded = decodeClientVirtualId(itemId)
   if (!decoded) {
     const songmid = songmidForExternalItemId(itemId) ?? (looksLikeQQSongMid(itemId) ? itemId : undefined)
@@ -654,15 +645,6 @@ async function handleImageRequest(request: Request, embyPath: string): Promise<R
   if (!imageUrl) return emptyImageResponse()
 
   return fetchVirtualImageResponse(imageUrl)
-}
-
-function virtualImageTagId(request: Request): VirtualId | undefined {
-  const url = new URL(request.url)
-  const tag = url.searchParams.get('tag')
-    ?? url.searchParams.get('Tag')
-    ?? url.searchParams.get('imageTag')
-    ?? url.searchParams.get('ImageTag')
-  return tag ? decodeClientVirtualId(tag) : undefined
 }
 
 async function virtualSongImageResponse(
@@ -2187,13 +2169,21 @@ function looksLikeQQSongMid(value: string): boolean {
   return /^[A-Za-z0-9]{14}$/.test(value) && /[A-Za-z]/.test(value)
 }
 
+function nonEmptyString(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  if (!trimmed || trimmed.toLowerCase() === 'null' || trimmed.toLowerCase() === 'undefined') return undefined
+  return trimmed
+}
+
 function songToEmbyItem(song: MusicInfo, _playlistId?: string, isFavorite = false) {
   const artists = splitArtists(song.singer)
   const runtimeTicks = intervalToTicks(song.interval)
   const mediaSource = songMediaSource(song, runtimeTicks)
   const imageTag = songImageTag(song)
+  const albumId = nonEmptyString(song.albumId)
 
-  return {
+  return compactRecord({
     Name: song.name,
     ServerId: LOCAL_SERVER_ID,
     Id: songVirtualId(song),
@@ -2210,7 +2200,7 @@ function songToEmbyItem(song: MusicInfo, _playlistId?: string, isFavorite = fals
     MediaType: 'Audio',
     IsFolder: false,
     Album: song.albumName,
-    AlbumId: song.albumId,
+    AlbumId: albumId,
     AlbumPrimaryImageTag: imageTag,
     AlbumArtist: artists.join(','),
     AlbumArtists: artists.length ? [{ Name: artists.join(','), Id: `${song.songmid}-album-artist` }] : [],
@@ -2227,7 +2217,7 @@ function songToEmbyItem(song: MusicInfo, _playlistId?: string, isFavorite = fals
       IsFavorite: isFavorite,
       Played: false,
     },
-  }
+  })
 }
 
 function favoriteSongToEmbyItem(song: MusicInfo, index: number) {
@@ -2278,14 +2268,11 @@ function songMediaSource(song: MusicInfo, runtimeTicks?: number) {
   const container = quality === 'flac' ? 'flac' : 'mp3'
   const codec = quality === 'flac' ? 'flac' : 'mp3'
   const id = songVirtualId(song)
-  const directStreamUrl = `/Audio/${encodeURIComponent(id)}/universal`
 
   return {
     Protocol: 'Http',
     Id: id,
-    Path: directStreamUrl,
-    DirectStreamUrl: directStreamUrl,
-    TranscodingUrl: directStreamUrl,
+    Path: `/Audio/${encodeURIComponent(id)}/universal`,
     Type: 'Default',
     Container: container,
     Size: readSongQualitySize(song, quality),
