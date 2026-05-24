@@ -627,6 +627,18 @@ test('local emby public info supports original emby routes', async () => {
   assert.equal(payload.ServerName, 'XMusic')
 })
 
+test('narjo no lyrics capability probe is handled locally', async () => {
+  const response = await dispatchEmbyRequest(
+    new Request('http://local/emby-no-lyrics-api', {
+      headers: { 'user-agent': 'Narjo/93' },
+    }),
+    stripOptionalEmbyPrefix('/emby-no-lyrics-api'),
+  )
+
+  assert.equal(response.status, 204)
+  assert.equal(response.headers.get('x-x-music-source'), 'local')
+})
+
 test('emby dispatch adds cors headers for external players', async () => {
   const response = await dispatchEmbyRequest(new Request('http://local/System/Info/Public'), '/System/Info/Public')
   assert.equal(response.status, 200)

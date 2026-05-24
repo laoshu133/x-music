@@ -189,6 +189,11 @@ const LOCAL_ROUTES: LocalRoute[] = [
     handle: () => Response.json({ ok: true, service: 'x-music-emby-gateway' }),
   },
   {
+    name: 'narjo-no-lyrics-probe',
+    match: ({ request, embyPath }) => request.method === 'GET' && pathEquals(embyPath, '/emby-no-lyrics-api'),
+    handle: () => markRequestSource(new Response(null, { status: 204 }), 'local'),
+  },
+  {
     name: 'playback-report',
     authorize: true,
     match: ({ request, embyPath }) => request.method === 'POST' && isPlaybackReportRequest(embyPath),

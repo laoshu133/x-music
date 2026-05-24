@@ -129,6 +129,7 @@ Optional:
 - `TAGGING_ORGANIZE_FILES`: organize final files as `artist/album/artist - title.ext`, default `true`.
 - `TAGGING_FETCH_TIMEOUT_MS`: network metadata/API timeout, default `5000`.
 - `NEXT_PUBLIC_APP_NAME`: public UI label, default should be `XMusic`.
+- `ANALYTICS_SCRIPT_CODE`: optional production-only analytics script tag. Set it to the complete `<script ...></script>` code provided by your analytics service.
 
 ## Architecture Notes
 

@@ -1,11 +1,17 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { ensureTrack, insertPlayEvent } from '@/lib/cache/store'
+import { db } from '@/lib/db'
+import { setSetting, deleteSetting } from '@/lib/db/settings'
 import { syncQQPlayHistory, syncQQPlayHistoryBestEffort } from '@/lib/qq/history'
+import { pushLocalPlayHistoryToQQ } from '@/lib/qq/history-sync'
 
 const originalFetch = globalThis.fetch
 
 test.afterEach(() => {
   globalThis.fetch = originalFetch
+  deleteSetting('qq.musicUrlApi')
+  db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run('push-local-qq-history')
   delete process.env.QQ_MUSIC_COOKIE
 })
 
@@ -154,4 +160,48 @@ test('syncQQPlayHistoryBestEffort is quiet by default when network sync fails', 
       process.env.X_MUSIC_DEBUG_BACKGROUND_SYNC = originalDebugEnv
     }
   }
+})
+
+test('pushLocalPlayHistoryToQQ reports local playback events through QQ sdk', async () => {
+  const requests: Array<{ url: URL; method: string; body?: any }> = []
+  const musicInfo = {
+    source: 'tx' as const,
+    songmid: 'push-local-qq-history',
+    name: 'Push Local History',
+    singer: 'QQ Artist',
+    raw: { songId: 123456, songType: 0 },
+  }
+  setSetting('qq.musicUrlApi', {
+    url: 'https://resolver.example/music/url',
+    key: 'test-key',
+  })
+  const track = ensureTrack(musicInfo)
+  insertPlayEvent(track.id, '320k', '123456', '2026-05-24T11:00:00.000Z')
+
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    const request = new Request(url, init)
+    requests.push({
+      url: new URL(request.url),
+      method: request.method,
+      body: init?.body ? JSON.parse(String(init.body)) : undefined,
+    })
+    if (request.url.startsWith('https://resolver.example/music/url')) {
+      return Response.json({
+        url: 'https://ws6.stream.qqmusic.qq.com/local-history.mp3?vkey=test',
+        quality: '320k',
+      })
+    }
+    return new Response('', { status: 200 })
+  }) as typeof fetch
+
+  const result = await pushLocalPlayHistoryToQQ({
+    cookie: 'uin=o123456; qm_keyst=test-key',
+    limit: 1,
+  })
+
+  assert.equal(result.synced, 1)
+  assert.equal(requests.length, 2)
+  assert.equal(requests[0].url.href, 'https://resolver.example/music/url')
+  assert.equal(requests[1].url.href, 'https://stat6.y.qq.com/sdk/fcgi-bin/sdk.fcg')
+  assert.equal(requests[1].body.items[0].int2, 123456)
 })

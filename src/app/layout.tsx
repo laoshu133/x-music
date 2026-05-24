@@ -11,10 +11,20 @@ export const metadata: Metadata = {
   },
 }
 
+const analyticsScriptCode = readAnalyticsScriptCode()
+
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="zh-CN">
-      <body>{children}</body>
+      <body>
+        {children}
+        {analyticsScriptCode ? <div dangerouslySetInnerHTML={{ __html: analyticsScriptCode }} /> : null}
+      </body>
     </html>
   )
+}
+
+function readAnalyticsScriptCode(): string | undefined {
+  if (process.env.NODE_ENV !== 'production') return undefined
+  return process.env.ANALYTICS_SCRIPT_CODE || undefined
 }

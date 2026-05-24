@@ -2,6 +2,25 @@ import { getEffectiveSettings } from '@/lib/db/settings'
 import type { MusicInfo } from '@/lib/types'
 import { embyAuthorizationHeader, getEmbyAccessToken } from './auth'
 
+export type EmbyAudioUserDataItem = {
+  Id?: string
+  Name?: string
+  Album?: string
+  Artists?: string[]
+  UserData?: {
+    IsFavorite?: boolean
+    Played?: boolean
+    PlayCount?: number
+    LastPlayedDate?: string
+    FavoriteDate?: string
+    DateFavorite?: string
+    DateLastFavorite?: string
+  }
+  ProviderIds?: Record<string, string>
+  Path?: string
+  MediaSources?: Array<{ Path?: string }>
+}
+
 export async function refreshEmbyLibrary(): Promise<unknown> {
   return embyFetch('/Library/Refresh', { method: 'POST' })
 }
@@ -170,6 +189,56 @@ export async function setEmbyFavorite(input: {
 }): Promise<unknown> {
   return embyFetch(`/Users/${encodeURIComponent(input.userId)}/FavoriteItems/${encodeURIComponent(input.itemId)}`, {
     method: input.favorite ? 'POST' : 'DELETE',
+  })
+}
+
+export async function fetchEmbyFavoriteAudioItems(input: {
+  userId: string
+  limit?: number
+  startIndex?: number
+}): Promise<{ Items?: EmbyAudioUserDataItem[]; TotalRecordCount?: number }> {
+  return embyFetch(`/Users/${encodeURIComponent(input.userId)}/Items?${new URLSearchParams({
+    IncludeItemTypes: 'Audio',
+    Recursive: 'true',
+    Filters: 'IsFavorite',
+    SortBy: 'DateCreated,SortName',
+    SortOrder: 'Descending,Ascending',
+    Fields: 'ProviderIds,Path,MediaSources,UserData',
+    EnableUserData: 'true',
+    Limit: String(input.limit ?? 500),
+    StartIndex: String(input.startIndex ?? 0),
+  })}`)
+}
+
+export async function fetchEmbyPlayedAudioItems(input: {
+  userId: string
+  limit?: number
+  startIndex?: number
+  sortBy?: 'DatePlayed' | 'PlayCount,DatePlayed'
+}): Promise<{ Items?: EmbyAudioUserDataItem[]; TotalRecordCount?: number }> {
+  return embyFetch(`/Users/${encodeURIComponent(input.userId)}/Items?${new URLSearchParams({
+    IncludeItemTypes: 'Audio',
+    Recursive: 'true',
+    Filters: 'IsPlayed',
+    SortBy: input.sortBy ?? 'DatePlayed',
+    SortOrder: 'Descending',
+    Fields: 'ProviderIds,Path,MediaSources,UserData',
+    EnableUserData: 'true',
+    Limit: String(input.limit ?? 200),
+    StartIndex: String(input.startIndex ?? 0),
+  })}`)
+}
+
+export async function markEmbyPlayed(input: {
+  userId: string
+  itemId: string
+  datePlayed?: string
+}): Promise<unknown> {
+  const search = new URLSearchParams()
+  if (input.datePlayed) search.set('DatePlayed', input.datePlayed)
+  const suffix = search.toString() ? `?${search.toString()}` : ''
+  return embyFetch(`/Users/${encodeURIComponent(input.userId)}/PlayedItems/${encodeURIComponent(input.itemId)}${suffix}`, {
+    method: 'POST',
   })
 }
 

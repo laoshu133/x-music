@@ -122,11 +122,11 @@ export const createUpstreamTeeResponse = async (
   const cacheKey = `${track.source}-${safeFilePart(track.songmid)}-${quality}-${Date.now()}`
   const partPath = path.join(appConfig.stagingDir, `${cacheKey}.part`)
   const inboxPath = path.join(appConfig.inboxDir, `${cacheKey}${extension}`)
-  const shouldCache = !range || range.startsWith('bytes=0-')
+  const shouldCache = !range
 
   const trackFile = upsertTrackFileStatus(track.id, quality, 'streaming_and_caching', {
     rawPath: shouldCache ? partPath : undefined,
-    error: shouldCache ? undefined : 'Partial first-play range is not cached',
+    error: shouldCache ? undefined : 'Range request is not cached',
   })
 
   const { body, completion } = teeUpstreamToClientAndCache({

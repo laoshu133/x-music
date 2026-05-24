@@ -3,7 +3,7 @@ import { listLocalFavorites, setLocalFavorite, setLocalFavoriteSynced } from '@/
 import { getQQFavoriteSongs, pullRemoteFavorites, QQMusicError, qqMusicErrorResponse, setQQFavoriteSong, syncPendingFavorites } from '@/lib/qq'
 import type { MusicInfo } from '@/lib/types'
 import { getCurrentAccount } from '@/lib/session'
-import { syncMappedEmbyFavoriteBestEffort } from '@/lib/emby/favorites'
+import { pullEmbyFavorites, pushLocalFavoritesToEmby, syncMappedEmbyFavoriteBestEffort } from '@/lib/emby/favorites'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -42,6 +42,19 @@ function resolveFavorited(body: FavoriteRequest) {
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url)
+  if (searchParams.get('remote') === 'emby' || (searchParams.get('sync') === 'pull' && searchParams.get('remote') === 'emby')) {
+    const account = await getCurrentAccount()
+    try {
+      return NextResponse.json(await pullEmbyFavorites({
+        account,
+        limit: getPositiveInt(searchParams.get('limit'), 200, 500),
+        syncQQ: searchParams.get('syncQQ') !== 'false',
+      }))
+    } catch (error) {
+      return NextResponse.json({ error: error instanceof Error ? error.message : String(error) }, { status: 502 })
+    }
+  }
+
   if (searchParams.get('remote') !== 'qq') {
     if (searchParams.get('sync') === 'pull') {
       try {
@@ -79,12 +92,21 @@ export async function POST(request: Request) {
   }
 
   const body = (await request.json().catch(() => undefined)) as FavoriteRequest | undefined
-  if (!body?.songmid) return NextResponse.json({ error: 'Missing songmid' }, { status: 400 })
-
   const url = new URL(request.url)
-  const cookie = body.cookie ?? request.headers.get('x-qq-music-cookie') ?? undefined
+  const cookie = body?.cookie ?? request.headers.get('x-qq-music-cookie') ?? undefined
   const account = await getCurrentAccount()
   if (url.searchParams.get('sync') === 'push') {
+    if (url.searchParams.get('remote') === 'emby') {
+      try {
+        return NextResponse.json(await pushLocalFavoritesToEmby({
+          account,
+          limit: getPositiveInt(url.searchParams.get('limit'), 200, 500),
+        }))
+      } catch (error) {
+        return NextResponse.json({ error: error instanceof Error ? error.message : String(error) }, { status: 502 })
+      }
+    }
+
     try {
       return NextResponse.json(await syncPendingFavorites({
         cookie,
@@ -94,6 +116,8 @@ export async function POST(request: Request) {
       return qqMusicErrorResponse(error)
     }
   }
+
+  if (!body?.songmid) return NextResponse.json({ error: 'Missing songmid' }, { status: 400 })
 
   if (url.searchParams.get('remote') !== 'qq') {
     const musicInfo = parseMusicInfo(body)

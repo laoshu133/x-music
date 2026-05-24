@@ -204,8 +204,19 @@ export const getTrackFile = (trackId: number, quality: MusicQuality): TrackFileR
   return row ? mapTrackFile(row) : undefined
 }
 
-export const insertPlayEvent = (trackId: number, quality: MusicQuality, qqUin?: string): void => {
-  db.prepare('INSERT INTO play_events (track_id, quality, qq_uin) VALUES (?, ?, ?)').run(trackId, quality, qqUin ?? null)
+export const insertPlayEvent = (trackId: number, quality: MusicQuality, qqUin?: string, playedAt?: string): void => {
+  if (playedAt) {
+    const existing = db.prepare(`
+      SELECT id
+      FROM play_events
+      WHERE track_id = ? AND quality = ? AND COALESCE(qq_uin, '') = COALESCE(?, '') AND played_at = ?
+      LIMIT 1
+    `).get(trackId, quality, qqUin ?? null, playedAt) as { id: number } | undefined
+    if (existing) return
+  }
+
+  db.prepare('INSERT INTO play_events (track_id, quality, qq_uin, played_at) VALUES (?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))')
+    .run(trackId, quality, qqUin ?? null, playedAt ?? null)
 }
 
 export const listPlayHistory = (limit = 50): PlayHistoryRecord[] => {

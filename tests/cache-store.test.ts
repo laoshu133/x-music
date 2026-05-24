@@ -175,6 +175,59 @@ test('upstream stream decrypts encrypted QQ audio containers through UM crypto w
   }
 })
 
+test('upstream range stream is not cached as a playable raw file', async () => {
+  const originalFetch = globalThis.fetch
+  const songmid = `RANGE_STREAM_${Date.now()}`
+  const musicInfo: MusicInfo = {
+    source: 'tx',
+    songmid,
+    name: 'Range Stream Test',
+    singer: 'Tester',
+  }
+  const upstreamRequests: Array<{ range: string | null }> = []
+
+  try {
+    const track = ensureTrack(musicInfo)
+    globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      const headers = new Headers(init?.headers)
+      upstreamRequests.push({ range: headers.get('range') })
+      return new Response('range bytes', {
+        status: 206,
+        headers: {
+          'content-type': 'audio/mpeg',
+          'content-length': '11',
+          'content-range': 'bytes 0-10/100',
+        },
+      })
+    }) as typeof fetch
+
+    const { response, completion } = await createUpstreamTeeResponse(
+      `https://ws.stream.qqmusic.qq.com/${songmid}.mp3?vkey=test`,
+      track,
+      '320k',
+      new Request('http://local/play', { headers: { range: 'bytes=0-10' } }),
+    )
+    assert.equal(response.status, 206)
+    assert.equal(await response.text(), 'range bytes')
+    await completion
+
+    assert.deepEqual(upstreamRequests, [{ range: 'bytes=0-10' }])
+    assert.equal(getPlayableTrackFile('tx', songmid, '320k'), undefined)
+    const row = db.prepare(`
+      SELECT status, raw_path AS rawPath, error
+      FROM track_files tf
+      INNER JOIN tracks t ON t.id = tf.track_id
+      WHERE t.source = 'tx' AND t.songmid = ? AND tf.quality = '320k'
+    `).get(songmid) as { status: string; rawPath?: string | null; error?: string | null } | undefined
+    assert.equal(row?.status, 'streaming_and_caching')
+    assert.equal(row?.rawPath, null)
+    assert.equal(row?.error, 'Range request is not cached')
+  } finally {
+    globalThis.fetch = originalFetch
+    db.prepare("DELETE FROM tracks WHERE songmid = ? AND source = 'tx'").run(songmid)
+  }
+})
+
 test('upstream stream passes LX ekey into UM crypto QMC2 decryptor', async () => {
   const originalFetch = globalThis.fetch
   const songmid = `EKEY_STREAM_${Date.now()}`
@@ -328,6 +381,28 @@ test('cache store lists recent play history with track metadata', () => {
   assert.equal(record.quality, '320k')
   assert.equal(typeof record.playEventId, 'number')
   assert.ok(record.playedAt)
+})
+
+test('cache store imports remote play history idempotently by timestamp', () => {
+  const songmid = `REMOTE_HISTORY_${Date.now()}`
+  const musicInfo: MusicInfo = {
+    source: 'tx',
+    songmid,
+    name: 'Remote History Test',
+    singer: 'Tester',
+  }
+  const playedAt = '2026-05-24T08:00:00.000Z'
+
+  try {
+    const track = ensureTrack(musicInfo)
+    insertPlayEvent(track.id, '320k', 'remote-user', playedAt)
+    insertPlayEvent(track.id, '320k', 'remote-user', playedAt)
+
+    const imported = listPlayHistory(20).filter(item => item.songmid === songmid && item.playedAt === playedAt)
+    assert.equal(imported.length, 1)
+  } finally {
+    db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run(songmid)
+  }
 })
 
 test('resource cache cleanup removes expired resources and keeps recent lx scripts', async () => {
