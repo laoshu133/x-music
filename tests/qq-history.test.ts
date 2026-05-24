@@ -2,7 +2,6 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { ensureTrack, insertPlayEvent } from '@/lib/cache/store'
 import { db } from '@/lib/db'
-import { setSetting, deleteSetting } from '@/lib/db/settings'
 import { syncQQPlayHistory, syncQQPlayHistoryBestEffort } from '@/lib/qq/history'
 import { pushLocalPlayHistoryToQQ } from '@/lib/qq/history-sync'
 
@@ -10,7 +9,7 @@ const originalFetch = globalThis.fetch
 
 test.afterEach(() => {
   globalThis.fetch = originalFetch
-  deleteSetting('qq.musicUrlApi')
+  delete process.env.LX_MUSIC_SOURCE_SCRIPT
   db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run('push-local-qq-history')
   delete process.env.QQ_MUSIC_COOKIE
 })
@@ -171,10 +170,7 @@ test('pushLocalPlayHistoryToQQ reports local playback events through QQ sdk', as
     singer: 'QQ Artist',
     raw: { songId: 123456, songType: 0 },
   }
-  setSetting('qq.musicUrlApi', {
-    url: 'https://resolver.example/music/url',
-    key: 'test-key',
-  })
+  process.env.LX_MUSIC_SOURCE_SCRIPT = 'https://resolver.example/script/lxmusic?key=test-key'
   const track = ensureTrack(musicInfo)
   insertPlayEvent(track.id, '320k', '123456', '2026-05-24T11:00:00.000Z')
 

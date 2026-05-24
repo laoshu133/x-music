@@ -9,7 +9,8 @@ export const dynamic = 'force-dynamic'
 export async function GET(request: Request): Promise<Response> {
   const url = new URL(request.url)
   const limit = Number(url.searchParams.get('limit') ?? 50)
-  if (url.searchParams.get('remote') === 'emby' || url.searchParams.get('sync') === 'pull') {
+  const remote = url.searchParams.get('remote')
+  if (remote === 'emby' || (url.searchParams.get('sync') === 'pull' && !remote)) {
     const account = await getCurrentAccount()
     try {
       return Response.json(await pullEmbyPlayHistory({

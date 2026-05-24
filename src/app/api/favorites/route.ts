@@ -3,7 +3,7 @@ import { listLocalFavorites, setLocalFavorite, setLocalFavoriteSynced } from '@/
 import { getQQFavoriteSongs, pullRemoteFavorites, QQMusicError, qqMusicErrorResponse, setQQFavoriteSong, syncPendingFavorites } from '@/lib/qq'
 import type { MusicInfo } from '@/lib/types'
 import { getCurrentAccount } from '@/lib/session'
-import { pullEmbyFavorites, pushLocalFavoritesToEmby, syncMappedEmbyFavoriteBestEffort } from '@/lib/emby/favorites'
+import { pullEmbyFavorites, pushLocalFavoritesToEmby, syncEmbyFavoritesFromQQList, syncMappedEmbyFavoriteBestEffort } from '@/lib/emby/favorites'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -79,7 +79,17 @@ export async function GET(request: Request) {
   const cookie = request.headers.get('x-qq-music-cookie') ?? undefined
 
   try {
-    return NextResponse.json(await getQQFavoriteSongs({ cookie, page, limit }))
+    const result = await getQQFavoriteSongs({ cookie, page, limit })
+    const account = await getCurrentAccount()
+    const embySync = await syncEmbyFavoritesFromQQList({
+      account,
+      qqFavorites: result.list,
+      limit: getPositiveInt(searchParams.get('syncLimit'), 500, 1000),
+    })
+    return NextResponse.json({
+      ...result,
+      embySync,
+    })
   } catch (error) {
     return qqMusicErrorResponse(error)
   }

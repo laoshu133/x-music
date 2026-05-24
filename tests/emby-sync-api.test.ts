@@ -6,7 +6,7 @@ import { getAccountByQQ } from '@/lib/db/accounts'
 import { setLocalFavoriteSynced } from '@/lib/db/favorites'
 import { ensureTrack, insertPlayEvent, listPlayHistory } from '@/lib/cache/store'
 import { upsertRemoteMapping } from '@/lib/db/remote-mappings'
-import { pullEmbyFavorites, pushLocalFavoritesToEmby } from '@/lib/emby/favorites'
+import { pullEmbyFavorites, pushLocalFavoritesToEmby, syncEmbyFavoritesFromQQList } from '@/lib/emby/favorites'
 import { pullEmbyPlayHistory, pushLocalPlayHistoryToEmby } from '@/lib/emby/history'
 import type { MusicInfo } from '@/lib/types'
 
@@ -92,6 +92,58 @@ test('Emby favorite sync pushes local mapped favorites upstream', async () => {
   } finally {
     cleanupSong(song.songmid)
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('777002')
+  }
+})
+
+test('Emby favorite sync aligns mapped Emby songs from QQ favorite list only', async () => {
+  const favoriteSong = testSong('emby-qq-favorite-state-song')
+  const absentSong = testSong('emby-qq-absent-state-song')
+  const requests: Array<{ url: URL; method: string }> = []
+
+  try {
+    const account = prepareAccount('777005')
+    upsertRemoteMapping({
+      localType: 'track',
+      localKey: `${favoriteSong.source}:${favoriteSong.songmid}`,
+      remote: 'emby',
+      remoteId: 'emby-not-favorited-yet',
+      raw: favoriteSong,
+    })
+    upsertRemoteMapping({
+      localType: 'track',
+      localKey: `${absentSong.source}:${absentSong.songmid}`,
+      remote: 'emby',
+      remoteId: 'emby-not-on-qq-page',
+      raw: absentSong,
+    })
+
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(url, init)
+      requests.push({ url: new URL(request.url), method: request.method })
+      if (request.url.includes('/Users/emby-user-777005/Items')) {
+        return Response.json({
+          Items: [{ Id: 'already-favorite', UserData: { IsFavorite: true } }],
+          TotalRecordCount: 1,
+        })
+      }
+      return new Response(null, { status: 204 })
+    }) as typeof fetch
+
+    const result = await syncEmbyFavoritesFromQQList({
+      account,
+      qqFavorites: [favoriteSong],
+      limit: 20,
+    })
+
+    assert.equal(result.attempted, 1)
+    assert.equal(result.synced, 1)
+    assert.equal(requests.filter(request => request.method === 'POST').length, 1)
+    assert.ok(requests.some(request => request.url.pathname.endsWith('/Users/emby-user-777005/FavoriteItems/emby-not-favorited-yet')))
+    assert.ok(!requests.some(request => request.url.pathname.includes('emby-not-on-qq-page')))
+  } finally {
+    cleanupSong(favoriteSong.songmid)
+    cleanupSong(absentSong.songmid)
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('777005')
   }
 })
 

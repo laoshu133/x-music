@@ -2,7 +2,6 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { parseFile } from 'music-metadata'
 import type { IAudioMetadata, IPicture } from 'music-metadata'
-import Metaflac from 'metaflac-js'
 import NodeID3 from 'node-id3'
 import { z } from 'zod'
 import { appConfig } from '@/lib/config'
@@ -60,16 +59,6 @@ interface QQMusicApiSong {
   albumImg?: string
 }
 
-interface MetaflacFile {
-  pictures: Buffer[]
-  picturesSpecs: unknown[]
-  picturesDatas: Buffer[]
-  removeTag(name: string): void
-  setTag(field: string): void
-  importPictureFromBuffer(picture: Buffer): void
-  save(): void
-}
-
 const envBoolean = z.preprocess((value) => {
   if (typeof value !== 'string') return value
   if (['1', 'true', 'yes', 'on'].includes(value.toLowerCase())) return true
@@ -85,6 +74,23 @@ const taggingEnv = z.object({
   TAGGING_FETCH_ONLINE_METADATA: envBoolean.default(true),
   TAGGING_ORGANIZE_FILES: envBoolean.default(true),
 }).parse(process.env)
+
+const flacBlockType = {
+  streamInfo: 0,
+  padding: 1,
+  vorbisComment: 4,
+  picture: 6,
+} as const
+
+interface FlacMetadataBlock {
+  type: number
+  data: Buffer
+}
+
+interface ParsedFlacFile {
+  blocks: FlacMetadataBlock[]
+  audioFrames: Buffer
+}
 
 // Built-in tagging follows practical ideas from xhongc/music-tag-web:
 // https://github.com/xhongc/music-tag-web
@@ -425,20 +431,7 @@ async function writeTags(filePath: string, metadata: NormalizedMetadata): Promis
     return undefined
   }
 
-  const flac = new Metaflac(filePath) as MetaflacFile
-  setFlacTag(flac, 'TITLE', metadata.title)
-  setFlacTag(flac, 'ARTIST', metadata.artists?.length ? metadata.artists : metadata.artist)
-  setFlacTag(flac, 'ALBUM', metadata.album)
-  setFlacTag(flac, 'DATE', metadata.year)
-  setFlacTag(flac, 'LYRICS', metadata.lyrics)
-  setFlacTag(flac, 'QQMUSIC_ALBUMID', metadata.albumId)
-  if (metadata.cover) {
-    flac.pictures = []
-    flac.picturesSpecs = []
-    flac.picturesDatas = []
-    flac.importPictureFromBuffer(metadata.cover.data)
-  }
-  flac.save()
+  await writeFlacTags(filePath, metadata)
   return undefined
 }
 
@@ -456,14 +449,6 @@ async function writeEmbySidecars(finalPath: string, metadata: NormalizedMetadata
   }
 
   return sidecars
-}
-
-function setFlacTag(flac: MetaflacFile, name: string, value: string | string[] | undefined): void {
-  flac.removeTag(name)
-  const values = Array.isArray(value) ? value : value ? [value] : []
-  for (const item of values) {
-    if (item.trim()) flac.setTag(`${name}=${item.trim()}`)
-  }
 }
 
 async function tagWithBuiltinProvider(payload: TagTrackFileJobPayload): Promise<TaggingResult> {
