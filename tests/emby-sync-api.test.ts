@@ -8,6 +8,7 @@ import { ensureTrack, insertPlayEvent, listPlayHistory } from '@/lib/cache/store
 import { upsertRemoteMapping } from '@/lib/db/remote-mappings'
 import { pullEmbyFavorites, pushLocalFavoritesToEmby, syncEmbyFavoritesFromQQList } from '@/lib/emby/favorites'
 import { pullEmbyPlayHistory, pushLocalPlayHistoryToEmby } from '@/lib/emby/history'
+import { GET as getFavorites } from '@/app/api/favorites/route'
 import type { MusicInfo } from '@/lib/types'
 
 const originalFetch = globalThis.fetch
@@ -144,6 +145,61 @@ test('Emby favorite sync aligns mapped Emby songs from QQ favorite list only', a
     cleanupSong(favoriteSong.songmid)
     cleanupSong(absentSong.songmid)
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('777005')
+  }
+})
+
+test('favorites API sync pull aligns mapped Emby favorites from QQ list', async () => {
+  const song = testSong('emby-qq-api-favorite-sync-song')
+  const requests: Array<{ url: URL; method: string }> = []
+
+  try {
+    prepareAccount('777006')
+    upsertRemoteMapping({
+      localType: 'track',
+      localKey: `${song.source}:${song.songmid}`,
+      remote: 'emby',
+      remoteId: 'emby-api-fav-sync-1',
+      raw: song,
+    })
+
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(url, init)
+      requests.push({ url: new URL(request.url), method: request.method })
+      if (request.url.includes('/cgi-bin/musics.fcg')) {
+        return Response.json({
+          code: 0,
+          req: {
+            code: 0,
+            data: {
+              songlist: [{
+                id: (song.raw as { songId: number }).songId,
+                mid: song.songmid,
+                title: song.name,
+                singer: [{ name: song.singer }],
+                album: { name: song.albumName, mid: song.albumId },
+              }],
+              total_song_num: 1,
+            },
+          },
+        })
+      }
+      if (request.url.includes('/Users/emby-user-777006/Items')) {
+        return Response.json({ Items: [], TotalRecordCount: 0 })
+      }
+      return new Response(null, { status: 204 })
+    }) as typeof fetch
+
+    const response = await getFavorites(new Request('http://local/api/favorites?sync=pull&limit=1'))
+    const payload = await response.json()
+
+    assert.equal(response.status, 200, JSON.stringify(payload))
+    assert.equal(payload.source, 'local', JSON.stringify(payload))
+    assert.equal(payload.pulled, 1, JSON.stringify(payload))
+    assert.equal(payload.embySync.synced, 1)
+    assert.ok(requests.some(request => request.url.pathname.endsWith('/Users/emby-user-777006/FavoriteItems/emby-api-fav-sync-1')))
+  } finally {
+    cleanupSong(song.songmid)
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('777006')
   }
 })
 

@@ -22,6 +22,7 @@ import {
 import { getFavoriteStatusForAccount, listLocalFavoritesForAccount, setLocalFavorite, setLocalFavoriteSynced } from '@/lib/db/favorites'
 import type { MusicInfo, MusicQuality, PlayHistoryRecord, QQPlaylistInfo, TrackRecord } from '@/lib/types'
 import { enqueueEmbyTrackSync } from './sync'
+import { hasEmbySyncableCachedMedia } from './sync-worker'
 import { markRequestSource } from '@/lib/request-log'
 import { albumVirtualId, decodeVirtualId, encodeVirtualId, genreVirtualId, playlistVirtualId, songVirtualId, type VirtualId } from './virtual-ids'
 import {
@@ -898,7 +899,7 @@ async function handlePlaybackReportRequest(request: Request, embyPath: string): 
     const quality = playableQuality ?? '320k'
     const track = ensureTrack(stored.song)
     insertPlayEvent(track.id, quality, authorizedLocalAccount(request)?.qqUin)
-    if (playableQuality) {
+    if (hasSyncableEmbyMedia(stored.song)) {
       enqueueEmbyTrackSync({
         source: stored.song.source,
         songmid: stored.song.songmid,
@@ -1204,7 +1205,7 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
     const track = ensureTrack(musicInfo)
     insertPlayEvent(track.id, playableFile.quality, authorizedLocalAccount(request)?.qqUin)
     syncQQPlayHistoryFromStoredUrlBestEffort(request, musicInfo, playableFile.quality)
-    if (isHighestAvailableQuality(musicInfo, playableFile.quality)) {
+    if (hasSyncableEmbyMedia(musicInfo)) {
       enqueueEmbyTrackSync({
         source: musicInfo.source,
         songmid: musicInfo.songmid,
@@ -1222,7 +1223,7 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
   if (waitedFile && waitedPath) {
     const track = ensureTrack(musicInfo)
     insertPlayEvent(track.id, waitedFile.quality, authorizedLocalAccount(request)?.qqUin)
-    if (isHighestAvailableQuality(musicInfo, waitedFile.quality)) {
+    if (hasSyncableEmbyMedia(musicInfo)) {
       enqueueEmbyTrackSync({
         source: musicInfo.source,
         songmid: musicInfo.songmid,
@@ -1247,14 +1248,14 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
       quality: resolved.quality,
       playUrl: resolved.url,
     })
-    if (isHighestAvailableQuality(musicInfo, resolved.quality)) {
+    if (hasSyncableEmbyMedia(musicInfo)) {
       enqueueEmbyTrackSync({
         source: musicInfo.source,
         songmid: musicInfo.songmid,
         playlistId: decoded.playlistId ?? stored.playlistId,
         musicInfo,
       })
-    } else {
+    } else if (!isHighestAvailableQuality(musicInfo, resolved.quality)) {
       ensureEmbyMasterCachedBestEffort({ musicInfo, track })
     }
     resolved.completion.catch((error: unknown) => {
@@ -1580,6 +1581,14 @@ async function virtualAudioHeadHeaders(musicInfo: MusicInfo, preferredQuality: M
     'content-type': 'audio/mpeg',
     'accept-ranges': 'none',
     'cache-control': 'max-age=30',
+  })
+}
+
+function hasSyncableEmbyMedia(musicInfo: MusicInfo): boolean {
+  return hasEmbySyncableCachedMedia({
+    source: musicInfo.source,
+    songmid: musicInfo.songmid,
+    musicInfo,
   })
 }
 
@@ -2423,11 +2432,13 @@ async function persistQQLyricsToLocalCache(song: MusicInfo | undefined, lyrics: 
     lyricsPath,
   })
 
-  enqueueEmbyTrackSync({
-    source: song.source,
-    songmid: song.songmid,
-    musicInfo: song,
-  })
+  if (hasSyncableEmbyMedia(song)) {
+    enqueueEmbyTrackSync({
+      source: song.source,
+      songmid: song.songmid,
+      musicInfo: song,
+    })
+  }
 }
 
 function firstWritableTrackFile(song: Pick<MusicInfo, 'source' | 'songmid'>): ReturnType<typeof getPlayableTrackFile> {

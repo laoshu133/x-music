@@ -7,7 +7,7 @@ import path from 'node:path'
 import { db } from '@/lib/db'
 import { appConfig } from '@/lib/config'
 import { ensureTrack, upsertTrackFileStatus } from '@/lib/cache/store'
-import { processOneEmbySyncJob } from '@/lib/emby/sync-worker'
+import { hasEmbySyncableCachedMedia, processOneEmbySyncJob } from '@/lib/emby/sync-worker'
 import { enqueueRefreshUmCryptoJob } from '@/lib/cache/um-crypto-job'
 import { claimNextJob, clearJobsByStatus, clearStaleRunningJobs, completeJob, createJob, failJob, getJob, requeueJob } from '@/lib/jobs'
 import { getJobSummary, listJobs } from '@/lib/jobs/status'
@@ -947,6 +947,96 @@ test('emby sync job waits for library final path before WebDAV upload', async ()
     rmSync(inboxPath, { force: true })
     process.env.EMBY_SOURCE_WEBDAV_DSN = originalWebdavDsn
     globalThis.fetch = originalFetch
+  }
+})
+
+test('emby sync preflight rejects cached raw and pathless ready rows under WebDAV sync', async () => {
+  const originalWebdavDsn = process.env.EMBY_SOURCE_WEBDAV_DSN
+  const songmid = `SYNC_PREFLIGHT_${Date.now()}`
+  const inboxPath = path.join(appConfig.inboxDir, `${songmid}.mp3`)
+
+  mkdirSync(appConfig.inboxDir, { recursive: true })
+  writeFileSync(inboxPath, 'fake audio')
+  process.env.EMBY_SOURCE_WEBDAV_DSN = 'https://webdav-user:webdav-pass@webdav.example/dav/music'
+  try {
+    const musicInfo = {
+      source: 'tx' as const,
+      songmid,
+      name: 'Preflight Sync',
+      singer: 'Tester',
+      types: [{ type: 'flac', size: '40 MB' }, { type: '320k', size: '5 MB' }],
+    }
+    const track = ensureTrack(musicInfo)
+    upsertTrackFileStatus(track.id, '320k', 'cached_raw', { rawPath: inboxPath })
+    upsertTrackFileStatus(track.id, 'flac', 'ready')
+
+    assert.equal(hasEmbySyncableCachedMedia({ source: 'tx', songmid, musicInfo }), false)
+  } finally {
+    rmSync(inboxPath, { force: true })
+    db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run(songmid)
+    process.env.EMBY_SOURCE_WEBDAV_DSN = originalWebdavDsn
+  }
+})
+
+test('emby sync preflight waits for unfinished preferred quality before WebDAV sync', async () => {
+  const originalWebdavDsn = process.env.EMBY_SOURCE_WEBDAV_DSN
+  const songmid = `SYNC_PREFLIGHT_WAIT_${Date.now()}`
+  const inboxPath = path.join(appConfig.inboxDir, `${songmid}.flac`)
+  const readyDir = path.join(appConfig.musicDir, 'Preflight Wait Artist', songmid)
+  const readyPath = path.join(readyDir, 'Preflight Wait Artist - Preflight Wait Song.mp3')
+
+  mkdirSync(appConfig.inboxDir, { recursive: true })
+  mkdirSync(readyDir, { recursive: true })
+  writeFileSync(inboxPath, 'fake flac')
+  writeFileSync(readyPath, 'fake mp3')
+  process.env.EMBY_SOURCE_WEBDAV_DSN = 'https://webdav-user:webdav-pass@webdav.example/dav/music'
+  try {
+    const musicInfo = {
+      source: 'tx' as const,
+      songmid,
+      name: 'Preflight Wait Song',
+      singer: 'Preflight Wait Artist',
+      types: [{ type: 'flac' as const, size: '40 MB' }, { type: '320k' as const, size: '5 MB' }],
+    }
+    const track = ensureTrack(musicInfo)
+    upsertTrackFileStatus(track.id, 'flac', 'cached_raw', { rawPath: inboxPath })
+    upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath: readyPath })
+
+    assert.equal(hasEmbySyncableCachedMedia({ source: 'tx', songmid, musicInfo }), false)
+  } finally {
+    rmSync(inboxPath, { force: true })
+    rmSync(path.join(appConfig.musicDir, 'Preflight Wait Artist'), { recursive: true, force: true })
+    db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run(songmid)
+    process.env.EMBY_SOURCE_WEBDAV_DSN = originalWebdavDsn
+  }
+})
+
+test('emby sync preflight does not fall back from declared pathless preferred quality under WebDAV sync', async () => {
+  const originalWebdavDsn = process.env.EMBY_SOURCE_WEBDAV_DSN
+  const songmid = `SYNC_PREFLIGHT_FALLBACK_${Date.now()}`
+  const readyDir = path.join(appConfig.musicDir, 'Preflight Fallback Artist', songmid)
+  const readyPath = path.join(readyDir, 'Preflight Fallback Artist - Preflight Fallback Song.mp3')
+
+  mkdirSync(readyDir, { recursive: true })
+  writeFileSync(readyPath, 'fake mp3')
+  process.env.EMBY_SOURCE_WEBDAV_DSN = 'https://webdav-user:webdav-pass@webdav.example/dav/music'
+  try {
+    const musicInfo = {
+      source: 'tx' as const,
+      songmid,
+      name: 'Preflight Fallback Song',
+      singer: 'Preflight Fallback Artist',
+      types: [{ type: 'flac' as const, size: '40 MB' }, { type: '320k' as const, size: '5 MB' }],
+    }
+    const track = ensureTrack(musicInfo)
+    upsertTrackFileStatus(track.id, 'flac', 'ready')
+    upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath: readyPath })
+
+    assert.equal(hasEmbySyncableCachedMedia({ source: 'tx', songmid, musicInfo }), false)
+  } finally {
+    rmSync(path.join(appConfig.musicDir, 'Preflight Fallback Artist'), { recursive: true, force: true })
+    db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run(songmid)
+    process.env.EMBY_SOURCE_WEBDAV_DSN = originalWebdavDsn
   }
 })
 

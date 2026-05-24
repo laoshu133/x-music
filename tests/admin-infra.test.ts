@@ -2,8 +2,9 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import crypto from 'node:crypto'
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { db } from '@/lib/db'
+import { appConfig } from '@/lib/config'
 import { deleteSetting, getEffectiveSettings, getSetting, setSetting, updateEffectiveSettings } from '@/lib/db/settings'
 import { getAccountByQQ, getAccountDetail, isAdminQQ, listAccountSummaries, markAccountActive } from '@/lib/db/accounts'
 import { clearQQLoginCookie, saveQQLoginCookie } from '@/lib/db/qq-session'
@@ -3896,8 +3897,8 @@ test('virtual song lyrics prefer cached sidecar lyrics before upstream sources',
 test('virtual song lyrics persist QQ fallback to local sidecar for Emby sync', async () => {
   const originalFetch = globalThis.fetch
   const songmid = 'qq-persist-lyrics-song'
-  const audioPath = join(process.cwd(), 'data/test-persist-lyrics-song.mp3')
-  const lyricsPath = join(process.cwd(), 'data/test-persist-lyrics-song.lrc')
+  const audioPath = join(appConfig.musicDir, 'QQ Lyrics Artist', 'QQ Lyrics Album', 'QQ Lyrics Artist - QQ Persist Lyrics Song.mp3')
+  const lyricsPath = join(appConfig.musicDir, 'QQ Lyrics Artist', 'QQ Lyrics Album', 'QQ Lyrics Artist - QQ Persist Lyrics Song.lrc')
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999046')
     db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run(songmid)
@@ -3931,7 +3932,7 @@ test('virtual song lyrics persist QQ fallback to local sidecar for Emby sync', a
       ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP
     `).run(`virtual.song.${songmid}`, JSON.stringify({ song }))
 
-    mkdirSync(join(process.cwd(), 'data'), { recursive: true })
+    mkdirSync(dirname(audioPath), { recursive: true })
     writeFileSync(audioPath, 'audio-bytes')
     const track = ensureTrack(song)
     upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath: audioPath, sizeBytes: 11, sha256: 'persistsha' })
@@ -3985,6 +3986,7 @@ test('virtual song lyrics persist QQ fallback to local sidecar for Emby sync', a
     db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run(songmid)
     rmSync(audioPath, { force: true })
     rmSync(lyricsPath, { force: true })
+    rmSync(join(appConfig.musicDir, 'QQ Lyrics Artist'), { recursive: true, force: true })
     globalThis.fetch = originalFetch
   }
 })
@@ -4895,7 +4897,7 @@ test('local emby virtual audio uses mapped high-quality Emby item before low loc
   }
 })
 
-test('local emby virtual audio keeps low quality playback cache out of Emby and schedules master cache', async () => {
+test('local emby virtual audio keeps low quality playback cache out of Emby until master is ready', async () => {
   const originalFetch = globalThis.fetch
   const originalLxMusicSourceScript = process.env.LX_MUSIC_SOURCE_SCRIPT
   const songmid = `qq-low-playback-master-${Date.now()}`
@@ -4952,6 +4954,14 @@ test('local emby virtual audio keeps low quality playback cache out of Emby and 
     )
     assert.equal(response.status, 200)
     assert.equal(await response.text(), 'audio-/audio-320k.mp3')
+
+    const immediateSyncJobs = db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM jobs
+      WHERE type = 'sync_emby_track'
+        AND json_extract(payload_json, '$.songmid') = ?
+    `).get(songmid) as { count: number }
+    assert.equal(immediateSyncJobs.count, 0)
 
     await new Promise(resolve => setTimeout(resolve, 25))
     assert.equal(requestedQualities[0], '320k')

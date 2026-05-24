@@ -451,6 +451,205 @@ async function writeEmbySidecars(finalPath: string, metadata: NormalizedMetadata
   return sidecars
 }
 
+async function writeFlacTags(filePath: string, metadata: NormalizedMetadata): Promise<void> {
+  const parsed = parseFlacFile(await fs.readFile(filePath))
+  const retainedBlocks = parsed.blocks.filter(block =>
+    block.type !== flacBlockType.vorbisComment && block.type !== flacBlockType.picture && block.type !== flacBlockType.padding
+  )
+  const existingVorbis = parsed.blocks.find(block => block.type === flacBlockType.vorbisComment)?.data
+  const tags = mergeFlacTags(parseFlacVorbisTags(existingVorbis), metadata)
+  const nextBlocks = [
+    ...retainedBlocks,
+    buildFlacVorbisCommentBlock(existingVorbis, tags),
+    ...(metadata.cover ? [buildFlacPictureBlock(metadata.cover)] : []),
+    { type: flacBlockType.padding, data: Buffer.alloc(0) },
+  ]
+
+  await fs.writeFile(filePath, Buffer.concat([
+    Buffer.from('fLaC', 'ascii'),
+    ...nextBlocks.map((block, index) => encodeFlacMetadataBlock(block, index === nextBlocks.length - 1)),
+    parsed.audioFrames,
+  ]))
+}
+
+function parseFlacFile(buffer: Buffer): ParsedFlacFile {
+  if (buffer.subarray(0, 4).toString('ascii') !== 'fLaC') {
+    throw new Error('The file does not appear to be a FLAC file.')
+  }
+
+  const blocks: FlacMetadataBlock[] = []
+  let offset = 4
+  for (;;) {
+    if (offset + 4 > buffer.length) throw new Error('Invalid FLAC metadata block header')
+    const firstByte = buffer.readUInt8(offset)
+    const isLast = Boolean(firstByte & 0x80)
+    const type = firstByte & 0x7f
+    const length = buffer.readUIntBE(offset + 1, 3)
+    offset += 4
+    if (offset + length > buffer.length) throw new Error('Invalid FLAC metadata block length')
+    blocks.push({ type, data: buffer.subarray(offset, offset + length) })
+    offset += length
+    if (isLast) break
+  }
+
+  if (!blocks.some(block => block.type === flacBlockType.streamInfo)) {
+    throw new Error('Invalid FLAC file: missing STREAMINFO block')
+  }
+
+  return {
+    blocks,
+    audioFrames: buffer.subarray(offset),
+  }
+}
+
+function parseFlacVorbisTags(block: Buffer | undefined): { vendor: string; comments: string[] } {
+  if (!block) return { vendor: 'XMusic', comments: [] }
+  if (block.length < 8) return { vendor: 'XMusic', comments: [] }
+
+  const vendorLength = block.readUInt32LE(0)
+  let offset = 4
+  if (offset + vendorLength + 4 > block.length) return { vendor: 'XMusic', comments: [] }
+  const vendor = block.subarray(offset, offset + vendorLength).toString('utf8')
+  offset += vendorLength
+  const commentCount = block.readUInt32LE(offset)
+  offset += 4
+  const comments: string[] = []
+  for (let index = 0; index < commentCount && offset + 4 <= block.length; index += 1) {
+    const length = block.readUInt32LE(offset)
+    offset += 4
+    if (offset + length > block.length) break
+    comments.push(block.subarray(offset, offset + length).toString('utf8'))
+    offset += length
+  }
+  return { vendor: vendor || 'XMusic', comments }
+}
+
+function mergeFlacTags(
+  existing: { vendor: string; comments: string[] },
+  metadata: NormalizedMetadata,
+): { vendor: string; comments: string[] } {
+  const replaceNames = new Set(['TITLE', 'ARTIST', 'ALBUM', 'DATE', 'LYRICS', 'QQMUSIC_ALBUMID'])
+  const comments = existing.comments.filter(comment => !replaceNames.has(comment.split('=', 1)[0]?.toUpperCase() ?? ''))
+  appendFlacTags(comments, 'TITLE', metadata.title)
+  appendFlacTags(comments, 'ARTIST', metadata.artists?.length ? metadata.artists : metadata.artist)
+  appendFlacTags(comments, 'ALBUM', metadata.album)
+  appendFlacTags(comments, 'DATE', metadata.year)
+  appendFlacTags(comments, 'LYRICS', metadata.lyrics)
+  appendFlacTags(comments, 'QQMUSIC_ALBUMID', metadata.albumId)
+  return { vendor: existing.vendor, comments }
+}
+
+function appendFlacTags(comments: string[], name: string, value: string | string[] | undefined): void {
+  const values = Array.isArray(value) ? value : value ? [value] : []
+  for (const item of values) {
+    const trimmed = item.trim()
+    if (trimmed) comments.push(`${name}=${trimmed}`)
+  }
+}
+
+function buildFlacVorbisCommentBlock(
+  existingBlock: Buffer | undefined,
+  tags: { vendor: string; comments: string[] },
+): FlacMetadataBlock {
+  const vendor = Buffer.from(tags.vendor, 'utf8')
+  const parts = [uint32LE(vendor.length), vendor, uint32LE(tags.comments.length)]
+  for (const comment of tags.comments) {
+    const encoded = Buffer.from(comment, 'utf8')
+    parts.push(uint32LE(encoded.length), encoded)
+  }
+  const data = Buffer.concat(parts)
+  if (existingBlock && data.length <= existingBlock.length) {
+    return { type: flacBlockType.vorbisComment, data: Buffer.concat([data, Buffer.alloc(existingBlock.length - data.length)]) }
+  }
+  return { type: flacBlockType.vorbisComment, data }
+}
+
+function buildFlacPictureBlock(cover: CoverImage): FlacMetadataBlock {
+  if (cover.mime !== 'image/jpeg' && cover.mime !== 'image/png') {
+    throw new Error(`only support image/jpeg and image/png picture temporarily, current import ${cover.mime}`)
+  }
+  const dimensions = readImageDimensions(cover.data)
+  const mime = Buffer.from(cover.mime, 'ascii')
+  const description = Buffer.alloc(0)
+  return {
+    type: flacBlockType.picture,
+    data: Buffer.concat([
+      uint32BE(3),
+      uint32BE(mime.length),
+      mime,
+      uint32BE(description.length),
+      description,
+      uint32BE(dimensions.width),
+      uint32BE(dimensions.height),
+      uint32BE(24),
+      uint32BE(0),
+      uint32BE(cover.data.length),
+      cover.data,
+    ]),
+  }
+}
+
+function readImageDimensions(data: Buffer): { width: number; height: number } {
+  const pngSignature = '89504e470d0a1a0a'
+  if (data.length >= 24 && data.subarray(0, 8).toString('hex') === pngSignature) {
+    return { width: data.readUInt32BE(16), height: data.readUInt32BE(20) }
+  }
+
+  if (data.length >= 4 && data[0] === 0xff && data[1] === 0xd8) {
+    let offset = 2
+    while (offset + 9 < data.length) {
+      if (data[offset] !== 0xff) {
+        offset += 1
+        continue
+      }
+      const marker = data[offset + 1]
+      offset += 2
+      if (marker === 0xd8 || marker === 0xd9 || (marker >= 0xd0 && marker <= 0xd7)) continue
+      if (offset + 2 > data.length) break
+      const segmentLength = data.readUInt16BE(offset)
+      if (segmentLength < 2 || offset + segmentLength > data.length) break
+      if (isJpegStartOfFrame(marker)) {
+        return {
+          height: data.readUInt16BE(offset + 3),
+          width: data.readUInt16BE(offset + 5),
+        }
+      }
+      offset += segmentLength
+    }
+  }
+
+  return { width: 0, height: 0 }
+}
+
+function isJpegStartOfFrame(marker: number): boolean {
+  return marker >= 0xc0
+    && marker <= 0xcf
+    && marker !== 0xc4
+    && marker !== 0xc8
+    && marker !== 0xcc
+}
+
+function encodeFlacMetadataBlock(block: FlacMetadataBlock, isLast: boolean): Buffer {
+  if (block.type < 0 || block.type > 0x7f) throw new Error(`Invalid FLAC metadata block type: ${block.type}`)
+  if (block.data.length > 0xffffff) throw new Error(`FLAC metadata block is too large: ${block.data.length}`)
+  const header = Buffer.alloc(4)
+  header.writeUInt8(block.type | (isLast ? 0x80 : 0), 0)
+  header.writeUIntBE(block.data.length, 1, 3)
+  return Buffer.concat([header, block.data])
+}
+
+function uint32LE(value: number): Buffer {
+  const buffer = Buffer.alloc(4)
+  buffer.writeUInt32LE(value)
+  return buffer
+}
+
+function uint32BE(value: number): Buffer {
+  const buffer = Buffer.alloc(4)
+  buffer.writeUInt32BE(value)
+  return buffer
+}
+
 async function tagWithBuiltinProvider(payload: TagTrackFileJobPayload): Promise<TaggingResult> {
   const existing = await readExistingMetadata(payload.rawPath)
   const payloadMetadata = mergePayloadMetadata(payload, existing)

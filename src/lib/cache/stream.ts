@@ -5,9 +5,8 @@ import path from 'node:path'
 import { Readable } from 'node:stream'
 import { appConfig } from '@/lib/config'
 import { enqueueTagJob, fileExtensionFromContentType, isPlayableAudioFileName, upsertTrackFileStatus } from '@/lib/cache/store'
-import { enqueueEmbyTrackSync } from '@/lib/emby/sync'
 import { triggerInlineTagging } from '@/lib/tagging/inline'
-import type { MusicInfo, MusicQuality, TrackRecord } from '@/lib/types'
+import type { MusicQuality, TrackRecord } from '@/lib/types'
 import { isEncryptedQQAudioFileName } from './decrypt'
 import { createQmc2Decryptor, detectDecryptedAudioExtension } from './um-crypto'
 
@@ -297,11 +296,6 @@ const teeUpstreamToClientAndCache = ({
       })
       if (librarySync) {
         enqueueTagJob(completedFile, track)
-        enqueueEmbyTrackSync({
-          source: track.source,
-          songmid: track.songmid,
-          musicInfo: trackToMusicInfo(track),
-        })
         triggerInlineTagging()
       }
       resolveCompletion()
@@ -430,11 +424,6 @@ const teeEncryptedUpstreamToClientAndCache = ({
       })
       if (librarySync) {
         enqueueTagJob(completedFile, track)
-        enqueueEmbyTrackSync({
-          source: track.source,
-          songmid: track.songmid,
-          musicInfo: trackToMusicInfo(track),
-        })
         triggerInlineTagging()
       }
       resolveCompletion()
@@ -601,19 +590,6 @@ function detectAudioExtensionFromHeader(header: Buffer): string | undefined {
   if (header.length >= 12 && header.subarray(0, 4).equals(Buffer.from('RIFF')) && header.subarray(8, 12).equals(Buffer.from('WAVE'))) return '.wav'
   if (header.length >= 12 && header.subarray(4, 8).equals(Buffer.from('ftyp'))) return '.m4a'
   return undefined
-}
-
-function trackToMusicInfo(track: TrackRecord): MusicInfo {
-  return {
-    source: track.source,
-    songmid: track.songmid,
-    name: track.name,
-    singer: track.singer,
-    albumName: track.albumName,
-    albumId: track.albumId,
-    interval: track.interval,
-    img: track.imageUrl,
-  }
 }
 
 const waitForWritable = async (stream: fs.WriteStream): Promise<void> => {

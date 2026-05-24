@@ -172,9 +172,10 @@ async function waitForCachedMedia(
   options: { timeoutMs: number; pollIntervalMs: number; requireLibraryFinalPath?: boolean },
 ): Promise<CachedMediaRow | undefined> {
   const deadline = Date.now() + Math.max(0, options.timeoutMs)
-  const preferredQuality = preferredSyncQuality(payload)
+  const qualities = syncQualityFallbacks(payload)
   for (;;) {
-    const row = getCachedMedia(payload, [preferredQuality])
+    const row = getBestCachedMediaForSync(payload, qualities, options)
+    if (row?.unsupportedPath) return row
     if (row && isSyncableCachedMedia(row, options)) return row
     if (Date.now() >= deadline) return undefined
     await sleep(Math.max(100, Math.min(options.pollIntervalMs, deadline - Date.now())))
@@ -185,11 +186,37 @@ function shouldRequireLibraryFinalPath(): boolean {
   return Boolean(getEffectiveSettings().emby.sourceWebdavDsn)
 }
 
+export function hasEmbySyncableCachedMedia(input: Pick<SyncEmbyTrackJobPayload, 'source' | 'songmid' | 'musicInfo'>): boolean {
+  const payload = input as SyncEmbyTrackJobPayload
+  const row = getBestCachedMediaForSync(payload, syncQualityFallbacks(payload), {
+    requireLibraryFinalPath: shouldRequireLibraryFinalPath(),
+  })
+  return Boolean(row && isSyncableCachedMedia(row, {
+    requireLibraryFinalPath: shouldRequireLibraryFinalPath(),
+  }))
+}
+
+function getBestCachedMediaForSync(
+  payload: SyncEmbyTrackJobPayload,
+  qualities: MusicQuality[],
+  options: { requireLibraryFinalPath?: boolean },
+): CachedMediaRow | undefined {
+  for (const quality of qualities) {
+    const row = getCachedMedia(payload, [quality])
+    if (!row) continue
+    if (row.unsupportedPath || isSyncableCachedMedia(row, options)) return row
+    return undefined
+  }
+  return undefined
+}
+
 function isSyncableCachedMedia(
   row: CachedMediaRow,
   options: { requireLibraryFinalPath?: boolean },
 ): boolean {
-  if (!options.requireLibraryFinalPath) return Boolean(row.finalPath || row.rawPath)
+  const mediaPath = row.finalPath ?? row.rawPath
+  if (!mediaPath || !isPlayableAudioFileName(mediaPath)) return false
+  if (!options.requireLibraryFinalPath) return true
   return row.status === 'ready' && Boolean(row.finalPath && isPathInside(row.finalPath, appConfig.musicDir))
 }
 
@@ -212,6 +239,13 @@ function preferredSyncQuality(payload: SyncEmbyTrackJobPayload): MusicQuality {
   return hasDeclaredQuality
     ? highestAvailableQuality(payload.musicInfo)
     : getCachedQualities(payload)[0] ?? highestAvailableQuality(payload.musicInfo)
+}
+
+function syncQualityFallbacks(payload: SyncEmbyTrackJobPayload): MusicQuality[] {
+  const hasDeclaredQuality = (payload.musicInfo.types ?? [])
+    .some(item => item.type === 'flac' || item.type === '320k' || item.type === '128k')
+  if (hasDeclaredQuality) return [preferredSyncQuality(payload)]
+  return qualityFallbacks(preferredSyncQuality(payload))
 }
 
 function getCachedQualities(payload: SyncEmbyTrackJobPayload): MusicQuality[] {

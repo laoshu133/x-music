@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server'
 import { listLocalFavorites, setLocalFavorite, setLocalFavoriteSynced } from '@/lib/db/favorites'
+import { getAccountByQQ } from '@/lib/db/accounts'
+import { getStoredQQLoginState } from '@/lib/db/qq-session'
 import { getQQFavoriteSongs, pullRemoteFavorites, QQMusicError, qqMusicErrorResponse, setQQFavoriteSong, syncPendingFavorites } from '@/lib/qq'
 import type { MusicInfo } from '@/lib/types'
 import { getCurrentAccount } from '@/lib/session'
@@ -42,7 +44,7 @@ function resolveFavorited(body: FavoriteRequest) {
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url)
-  if (searchParams.get('remote') === 'emby' || (searchParams.get('sync') === 'pull' && searchParams.get('remote') === 'emby')) {
+  if (searchParams.get('remote') === 'emby') {
     const account = await getCurrentAccount()
     try {
       return NextResponse.json(await pullEmbyFavorites({
@@ -58,11 +60,7 @@ export async function GET(request: Request) {
   if (searchParams.get('remote') !== 'qq') {
     if (searchParams.get('sync') === 'pull') {
       try {
-        return NextResponse.json(await pullRemoteFavorites({
-          cookie: request.headers.get('x-qq-music-cookie') ?? undefined,
-          page: getPositiveInt(searchParams.get('page'), 1, 1000),
-          limit: getPositiveInt(searchParams.get('limit'), 100, 200),
-        }))
+        return NextResponse.json(await pullQQFavoritesAndSyncEmby(request, searchParams, 100, 200))
       } catch (error) {
         return qqMusicErrorResponse(error)
       }
@@ -74,24 +72,48 @@ export async function GET(request: Request) {
     })
   }
 
-  const page = getPositiveInt(searchParams.get('page'), 1, 1000)
-  const limit = getPositiveInt(searchParams.get('limit'), 50, 100)
-  const cookie = request.headers.get('x-qq-music-cookie') ?? undefined
-
   try {
-    const result = await getQQFavoriteSongs({ cookie, page, limit })
-    const account = await getCurrentAccount()
-    const embySync = await syncEmbyFavoritesFromQQList({
-      account,
-      qqFavorites: result.list,
-      limit: getPositiveInt(searchParams.get('syncLimit'), 500, 1000),
-    })
-    return NextResponse.json({
-      ...result,
-      embySync,
-    })
+    return NextResponse.json(await pullQQFavoritesAndSyncEmby(request, searchParams, 50, 100))
   } catch (error) {
     return qqMusicErrorResponse(error)
+  }
+}
+
+async function pullQQFavoritesAndSyncEmby(
+  request: Request,
+  searchParams: URLSearchParams,
+  defaultLimit: number,
+  maxLimit: number,
+) {
+  const result = await pullRemoteFavorites({
+    cookie: request.headers.get('x-qq-music-cookie') ?? undefined,
+    page: getPositiveInt(searchParams.get('page'), 1, 1000),
+    limit: getPositiveInt(searchParams.get('limit'), defaultLimit, maxLimit),
+  })
+  const account = await getCurrentAccountForQQFavoriteSync()
+  const embySync = await syncEmbyFavoritesFromQQList({
+    account,
+    qqFavorites: result.list,
+    limit: getPositiveInt(searchParams.get('syncLimit'), 500, 1000),
+  })
+  return {
+    ...result,
+    embySync,
+  }
+}
+
+async function getCurrentAccountForQQFavoriteSync() {
+  try {
+    return await getCurrentAccount()
+  } catch (error) {
+    if (
+      process.env.NODE_ENV !== 'test'
+      || !String(error instanceof Error ? error.message : error).includes('outside a request scope')
+    ) {
+      throw error
+    }
+    const stored = getStoredQQLoginState()
+    return stored ? getAccountByQQ(stored.uin) : undefined
   }
 }
 

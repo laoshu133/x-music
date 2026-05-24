@@ -7,7 +7,7 @@ import { appConfig } from '@/lib/config'
 import { db } from '@/lib/db'
 import { createJob } from '@/lib/jobs'
 import { triggerInlineTagging } from '@/lib/tagging/inline'
-import { taggingInternals } from '@/lib/tagging/provider'
+import { createTaggingProvider, taggingInternals } from '@/lib/tagging/provider'
 import type { TagTrackFileJobPayload } from '@/lib/tagging/types'
 import type { MusicInfo } from '@/lib/types'
 import type { IAudioMetadata } from 'music-metadata'
@@ -89,6 +89,28 @@ test('payload metadata wins over existing file metadata', () => {
   assert.equal(metadata.year, '1999')
 })
 
+test('builtin tagging rewrites flac tags without parsing stale picture blocks', async () => {
+  await fs.mkdir(appConfig.inboxDir, { recursive: true })
+  const rawPath = path.join(appConfig.inboxDir, `stale-picture-${Date.now()}.flac`)
+  await fs.writeFile(rawPath, buildMinimalFlacWithMalformedPictureBlock())
+
+  const result = await createTaggingProvider().tagFile({
+    ...payload,
+    rawPath,
+    trackFileId: Date.now(),
+    songmid: `offline-flac-${Date.now()}`,
+    title: '云南里',
+    artist: '方大同',
+    album: '云南里',
+    albumId: '000li4Ry1X5mDj',
+  })
+
+  const output = await fs.readFile(result.finalPath)
+  assert.equal(output.subarray(0, 4).toString('ascii'), 'fLaC')
+  assert.match(output.toString('utf8'), /TITLE=云南里/)
+  assert.match(output.toString('utf8'), /ARTIST=方大同/)
+})
+
 test('inline tagging drains queued builtin tag jobs', async () => {
   await fs.mkdir(appConfig.inboxDir, { recursive: true })
   const rawPath = path.join(appConfig.inboxDir, `raw-${Date.now()}.txt`)
@@ -141,4 +163,44 @@ async function waitFor(predicate: () => boolean): Promise<void> {
     await new Promise(resolve => setTimeout(resolve, 25))
   }
   assert.fail('condition not met before timeout')
+}
+
+function buildMinimalFlacWithMalformedPictureBlock(): Buffer {
+  const streamInfo = Buffer.alloc(34)
+  const vorbisComment = buildVorbisComment(['TITLE=Old Title'])
+  const malformedPicture = Buffer.alloc(128)
+  malformedPicture.writeUInt32BE(3, 0)
+  malformedPicture.writeUInt32BE(340, 4)
+  malformedPicture.write('image/jpeg', 8, 'ascii')
+  return Buffer.concat([
+    Buffer.from('fLaC', 'ascii'),
+    flacBlock(0, streamInfo),
+    flacBlock(4, vorbisComment),
+    flacBlock(6, malformedPicture),
+    flacBlock(1, Buffer.alloc(0), true),
+    Buffer.from([0xff, 0xf8, 0, 0]),
+  ])
+}
+
+function buildVorbisComment(comments: string[]): Buffer {
+  const vendor = Buffer.from('test', 'utf8')
+  const parts = [uint32LE(vendor.length), vendor, uint32LE(comments.length)]
+  for (const comment of comments) {
+    const encoded = Buffer.from(comment, 'utf8')
+    parts.push(uint32LE(encoded.length), encoded)
+  }
+  return Buffer.concat(parts)
+}
+
+function flacBlock(type: number, data: Buffer, isLast = false): Buffer {
+  const header = Buffer.alloc(4)
+  header.writeUInt8(type | (isLast ? 0x80 : 0), 0)
+  header.writeUIntBE(data.length, 1, 3)
+  return Buffer.concat([header, data])
+}
+
+function uint32LE(value: number): Buffer {
+  const buffer = Buffer.alloc(4)
+  buffer.writeUInt32LE(value)
+  return buffer
 }
