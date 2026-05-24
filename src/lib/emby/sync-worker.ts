@@ -4,7 +4,7 @@ import { deleteCachedResourcesForTrack } from '@/lib/cache/resources'
 import { appConfig } from '@/lib/config'
 import { getEffectiveSettings } from '@/lib/db/settings'
 import path from 'node:path'
-import { rm } from 'node:fs/promises'
+import { rmdir, rm } from 'node:fs/promises'
 import { upsertRemoteMapping } from '@/lib/db/remote-mappings'
 import { claimNextJob, completeJob, failJob, requeueJob } from '@/lib/jobs'
 import {
@@ -300,6 +300,7 @@ async function deleteLocalSyncedMedia(input: {
       if (!filePath) continue
       if (!uploaded.has(normalizeRelativeMusicPath(path.relative(appConfig.musicDir, filePath)))) continue
       await rm(filePath, { force: true }).catch(() => undefined)
+      await pruneEmptyMusicDirectories(path.dirname(filePath)).catch(() => undefined)
       deletedColumns.push(column)
     }
     if (deletedColumns.length) {
@@ -310,6 +311,15 @@ async function deleteLocalSyncedMedia(input: {
         WHERE id = ?
       `).run(row.id)
     }
+  }
+}
+
+async function pruneEmptyMusicDirectories(startDir: string): Promise<void> {
+  const root = path.resolve(appConfig.musicDir)
+  let current = path.resolve(startDir)
+  while (isPathInside(current, root)) {
+    await rmdir(current)
+    current = path.dirname(current)
   }
 }
 
