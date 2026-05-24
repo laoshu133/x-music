@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import crypto from 'node:crypto'
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { db } from '@/lib/db'
 import { deleteSetting, getEffectiveSettings, getSetting, setSetting, updateEffectiveSettings } from '@/lib/db/settings'
@@ -3717,6 +3717,102 @@ test('virtual song lyrics prefer cached sidecar lyrics before upstream sources',
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999045')
     clearQQLoginCookie()
     db.prepare("DELETE FROM app_settings WHERE key = ?").run(`virtual.song.${songmid}`)
+    db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run(songmid)
+    rmSync(audioPath, { force: true })
+    rmSync(lyricsPath, { force: true })
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('virtual song lyrics persist QQ fallback to local sidecar for Emby sync', async () => {
+  const originalFetch = globalThis.fetch
+  const songmid = 'qq-persist-lyrics-song'
+  const audioPath = join(process.cwd(), 'data/test-persist-lyrics-song.mp3')
+  const lyricsPath = join(process.cwd(), 'data/test-persist-lyrics-song.lrc')
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999046')
+    db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run(songmid)
+    db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track' AND json_extract(payload_json, '$.songmid') = ?").run(songmid)
+    saveQQLoginCookie('uin=o999046; qm_keyst=test-key')
+    markAccountUpstreamBound('999046')
+    const account = getAccountByQQ('999046')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const songId = encodeVirtualId({ kind: 'qq-song', songmid })
+    const song: MusicInfo = {
+      source: 'tx',
+      songmid,
+      name: 'QQ Persist Lyrics Song',
+      singer: 'QQ Lyrics Artist',
+      albumName: 'QQ Lyrics Album',
+      interval: '03:08',
+      types: [{ type: '320k', size: '1 MB' }],
+      raw: { songId: 765432, strMediaMid: 'qq-media-persist-lyrics' },
+    }
+
+    db.prepare(`
+      INSERT INTO app_settings (key, value_json, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP
+    `).run(`virtual.song.${songmid}`, JSON.stringify({ song }))
+
+    mkdirSync(join(process.cwd(), 'data'), { recursive: true })
+    writeFileSync(audioPath, 'audio-bytes')
+    const track = ensureTrack(song)
+    upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath: audioPath, sizeBytes: 11, sha256: 'persistsha' })
+
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'u.y.qq.com') {
+        return Response.json({
+          code: 0,
+          req: {
+            code: 0,
+            data: {
+              lyric: '[00:01.00]QQ落盘歌词',
+            },
+          },
+        })
+      }
+      return Response.json({ error: 'unexpected upstream request' }, { status: 500 })
+    }) as typeof fetch
+
+    const subtitle = await dispatchEmbyRequest(
+      new Request(`http://local/Items/${encodeURIComponent(songId)}/Subtitles/2/Stream.js?Token=${authPayload.AccessToken}`, {
+        headers: { 'user-agent': 'musiver/1.3.9 (Macintosh)' },
+      }),
+      stripOptionalEmbyPrefix(`/Items/${encodeURIComponent(songId)}/Subtitles/2/Stream.js?Token=${authPayload.AccessToken}`),
+    )
+    assert.equal(subtitle.status, 200)
+    const payload = await subtitle.json()
+    assert.equal(payload.TrackEvents[0].Text, 'QQ落盘歌词')
+    assert.match(readFileSync(lyricsPath, 'utf8'), /QQ落盘歌词/)
+    const row = db.prepare(`
+      SELECT tf.lyrics_path AS lyricsPath
+      FROM track_files tf
+      INNER JOIN tracks t ON t.id = tf.track_id
+      WHERE t.source = 'tx' AND t.songmid = ?
+    `).get(songmid) as { lyricsPath?: string } | undefined
+    assert.equal(row?.lyricsPath, lyricsPath)
+    const syncJob = db.prepare(`
+      SELECT id
+      FROM jobs
+      WHERE type = 'sync_emby_track'
+        AND json_extract(payload_json, '$.songmid') = ?
+      LIMIT 1
+    `).get(songmid)
+    assert.ok(syncJob)
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999046')
+    clearQQLoginCookie()
+    db.prepare("DELETE FROM app_settings WHERE key = ?").run(`virtual.song.${songmid}`)
+    db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track' AND json_extract(payload_json, '$.songmid') = ?").run(songmid)
     db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run(songmid)
     rmSync(audioPath, { force: true })
     rmSync(lyricsPath, { force: true })

@@ -21,6 +21,7 @@ import { qualityFallbacks } from '@/lib/music-url/resolve'
 import type { SyncEmbyTrackJobPayload } from './sync'
 import type { MusicQuality } from '@/lib/types'
 import { syncMediaFilesToEmbyWebdav } from './webdav'
+import { qqLegacyLyricsUrl, qqPlayLyricInfoCacheBody, qqPlayLyricInfoCacheUrl } from '@/lib/qq'
 
 export interface EmbySyncJobOptions {
   maxAttempts?: number
@@ -133,7 +134,12 @@ export async function processOneEmbySyncJob(options: number | EmbySyncJobOptions
       source: job.payload.source,
       songmid: job.payload.songmid,
       imageUrl: job.payload.musicInfo.img,
-      lyricsUrls: [qqLyricsUrl(job.payload.songmid)],
+      lyricsUrls: [qqLegacyLyricsUrl(job.payload.songmid)],
+      lyricRequests: [{
+        url: qqPlayLyricInfoCacheUrl(),
+        method: 'POST',
+        body: qqPlayLyricInfoCacheBody(job.payload.songmid, readQQSongId(job.payload.musicInfo)),
+      }],
     }).catch(() => undefined)
     if (syncedMedia) {
       await deleteLocalSyncedMedia({
@@ -344,17 +350,9 @@ async function waitForEmbyAudio(
   }
 }
 
-function qqLyricsUrl(songmid: string): string {
-  return `https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg?${new URLSearchParams({
-    g_tk: '5381',
-    format: 'json',
-    inCharset: 'utf-8',
-    outCharset: 'utf-8',
-    notice: '0',
-    platform: 'h5',
-    needNewCode: '1',
-    ct: '121',
-    cv: '0',
-    songmid,
-  })}`
+function readQQSongId(song?: SyncEmbyTrackJobPayload['musicInfo']): number | undefined {
+  const raw = song?.raw
+  if (!raw || typeof raw !== 'object') return undefined
+  const value = (raw as Record<string, unknown>).songId
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }

@@ -182,10 +182,16 @@ export async function deleteCachedResourcesForTrack(input: {
   songmid: string
   imageUrl?: string
   lyricsUrls?: string[]
+  lyricRequests?: Array<{ url: string; method?: string; body?: BodyInit | null }>
 }): Promise<void> {
   const keys = [
     input.imageUrl ? cacheKeyFor(input.source, 'image', input.imageUrl) : undefined,
     ...(input.lyricsUrls ?? []).map(url => cacheKeyFor(input.source, 'lyrics', url)),
+    ...(input.lyricRequests ?? []).map(request => cacheKeyFor(
+      input.source,
+      'lyrics',
+      requestCacheIdentity(request.url, request.method, request.body),
+    )),
   ].filter((key): key is string => Boolean(key))
 
   if (!keys.length) return

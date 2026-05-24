@@ -2,6 +2,7 @@ import { ensureTrack, getPlayableTrackFile, getTrack, hasActiveTrackFile, insert
 import { cachedResourceResponse } from '@/lib/cache/resources'
 import { createUpstreamTeeResponse, streamLocalFile } from '@/lib/cache/stream'
 import { encryptedQQAudioRequiresKeyMessage, isEncryptedQQAudioFileName, isEncryptedQQAudioRequiresKeyError } from '@/lib/cache/decrypt'
+import { db } from '@/lib/db'
 import { MusicUrlConfigError, MusicUrlResolveError, qualityFallbacks, resolveMusicUrl, resolveMusicUrlWithFallback } from '@/lib/music-url/resolve'
 import {
   getQQPlaylistDetail,
@@ -64,7 +65,7 @@ import {
   isUserViewsRequest,
 } from './local-route-patterns'
 import crypto from 'node:crypto'
-import { readFile, stat } from 'node:fs/promises'
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { createLocalAccessToken } from './tokens'
 import { readClientAccessToken } from './client-compat'
@@ -2120,17 +2121,24 @@ function readNestedString(record: Record<string, unknown>, keys: string[]): stri
 }
 
 async function fetchLyrics(songmid: string, playlistId?: string): Promise<string | undefined> {
-  const cachedLyrics = await readCachedTrackLyrics({ source: 'tx', songmid })
-  if (cachedLyrics) return cachedLyrics
-
   const stored = await loadOrFetchVirtualSong(songmid, playlistId)
+  const cachedLyrics = await readCachedTrackLyrics({ source: 'tx', songmid })
+  if (cachedLyrics) {
+    void cleanupCachedLyricsIfEmbyHasLyrics(stored?.song).catch(() => undefined)
+    return cachedLyrics
+  }
 
   if (stored) {
     const embyLyrics = await fetchEmbyLyrics(stored.song)
-    if (embyLyrics) return embyLyrics
+    if (embyLyrics) {
+      await cleanupCachedTrackLyrics({ source: 'tx', songmid }).catch(() => undefined)
+      return embyLyrics
+    }
   }
 
-  return await getQQLyrics(songmid, { songId: readQQSongId(stored?.song), timeoutMs: 10_000 })
+  const qqLyrics = await getQQLyrics(songmid, { songId: readQQSongId(stored?.song), timeoutMs: 10_000 })
+  if (qqLyrics) await persistQQLyricsToLocalCache(stored?.song, qqLyrics).catch(() => undefined)
+  return qqLyrics
 }
 
 function readQQSongId(song?: MusicInfo): number | undefined {
@@ -2152,6 +2160,65 @@ async function readCachedTrackLyrics(song: Pick<MusicInfo, 'source' | 'songmid'>
     if (sidecar) return normalizeLyrics(sidecar)
   }
   return undefined
+}
+
+async function persistQQLyricsToLocalCache(song: MusicInfo | undefined, lyrics: string): Promise<void> {
+  if (!song || song.source !== 'tx') return
+  const file = firstWritableTrackFile(song)
+  const audioPath = file?.finalPath ?? file?.rawPath
+  if (!file || !audioPath) return
+
+  const lyricsPath = file.lyricsPath ?? replaceAudioExtension(audioPath, '.lrc')
+  await mkdir(path.dirname(lyricsPath), { recursive: true })
+  await writeFile(lyricsPath, `${normalizeLyrics(lyrics)}\n`, 'utf8')
+  db.prepare(`
+    UPDATE track_files
+    SET lyrics_path = @lyricsPath,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE id = @id
+  `).run({
+    id: file.id,
+    lyricsPath,
+  })
+
+  enqueueEmbyTrackSync({
+    source: song.source,
+    songmid: song.songmid,
+    musicInfo: song,
+  })
+}
+
+function firstWritableTrackFile(song: Pick<MusicInfo, 'source' | 'songmid'>): ReturnType<typeof getPlayableTrackFile> {
+  for (const quality of qualityFallbacks('flac')) {
+    const file = getPlayableTrackFile(song.source, song.songmid, quality)
+    if (file?.finalPath || file?.rawPath) return file
+  }
+  return undefined
+}
+
+async function cleanupCachedLyricsIfEmbyHasLyrics(song: MusicInfo | undefined): Promise<void> {
+  if (!song) return
+  const embyLyrics = await fetchEmbyLyrics(song).catch(() => undefined)
+  if (embyLyrics) await cleanupCachedTrackLyrics(song)
+}
+
+async function cleanupCachedTrackLyrics(song: Pick<MusicInfo, 'source' | 'songmid'>): Promise<void> {
+  const rows = db.prepare(`
+    SELECT tf.id, tf.lyrics_path AS lyricsPath
+    FROM track_files tf
+    INNER JOIN tracks t ON t.id = tf.track_id
+    WHERE t.source = ? AND t.songmid = ?
+  `).all(song.source, song.songmid) as Array<{ id: number; lyricsPath?: string | null }>
+
+  for (const row of rows) {
+    if (row.lyricsPath) await rm(row.lyricsPath, { force: true }).catch(() => undefined)
+    db.prepare(`
+      UPDATE track_files
+      SET lyrics_path = NULL,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(row.id)
+  }
 }
 
 async function fetchEmbyLyrics(song: MusicInfo): Promise<string | undefined> {

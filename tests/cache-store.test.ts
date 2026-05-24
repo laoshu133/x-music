@@ -531,6 +531,62 @@ test('QQ lyrics falls back when modern API returns encrypted hex payload', async
   }
 })
 
+test('QQ lyrics uses LX-style PlayLyricInfo request and parses millisecond lyric lines', async () => {
+  const originalFetch = globalThis.fetch
+  const songmid = `LYRICS_LX_STYLE_${Date.now()}`
+  try {
+    db.prepare("DELETE FROM resource_cache WHERE resource_type IN ('lyrics', 'metadata')").run()
+    const requests: unknown[] = []
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'u.y.qq.com') {
+        const body = JSON.parse(String(init?.body ?? '{}'))
+        requests.push(body)
+        if (body.songinfo) {
+          return Response.json({
+            code: 0,
+            songinfo: {
+              code: 0,
+              data: {
+                track_info: {
+                  id: 123456,
+                  mid: songmid,
+                  title: 'LX Style Lyrics',
+                  singer: [{ name: 'Singer' }],
+                  album: { mid: 'album-mid', name: 'Album' },
+                  file: { media_mid: songmid, size_320mp3: 10 },
+                },
+              },
+            },
+          })
+        }
+        return Response.json({
+          code: 0,
+          req: {
+            code: 0,
+            data: {
+              lyric: '[1230,2000](1230,500)第一句\\n[4000,2000](4000,500)第二句',
+              trans: '[00:01.23]First line\\n[00:04.00]Second line',
+            },
+          },
+        })
+      }
+      return Response.json({ error: 'unexpected request' }, { status: 500 })
+    }) as typeof fetch
+
+    const lyrics = await getQQLyrics(songmid)
+    assert.equal(lyrics, '[00:01.230]第一句\n[00:01.230]First line\n[00:04.000]第二句\n[00:04.000]Second line')
+
+    const lyricRequest = requests.find((body) => Boolean((body as any).req)) as any
+    assert.equal(lyricRequest.req.param.songID, 123456)
+    assert.equal(lyricRequest.req.param.crypt, 1)
+    assert.equal(lyricRequest.req.param.type, -1)
+  } finally {
+    db.prepare("DELETE FROM resource_cache WHERE resource_type IN ('lyrics', 'metadata')").run()
+    globalThis.fetch = originalFetch
+  }
+})
+
 function expectLegacyLyricsUrl(songmid: string): string {
   return `https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg?${new URLSearchParams({
     g_tk: '5381',
