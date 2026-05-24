@@ -33,6 +33,9 @@ import { useRouter, useSearchParams } from 'next/navigation'
 
 type View = 'home' | 'player' | 'config' | 'status' | 'users' | 'jobs'
 
+const AMPCAST_OFFICIAL_URL = 'https://ampcast.app/'
+const EMBEDDED_PLAYER_PATH = '/@player/'
+
 interface ApiState<T> {
   loading: boolean
   error: string
@@ -264,10 +267,7 @@ export default function MusicClient() {
   })
 
   const embyUrl = browserOrigin
-  const ampcastUrl = useMemo(() => {
-    const baseUrl = adminConfig.data?.player.ampcastUrl ?? 'https://ampcast.app/'
-    return new URL(baseUrl).toString()
-  }, [adminConfig.data?.player.ampcastUrl])
+  const ampcastOfficialUrl = useMemo(() => new URL(AMPCAST_OFFICIAL_URL).toString(), [])
   const connectionInfo: ConnectionInfo = {
     server: embyUrl,
     username: accountEmbyConfig.data?.username ?? account.data?.emby?.username ?? '',
@@ -532,7 +532,7 @@ export default function MusicClient() {
           <header className="content-header">
             <h2>{headingFor(view)}</h2>
             {view === 'player' ? (
-              <a className="secondary-button compact-button" href={ampcastUrl} target="_blank" rel="noreferrer"><ExternalLink size={15} />新窗口打开</a>
+              <a className="secondary-button compact-button" href={EMBEDDED_PLAYER_PATH} target="_blank" rel="noreferrer"><ExternalLink size={15} />新窗口打开</a>
             ) : null}
           </header>
         )}
@@ -542,14 +542,14 @@ export default function MusicClient() {
         {view === 'home' && (
           <section className="workspace">
             <Status state={adminConfig} />
-            <HomePanel connection={connectionInfo} ampcastUrl={ampcastUrl} onOpenConfig={() => openView('config')} />
+            <HomePanel connection={connectionInfo} playerPath={EMBEDDED_PLAYER_PATH} ampcastOfficialUrl={ampcastOfficialUrl} onOpenConfig={() => openView('config')} />
           </section>
         )}
 
         {view === 'player' && (
           <section className="workspace">
             <Status state={adminConfig} />
-            <PlayerPanel ampcastUrl={ampcastUrl} />
+            <PlayerPanel playerPath={EMBEDDED_PLAYER_PATH} />
           </section>
         )}
 
@@ -772,11 +772,13 @@ function AccountSummary({ account, avatarUrl, onLogout }: { account: AccountStat
 
 function HomePanel({
   connection,
-  ampcastUrl,
+  playerPath,
+  ampcastOfficialUrl,
   onOpenConfig,
 }: {
   connection: ConnectionInfo
-  ampcastUrl: string
+  playerPath: string
+  ampcastOfficialUrl: string
   onOpenConfig: () => void
 }) {
   return (
@@ -786,7 +788,7 @@ function HomePanel({
         <h3>把音乐装进自己口袋</h3>
         <p>连接 QQ 音乐和 Emby，打通收藏、歌单、记录，让音乐跟着你走。</p>
         <div className="hero-actions">
-          <a className="primary-link" href={ampcastUrl} target="_blank" rel="noreferrer"><ExternalLink size={16} />打开播放器</a>
+          <a className="primary-link" href={playerPath} target="_blank" rel="noreferrer"><ExternalLink size={16} />打开播放器</a>
           <button className="secondary-button" onClick={onOpenConfig}><Settings size={16} />管理连接</button>
         </div>
       </section>
@@ -812,7 +814,7 @@ function HomePanel({
         </div>
         <div className="player-support-grid">
           {playerRecommendations.map(player => (
-            <a className="player-card" href={player.name === 'ampcast' ? ampcastUrl : player.href} target="_blank" rel="noreferrer" key={player.name}>
+            <a className="player-card" href={player.name === 'ampcast' ? ampcastOfficialUrl : player.href} target="_blank" rel="noreferrer" key={player.name}>
               <span>{player.platform}</span>
               <strong>{player.name}</strong>
             </a>
@@ -823,11 +825,11 @@ function HomePanel({
   )
 }
 
-function PlayerPanel({ ampcastUrl }: { ampcastUrl: string }) {
+function PlayerPanel({ playerPath }: { playerPath: string }) {
   return (
     <div className="player-layout">
       <section className="ampcast-panel">
-        <iframe title="ampcast" src={ampcastUrl} />
+        <iframe title="ampcast" src={playerPath} />
       </section>
     </div>
   )

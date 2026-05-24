@@ -11,6 +11,7 @@ import { ensureUpstreamEmbyUserForAccount } from '@/lib/emby/auth'
 import { handleLocalEmbyRequest } from '@/lib/emby/local-handlers'
 import { normalizeEmbyPath, stripOptionalEmbyPrefix } from '@/lib/emby/paths'
 import { proxyToUpstreamEmby } from '@/lib/emby/upstream-proxy'
+import { playerPathFromEmbyPath, proxyToAmpcast } from '@/lib/ampcast/proxy'
 import { readEmbyAccessToken } from '@/lib/emby/tokens'
 import { decodeVirtualId, encodeVirtualId, songVirtualId } from '@/lib/emby/virtual-ids'
 import { getFavoriteStatus, setLocalFavoriteSynced } from '@/lib/db/favorites'
@@ -457,6 +458,83 @@ test('emby path helpers normalize optional emby prefix', () => {
   assert.equal(stripOptionalEmbyPrefix('/emby/Items'), '/Items')
   assert.equal(stripOptionalEmbyPrefix('/Items'), '/Items')
   assert.equal(normalizeEmbyPath(['emby', 'System', 'Info', 'Public']), '/System/Info/Public')
+})
+
+test('ampcast player path maps to embedded proxy route', () => {
+  assert.equal(playerPathFromEmbyPath('/@player'), '/')
+  assert.equal(playerPathFromEmbyPath('/@Player'), '/')
+  assert.equal(playerPathFromEmbyPath('/@player/assets/app.js'), '/assets/app.js')
+  assert.equal(playerPathFromEmbyPath(normalizeEmbyPath(['@player'])), '/')
+  assert.equal(playerPathFromEmbyPath(normalizeEmbyPath(['@player', 'assets', 'app.js'])), '/assets/app.js')
+  assert.equal(playerPathFromEmbyPath('/v0.9.28/lib/media-services.js'), '/v0.9.28/lib/media-services.js')
+  assert.equal(playerPathFromEmbyPath('/Items'), undefined)
+})
+
+test('ampcast proxy forwards to configured upstream and rewrites embedded assets', async () => {
+  const originalFetch = globalThis.fetch
+  const originalAmpcastUrl = process.env.AMPCAST_URL
+  try {
+    process.env.AMPCAST_URL = 'https://ampcast.example/base/'
+    let forwardedUrl = ''
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      forwardedUrl = url.toString()
+      return new Response('<script src="/assets/app.js"></script><link href="/style.css"><script>import("/v0.9.28/lib/media-services.js")</script><main action="/login"></main>', {
+        headers: {
+          'content-type': 'text/html',
+          'content-encoding': 'br',
+          'content-length': '99',
+          'x-frame-options': 'DENY',
+        },
+      })
+    }) as typeof fetch
+
+    const response = await proxyToAmpcast(new Request('http://local/@player/?theme=dark'), '/')
+    const text = await response.text()
+
+    assert.equal(forwardedUrl, 'https://ampcast.example/base/?theme=dark')
+    assert.equal(response.headers.get('content-encoding'), null)
+    assert.equal(response.headers.get('content-length'), null)
+    assert.equal(response.headers.get('x-frame-options'), null)
+    assert.match(text, /src="\/@player\/assets\/app\.js"/)
+    assert.match(text, /href="\/@player\/style\.css"/)
+    assert.match(text, /"\/@player\/v0\.9\.28\/lib\/media-services\.js"/)
+    assert.match(text, /action="\/@player\/login"/)
+  } finally {
+    if (originalAmpcastUrl === undefined) {
+      delete process.env.AMPCAST_URL
+    } else {
+      process.env.AMPCAST_URL = originalAmpcastUrl
+    }
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('ampcast proxy maps root versioned assets to the configured upstream', async () => {
+  const originalFetch = globalThis.fetch
+  const originalAmpcastUrl = process.env.AMPCAST_URL
+  try {
+    process.env.AMPCAST_URL = 'https://ampcast.example/base/'
+    let forwardedUrl = ''
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      forwardedUrl = url.toString()
+      return new Response('console.log("media")', {
+        headers: { 'content-type': 'application/javascript' },
+      })
+    }) as typeof fetch
+
+    const response = await proxyToAmpcast(new Request('http://local/v0.9.28/lib/media-services.js'), '/v0.9.28/lib/media-services.js')
+
+    assert.equal(forwardedUrl, 'https://ampcast.example/base/v0.9.28/lib/media-services.js')
+    assert.equal(response.headers.get('content-type'), 'application/javascript')
+    assert.equal(await response.text(), 'console.log("media")')
+  } finally {
+    if (originalAmpcastUrl === undefined) {
+      delete process.env.AMPCAST_URL
+    } else {
+      process.env.AMPCAST_URL = originalAmpcastUrl
+    }
+    globalThis.fetch = originalFetch
+  }
 })
 
 test('local emby public info supports original emby routes', async () => {
@@ -3326,9 +3404,15 @@ test('local emby virtual song lyrics return timed lyric lines', async () => {
 
     globalThis.fetch = (async (url: string | URL | Request) => {
       const requestUrl = new URL(String(url))
-      if (requestUrl.pathname.includes('/lyric/fcgi-bin/fcg_query_lyric_new.fcg')) {
+      if (requestUrl.hostname === 'u.y.qq.com') {
         return Response.json({
-          lyric: Buffer.from('[00:01.23]第一句\n[00:04.00]第二句', 'utf8').toString('base64'),
+          code: 0,
+          lyric: {
+            code: 0,
+            data: {
+              lyric: '[00:01.23]第一句\n[00:04.00]第二句',
+            },
+          },
         })
       }
       return Response.json({ error: 'unexpected upstream request' }, { status: 500 })

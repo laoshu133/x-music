@@ -7,6 +7,7 @@ import NodeID3 from 'node-id3'
 import { z } from 'zod'
 import { appConfig } from '@/lib/config'
 import { getCachedResource, getCachedTextResource } from '@/lib/cache/resources'
+import { getQQLyrics } from '@/lib/qq'
 import type { TagTrackFileJobPayload } from '@/lib/tagging/types'
 
 export type TaggingMode = 'builtin'
@@ -336,37 +337,6 @@ async function searchQQSongs(query: string): Promise<QQMusicApiSong[]> {
   return songs.map(mapQQSong).filter((song): song is QQMusicApiSong => Boolean(song))
 }
 
-async function fetchQQLyrics(songmid: string): Promise<string | undefined> {
-  const url = `https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg?${new URLSearchParams({
-      g_tk: '5381',
-      format: 'json',
-      inCharset: 'utf-8',
-      outCharset: 'utf-8',
-      notice: '0',
-      platform: 'h5',
-      needNewCode: '1',
-      ct: '121',
-      cv: '0',
-      songmid,
-    })}`
-  const text = await getCachedTextResource({
-    source: 'tx',
-    resourceType: 'lyrics',
-    url,
-    headers: {
-      referer: 'https://y.qq.com/',
-      'user-agent': 'Mozilla/5.0',
-    },
-    timeoutMs: taggingEnv.TAGGING_FETCH_TIMEOUT_MS,
-    transform: (value) => {
-      const data = JSON.parse(value) as { lyric?: string }
-      return data.lyric ? normalizeLyrics(Buffer.from(data.lyric, 'base64').toString('utf8')) : ''
-    },
-  }).catch(() => undefined)
-
-  return text?.trim() ? text : undefined
-}
-
 function normalizeLyrics(value: string): string {
   return value.replace(/\r\n?/g, '\n').trimEnd()
 }
@@ -403,7 +373,7 @@ async function resolveOnlineMetadata(payload: TagTrackFileJobPayload, base: Norm
 
   const songmid = best.candidate.mid ?? payload.songmid
   const [lyrics, cover] = await Promise.all([
-    fetchQQLyrics(songmid),
+    getQQLyrics(songmid, { timeoutMs: taggingEnv.TAGGING_FETCH_TIMEOUT_MS }),
     fetchCover(best.candidate.albumImg),
   ])
 

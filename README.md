@@ -120,7 +120,7 @@ Optional:
 - `EMBY_PROXY_TIMEOUT_MS`: upstream Emby proxy timeout, default `30000`.
 - `X_MUSIC_REQUEST_LOGS`: request logging to stdout for Docker/Dokploy logs. `auto` enables logs in production and leaves local `next dev` to Next's built-in request output; set `true` to force-enable locally or `false` to reduce production log volume. URLs are logged with sensitive token-like query values redacted.
 - `EMBY_SOURCE_WEBDAV_DSN`: optional WebDAV destination for syncing finalized music files to the upstream Emby music library, for example `https://user:password@example.com/dav/music`. The DSN path should map to the same directory Emby reports for its music library, such as `/volume1/music`; XMusic preserves the relative `MUSIC_DATA_DIR/music` layout when uploading.
-- `AMPCAST_URL`: ampcast web entry used by the player page, default `https://ampcast.app/`.
+- `AMPCAST_URL`: ampcast upstream web entry reverse-proxied by the embedded `/@player` route, default `https://ampcast.app/`.
 - `ADMIN_QQ_UINS`: QQ UIN allowlist for admin-only pages such as user management and jobs. Accepts comma, semicolon, or whitespace separated values.
 - `WORKER_POLL_INTERVAL_MS`: idle worker polling interval, default `5000`.
 - `WORKER_MAX_ATTEMPTS`: max job attempts before failure, default `3`.

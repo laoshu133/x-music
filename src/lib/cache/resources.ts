@@ -438,6 +438,7 @@ async function fetchAndStoreTextResource(input: {
   if (!response?.ok) return undefined
 
   const text = input.transform ? input.transform(await response.text()) : await response.text()
+  if (!text.trim()) return undefined
   return writeCachedBytes({
     source: input.source,
     resourceType: input.resourceType,

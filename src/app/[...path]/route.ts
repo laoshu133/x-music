@@ -1,6 +1,7 @@
 import { dispatchEmbyRequest } from '@/lib/emby/dispatch'
 import { embyCorsPreflight } from '@/lib/emby/cors'
 import { isReservedManagementPath, normalizeEmbyPath } from '@/lib/emby/paths'
+import { playerPathFromEmbyPath, proxyToAmpcast } from '@/lib/ampcast/proxy'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -12,6 +13,8 @@ type RouteContext = {
 async function handle(request: Request, context: RouteContext): Promise<Response> {
   const params = await context.params
   const embyPath = normalizeEmbyPath(params.path ?? [])
+  const playerPath = playerPathFromEmbyPath(embyPath)
+  if (playerPath) return proxyToAmpcast(request, playerPath)
 
   if (isReservedManagementPath(embyPath)) {
     return Response.json({ error: 'Reserved XMusic path cannot be proxied as Emby API' }, { status: 404 })

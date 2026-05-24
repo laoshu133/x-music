@@ -8,6 +8,7 @@ import {
   getQQFavoriteSongs,
   getQQDailyRecommendations,
   getQQLoginState,
+  getQQLyrics,
   getQQRecommendations,
   getQQSongDetail,
   getQQUserPlaylists,
@@ -16,7 +17,6 @@ import {
   setQQFavoriteSong,
   syncQQPlayHistoryBestEffort,
 } from '@/lib/qq'
-import { getCachedTextResource } from '@/lib/cache/resources'
 import { getFavoriteStatusForAccount, listLocalFavoritesForAccount, setLocalFavorite, setLocalFavoriteSynced } from '@/lib/db/favorites'
 import type { MusicInfo, MusicQuality, PlayHistoryRecord, QQPlaylistInfo, TrackRecord } from '@/lib/types'
 import { enqueueEmbyTrackSync } from './sync'
@@ -2119,24 +2119,6 @@ function readNestedString(record: Record<string, unknown>, keys: string[]): stri
   return typeof current === 'string' && current.trim() ? current.trim() : undefined
 }
 
-async function fetchQQLyrics(songmid: string): Promise<string | undefined> {
-  const text = await getCachedTextResource({
-    source: 'tx',
-    resourceType: 'lyrics',
-    url: qqLyricsUrl(songmid),
-    headers: {
-      referer: 'https://y.qq.com/',
-      'user-agent': 'Mozilla/5.0',
-    },
-    timeoutMs: 10_000,
-    transform: (value) => {
-      const data = JSON.parse(value) as { lyric?: string }
-      return data.lyric ? normalizeLyrics(Buffer.from(data.lyric, 'base64').toString('utf8')) : ''
-    },
-  }).catch(() => undefined)
-  return text?.trim() ? text : undefined
-}
-
 async function fetchLyrics(songmid: string, playlistId?: string): Promise<string | undefined> {
   const cachedLyrics = await readCachedTrackLyrics({ source: 'tx', songmid })
   if (cachedLyrics) return cachedLyrics
@@ -2148,7 +2130,14 @@ async function fetchLyrics(songmid: string, playlistId?: string): Promise<string
     if (embyLyrics) return embyLyrics
   }
 
-  return await fetchQQLyrics(songmid)
+  return await getQQLyrics(songmid, { songId: readQQSongId(stored?.song), timeoutMs: 10_000 })
+}
+
+function readQQSongId(song?: MusicInfo): number | undefined {
+  const raw = song?.raw
+  if (!raw || typeof raw !== 'object') return undefined
+  const value = (raw as Record<string, unknown>).songId
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
 async function readCachedTrackLyrics(song: Pick<MusicInfo, 'source' | 'songmid'>): Promise<string | undefined> {
@@ -2270,21 +2259,6 @@ function imageContentTypeFromPath(filePath: string): string {
 
 function replaceAudioExtension(filePath: string, ext: string): string {
   return filePath.slice(0, -path.extname(filePath).length) + ext
-}
-
-function qqLyricsUrl(songmid: string): string {
-  return `https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg?${new URLSearchParams({
-    g_tk: '5381',
-    format: 'json',
-    inCharset: 'utf-8',
-    outCharset: 'utf-8',
-    notice: '0',
-    platform: 'h5',
-    needNewCode: '1',
-    ct: '121',
-    cv: '0',
-    songmid,
-  })}`
 }
 
 function normalizeLyrics(value: string): string {

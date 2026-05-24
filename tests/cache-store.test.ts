@@ -5,7 +5,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import test from 'node:test'
 import { ensureTrack, getPlayableTrackFile, getReadyTrackFile, insertPlayEvent, listPlayHistory, upsertTrackFileStatus } from '@/lib/cache/store'
-import { cachedResourceResponse, cleanupResourceCache } from '@/lib/cache/resources'
+import { cachedResourceResponse, cleanupResourceCache, getCachedTextResource } from '@/lib/cache/resources'
 import { createUpstreamTeeResponse } from '@/lib/cache/stream'
 import { refreshUmCrypto, resolveUmCryptoLoaderPath } from '@/lib/cache/um-crypto'
 import { appConfig } from '@/lib/config'
@@ -466,6 +466,28 @@ test('resource response streams first miss while caching for later hits', async 
   } finally {
     const row = db.prepare('SELECT file_path FROM resource_cache WHERE url = ?').get(url) as { file_path: string } | undefined
     if (row) fs.rmSync(row.file_path, { force: true })
+    db.prepare('DELETE FROM resource_cache WHERE url = ?').run(url)
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('empty transformed text resources are not cached', async () => {
+  const originalFetch = globalThis.fetch
+  const url = `https://cache-text.example/empty-${Date.now()}.json`
+  try {
+    db.prepare('DELETE FROM resource_cache WHERE url = ?').run(url)
+    globalThis.fetch = (async () => Response.json({ code: -1901 })) as typeof fetch
+
+    const text = await getCachedTextResource({
+      source: 'test',
+      resourceType: 'lyrics',
+      url,
+      transform: () => '',
+    })
+
+    assert.equal(text, undefined)
+    assert.equal(Boolean(db.prepare('SELECT 1 FROM resource_cache WHERE url = ?').get(url)), false)
+  } finally {
     db.prepare('DELETE FROM resource_cache WHERE url = ?').run(url)
     globalThis.fetch = originalFetch
   }
