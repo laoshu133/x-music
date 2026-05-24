@@ -4014,6 +4014,196 @@ test('musiver virtual audio stream prefers mp3 quality requested by client', asy
   }
 })
 
+test('ampcast virtual audio refreshes flac instead of serving lower local fallback', async () => {
+  const originalFetch = globalThis.fetch
+  const originalLxMusicSourceScript = process.env.LX_MUSIC_SOURCE_SCRIPT
+  const songmid = `qq-ampcast-flac-${Date.now()}`
+  const oggPath = join(process.cwd(), `data/test-${songmid}.ogg`)
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999047')
+    process.env.LX_MUSIC_SOURCE_SCRIPT = 'https://script.example/script/lxmusic?key=test-key'
+    saveQQLoginCookie('uin=o999047; qm_keyst=test-key')
+    markAccountUpstreamBound('999047')
+    const account = getAccountByQQ('999047')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const songId = encodeVirtualId({ kind: 'qq-song', songmid })
+    const authHeader = `MediaBrowser Client="ampcast", Version="0.9.28", Device="PC", Token="${authPayload.AccessToken}"`
+    const song: MusicInfo = {
+      source: 'tx',
+      songmid,
+      name: 'Ampcast Flac Song',
+      singer: 'QQ Artist',
+      interval: '03:08',
+      types: [{ type: 'flac', size: '49 MB' }, { type: '320k', size: '5 MB' }],
+    }
+    db.prepare(`
+      INSERT INTO app_settings (key, value_json, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP
+    `).run(`virtual.song.${songmid}`, JSON.stringify({ song }))
+
+    mkdirSync(join(process.cwd(), 'data'), { recursive: true })
+    writeFileSync(oggPath, 'ogg-bytes')
+    const track = ensureTrack(song)
+    upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath: oggPath, sizeBytes: 9 })
+
+    const requestedQualities: string[] = []
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'script.example') {
+        const body = JSON.parse(String(init?.body ?? '{}')) as { quality?: string }
+        requestedQualities.push(body.quality ?? '')
+        return Response.json({ url: 'https://cdn.example/audio.flac' })
+      }
+      if (requestUrl.hostname === 'cdn.example') {
+        return new Response('flac-bytes', { headers: { 'content-type': 'audio/flac' } })
+      }
+      if (requestUrl.hostname === 'stat6.y.qq.com') return new Response('{}')
+      return Response.json({ Items: [], TotalRecordCount: 0 })
+    }) as typeof fetch
+
+    const head = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Audio/${encodeURIComponent(songId)}/universal?Container=opus%2Cwebm%7Copus%2Cmp3%2Caac%2Cflac&AudioCodec=aac&api_key=${authPayload.AccessToken}`, {
+        method: 'HEAD',
+        headers: { 'X-Emby-Authorization': authHeader },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Audio/${encodeURIComponent(songId)}/universal`),
+    )
+    assert.equal(head.status, 200)
+    assert.equal(head.headers.get('content-type'), 'audio/mpeg')
+    assert.equal(head.headers.get('x-x-music-source'), 'upstream')
+
+    const response = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Audio/${encodeURIComponent(songId)}/universal?Container=opus%2Cwebm%7Copus%2Cmp3%2Caac%2Cflac&AudioCodec=aac&api_key=${authPayload.AccessToken}`, {
+        headers: { 'X-Emby-Authorization': authHeader },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Audio/${encodeURIComponent(songId)}/universal`),
+    )
+    assert.equal(response.status, 200)
+    assert.equal(await response.text(), 'flac-bytes')
+    assert.deepEqual(requestedQualities, ['flac'])
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999047')
+    clearQQLoginCookie()
+    db.prepare('DELETE FROM app_settings WHERE key = ?').run(`virtual.song.${songmid}`)
+    db.prepare("DELETE FROM tracks WHERE songmid = ? AND source = 'tx'").run(songmid)
+    db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track' AND json_extract(payload_json, '$.songmid') = ?").run(songmid)
+    rmSync(oggPath, { force: true })
+    globalThis.fetch = originalFetch
+    if (originalLxMusicSourceScript === undefined) {
+      delete process.env.LX_MUSIC_SOURCE_SCRIPT
+    } else {
+      process.env.LX_MUSIC_SOURCE_SCRIPT = originalLxMusicSourceScript
+    }
+  }
+})
+
+test('ampcast virtual audio skips low-quality mapped Emby item for flac-capable request', async () => {
+  const originalFetch = globalThis.fetch
+  const originalLxMusicSourceScript = process.env.LX_MUSIC_SOURCE_SCRIPT
+  const songmid = `qq-ampcast-mapped-low-${Date.now()}`
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999048')
+    process.env.LX_MUSIC_SOURCE_SCRIPT = 'https://script.example/script/lxmusic?key=test-key'
+    saveQQLoginCookie('uin=o999048; qm_keyst=test-key')
+    markAccountUpstreamBound('999048')
+    const account = getAccountByQQ('999048')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const songId = encodeVirtualId({ kind: 'qq-song', songmid })
+    const authHeader = `MediaBrowser Client="ampcast", Version="0.9.28", Device="PC", Token="${authPayload.AccessToken}"`
+    const song: MusicInfo = {
+      source: 'tx',
+      songmid,
+      name: 'Ampcast Mapped Low Song',
+      singer: 'QQ Artist',
+      interval: '03:08',
+      types: [{ type: 'flac', size: '49 MB' }, { type: '320k', size: '5 MB' }],
+    }
+    db.prepare(`
+      INSERT INTO app_settings (key, value_json, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP
+    `).run(`virtual.song.${songmid}`, JSON.stringify({ song }))
+    upsertRemoteMapping({
+      localType: 'track',
+      localKey: `tx:${songmid}`,
+      remote: 'emby',
+      remoteId: 'emby-low-ogg-item',
+      raw: song,
+    })
+
+    const requestedQualities: string[] = []
+    const proxiedAudioPaths: string[] = []
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'script.example') {
+        const body = JSON.parse(String(init?.body ?? '{}')) as { quality?: string }
+        requestedQualities.push(body.quality ?? '')
+        return Response.json({ url: 'https://cdn.example/audio.flac' })
+      }
+      if (requestUrl.hostname === 'cdn.example') {
+        return new Response('flac-bytes', { headers: { 'content-type': 'audio/flac' } })
+      }
+      if (requestUrl.pathname.endsWith('/Items/emby-low-ogg-item')) {
+        return Response.json({
+          Id: 'emby-low-ogg-item',
+          Container: 'ogg',
+          Size: 5_000_000,
+          MediaSources: [{
+            Container: 'ogg',
+            Size: 5_000_000,
+            MediaStreams: [{ Type: 'Audio', Codec: 'vorbis', BitRate: 128_000 }],
+          }],
+        })
+      }
+      if (requestUrl.pathname.includes('/Audio/emby-low-ogg-item/')) {
+        proxiedAudioPaths.push(requestUrl.pathname)
+        return new Response('ogg-from-emby', { headers: { 'content-type': 'audio/ogg' } })
+      }
+      if (requestUrl.hostname === 'stat6.y.qq.com') return new Response('{}')
+      return Response.json({ Items: [], TotalRecordCount: 0 })
+    }) as typeof fetch
+
+    const response = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Audio/${encodeURIComponent(songId)}/universal?Container=opus%2Cwebm%7Copus%2Cmp3%2Caac%2Cflac&AudioCodec=aac&api_key=${authPayload.AccessToken}`, {
+        headers: { 'X-Emby-Authorization': authHeader },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Audio/${encodeURIComponent(songId)}/universal`),
+    )
+    assert.equal(response.status, 200)
+    assert.equal(await response.text(), 'flac-bytes')
+    assert.deepEqual(requestedQualities, ['flac'])
+    assert.deepEqual(proxiedAudioPaths, [])
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999048')
+    clearQQLoginCookie()
+    db.prepare('DELETE FROM app_settings WHERE key = ?').run(`virtual.song.${songmid}`)
+    db.prepare("DELETE FROM tracks WHERE songmid = ? AND source = 'tx'").run(songmid)
+    db.prepare("DELETE FROM remote_mappings WHERE local_type = 'track' AND local_key = ? AND remote = 'emby'").run(`tx:${songmid}`)
+    db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track' AND json_extract(payload_json, '$.songmid') = ?").run(songmid)
+    globalThis.fetch = originalFetch
+    if (originalLxMusicSourceScript === undefined) {
+      delete process.env.LX_MUSIC_SOURCE_SCRIPT
+    } else {
+      process.env.LX_MUSIC_SOURCE_SCRIPT = originalLxMusicSourceScript
+    }
+  }
+})
+
 test('local emby virtual audio passes through encrypted-extension preferred quality without LX ekey', async () => {
   const originalFetch = globalThis.fetch
   const originalLxMusicSourceScript = process.env.LX_MUSIC_SOURCE_SCRIPT

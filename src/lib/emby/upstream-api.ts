@@ -64,6 +64,63 @@ export async function searchEmbyAudioByPath(path: string): Promise<string | unde
   return match?.Id
 }
 
+export async function fetchEmbyAudioMediaInfo(itemId: string): Promise<{
+  id?: string
+  name?: string
+  path?: string
+  container?: string
+  size?: number
+  mediaSources?: Array<{
+    path?: string
+    container?: string
+    size?: number
+    mediaStreams?: Array<{
+      codec?: string
+      type?: string
+      bitRate?: number
+    }>
+  }>
+} | undefined> {
+  const data = await embyFetch<{
+    Id?: string
+    Name?: string
+    Path?: string
+    Container?: string
+    Size?: number
+    MediaSources?: Array<{
+      Path?: string
+      Container?: string
+      Size?: number
+      MediaStreams?: Array<{
+        Codec?: string
+        Type?: string
+        BitRate?: number
+      }>
+    }>
+  }>(`/Items/${encodeURIComponent(itemId)}?${new URLSearchParams({
+    Fields: 'Path,MediaSources,MediaStreams,Size',
+  })}`).catch(() => undefined)
+
+  if (!data) return undefined
+  return {
+    id: data.Id,
+    name: data.Name,
+    path: data.Path,
+    container: data.Container,
+    size: data.Size,
+    mediaSources: data.MediaSources?.map(source => ({
+      path: source.Path,
+      container: source.Container,
+      size: source.Size,
+      mediaStreams: source.MediaStreams?.map(stream => ({
+        codec: stream.Codec,
+        type: stream.Type,
+        bitRate: stream.BitRate,
+      })),
+    })),
+  }
+}
+
 export async function searchEmbyPlaylistByName(name: string): Promise<string | undefined> {
   const data = await embyFetch<{
     Items?: Array<{ Id?: string; Name?: string }>

@@ -1,5 +1,5 @@
 import { db } from '@/lib/db'
-import { isPlayableAudioPath } from '@/lib/cache/store'
+import { isPlayableAudioFileName, isPlayableAudioPath, markMissingTrackFile } from '@/lib/cache/store'
 import { deleteCachedResourcesForTrack } from '@/lib/cache/resources'
 import { appConfig } from '@/lib/config'
 import { getEffectiveSettings } from '@/lib/db/settings'
@@ -17,7 +17,9 @@ import {
 import { getDefaultUpstreamMusicLibraryLocation } from './auth'
 import { decodeVirtualId } from './virtual-ids'
 import { loadVirtualPlaylist } from './virtual-store'
+import { qualityFallbacks } from '@/lib/music-url/resolve'
 import type { SyncEmbyTrackJobPayload } from './sync'
+import type { MusicQuality } from '@/lib/types'
 import { syncMediaFilesToEmbyWebdav } from './webdav'
 
 export interface EmbySyncJobOptions {
@@ -29,11 +31,14 @@ export interface EmbySyncJobOptions {
 }
 
 interface CachedMediaRow {
+  id: number
+  quality: string
   finalPath?: string
   rawPath?: string
   lyricsPath?: string
   coverPath?: string
   status?: string
+  unsupportedPath?: string
 }
 
 const defaultCacheWaitMs = Number(process.env.EMBY_SYNC_CACHE_WAIT_MS ?? 30000)
@@ -68,6 +73,10 @@ export async function processOneEmbySyncJob(options: number | EmbySyncJobOptions
       pollIntervalMs: cachePollIntervalMs,
       requireLibraryFinalPath: shouldRequireLibraryFinalPath(),
     })
+    if (row?.unsupportedPath) {
+      failJob(job.id, `Cached file format is not syncable to Emby: ${row.unsupportedPath}`)
+      return true
+    }
     const mediaPath = row?.finalPath ?? row?.rawPath
     if (!mediaPath) {
       if (job.attempts >= maxAttempts) {
@@ -77,11 +86,6 @@ export async function processOneEmbySyncJob(options: number | EmbySyncJobOptions
       }
       return true
     }
-    if (!isPlayableAudioPath(mediaPath)) {
-      failJob(job.id, `Cached file format is not syncable to Emby: ${mediaPath}`)
-      return true
-    }
-
     const syncedMedia = row?.finalPath
       ? await syncMediaFilesToEmbyWebdav({
           finalPath: row.finalPath,
@@ -97,6 +101,7 @@ export async function processOneEmbySyncJob(options: number | EmbySyncJobOptions
       path: scanPath,
       timeoutMs: scanWaitMs,
       pollIntervalMs: scanPollIntervalMs,
+      requirePathMatch: Boolean(syncedMedia),
     })
     if (!embyItemId) {
       const message = `Emby scan triggered but item was not found for ${job.payload.musicInfo.name} at ${scanPath}`
@@ -160,8 +165,10 @@ async function waitForCachedMedia(
   options: { timeoutMs: number; pollIntervalMs: number; requireLibraryFinalPath?: boolean },
 ): Promise<CachedMediaRow | undefined> {
   const deadline = Date.now() + Math.max(0, options.timeoutMs)
+  const preferredQuality = preferredSyncQuality(payload)
   for (;;) {
-    const row = getCachedMedia(payload)
+    const row = getCachedMedia(payload, [preferredQuality])
+      ?? (Date.now() >= deadline ? getCachedMedia(payload, qualityFallbacks(preferredQuality).slice(1)) : undefined)
     if (row && isSyncableCachedMedia(row, options)) return row
     if (Date.now() >= deadline) return undefined
     await sleep(Math.max(100, Math.min(options.pollIntervalMs, deadline - Date.now())))
@@ -193,9 +200,36 @@ function syncedPlaylistName(playlistId?: string): string | undefined {
   return playlist?.name?.trim() ? playlist.name : undefined
 }
 
-function getCachedMedia(payload: SyncEmbyTrackJobPayload): CachedMediaRow | undefined {
-  return db.prepare(`
+function preferredSyncQuality(payload: SyncEmbyTrackJobPayload): MusicQuality {
+  const available = new Set((payload.musicInfo.types ?? [])
+    .map(item => item.type)
+    .filter((quality): quality is MusicQuality => quality === 'flac' || quality === '320k' || quality === '128k'))
+  return qualityFallbacks('flac').find(quality => available.has(quality))
+    ?? getCachedQualities(payload)[0]
+    ?? 'flac'
+}
+
+function getCachedQualities(payload: SyncEmbyTrackJobPayload): MusicQuality[] {
+  const rows = db.prepare(`
+    SELECT DISTINCT tf.quality
+    FROM track_files tf
+    INNER JOIN tracks t ON t.id = tf.track_id
+    WHERE t.source = ? AND t.songmid = ?
+      AND tf.status IN ('ready', 'tagging', 'cached_raw')
+  `).all(payload.source, payload.songmid) as Array<{ quality: string }>
+  const cached = new Set(rows
+    .map(row => row.quality)
+    .filter((quality): quality is MusicQuality => quality === 'flac' || quality === '320k' || quality === '128k'))
+  return qualityFallbacks('flac').filter(quality => cached.has(quality))
+}
+
+function getCachedMedia(payload: SyncEmbyTrackJobPayload, qualities: MusicQuality[] = qualityFallbacks('flac')): CachedMediaRow | undefined {
+  if (!qualities.length) return undefined
+  const qualityParams = Object.fromEntries(qualities.map((quality, index) => [`quality${index}`, quality]))
+  const rows = db.prepare(`
     SELECT
+      tf.id,
+      tf.quality,
       tf.final_path AS finalPath,
       tf.raw_path AS rawPath,
       tf.lyrics_path AS lyricsPath,
@@ -203,14 +237,29 @@ function getCachedMedia(payload: SyncEmbyTrackJobPayload): CachedMediaRow | unde
       tf.status
     FROM track_files tf
     INNER JOIN tracks t ON t.id = tf.track_id
-    WHERE t.source = ? AND t.songmid = ?
+    WHERE t.source = @source AND t.songmid = @songmid
+      AND tf.quality IN (${qualities.map((_, index) => `@quality${index}`).join(',')})
       AND tf.status IN ('ready', 'tagging', 'cached_raw')
     ORDER BY
       CASE tf.status WHEN 'ready' THEN 0 WHEN 'tagging' THEN 1 WHEN 'cached_raw' THEN 2 ELSE 3 END,
       CASE tf.quality WHEN 'flac' THEN 0 WHEN '320k' THEN 1 WHEN '128k' THEN 2 ELSE 3 END,
       tf.updated_at DESC
-    LIMIT 1
-  `).get(payload.source, payload.songmid) as CachedMediaRow | undefined
+  `).all({
+    source: payload.source,
+    songmid: payload.songmid,
+    ...qualityParams,
+  }) as CachedMediaRow[]
+
+  for (const row of rows) {
+    const mediaPath = row.finalPath ?? row.rawPath
+    if (!mediaPath) continue
+    if (!isPlayableAudioFileName(mediaPath)) {
+      return { ...row, unsupportedPath: mediaPath }
+    }
+    if (isPlayableAudioPath(mediaPath)) return row
+    markMissingTrackFile(row.id, `Cached file is missing or not playable: ${mediaPath}`)
+  }
+  return undefined
 }
 
 async function deleteLocalSyncedMedia(input: {
@@ -270,14 +319,16 @@ function normalizeRelativeMusicPath(value: string): string {
 
 async function waitForEmbyAudio(
   musicInfo: SyncEmbyTrackJobPayload['musicInfo'],
-  options: { path?: string; timeoutMs: number; pollIntervalMs: number },
+  options: { path?: string; timeoutMs: number; pollIntervalMs: number; requirePathMatch?: boolean },
 ): Promise<string | undefined> {
   const deadline = Date.now() + Math.max(0, options.timeoutMs)
   for (;;) {
     const embyItemIdByPath = options.path ? await searchEmbyAudioByPath(options.path) : undefined
     if (embyItemIdByPath) return embyItemIdByPath
-    const embyItemId = await searchEmbyAudioByName(musicInfo)
-    if (embyItemId) return embyItemId
+    if (!options.requirePathMatch) {
+      const embyItemId = await searchEmbyAudioByName(musicInfo)
+      if (embyItemId) return embyItemId
+    }
     if (Date.now() >= deadline) return undefined
     await sleep(Math.max(100, Math.min(options.pollIntervalMs, deadline - Date.now())))
   }

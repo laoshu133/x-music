@@ -35,7 +35,7 @@ import {
   rememberVirtualSong,
 } from './virtual-store'
 import { getRemoteMapping, upsertRemoteMapping } from '@/lib/db/remote-mappings'
-import { deleteEmbyItems, fetchEmbyJson, fetchEmbyText, searchEmbyAudioByName, searchEmbyPlaylistByName } from './upstream-api'
+import { deleteEmbyItems, fetchEmbyAudioMediaInfo, fetchEmbyJson, fetchEmbyText, searchEmbyAudioByName, searchEmbyPlaylistByName } from './upstream-api'
 import { proxyToUpstreamEmby } from './upstream-proxy'
 import { getAccountByEmbyUsername, getAccountByEmbyUserId, listAccounts, markAccountActive, markAccountLogin, type AccountRecord } from '@/lib/db/accounts'
 import { ensureUpstreamEmbyUserForAccount, getDefaultUpstreamMusicLibraryId } from './auth'
@@ -1115,14 +1115,12 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
 
   const musicInfo = stored.song
   if (request.method === 'HEAD') {
-    const playableHeaders = await virtualAudioHeadHeaders(musicInfo)
+    const playableHeaders = await virtualAudioHeadHeaders(musicInfo, preferredAudioQualityForRequest(request, musicInfo))
     return markRequestSource(new Response(null, { status: 200, headers: playableHeaders }), playableHeaders.get('content-length') ? 'local' : 'upstream')
   }
 
   const preferredQuality = preferredAudioQualityForRequest(request, musicInfo)
-  const playableFile = qualityFallbacks(preferredQuality)
-    .map((quality) => getPlayableTrackFile(musicInfo.source, musicInfo.songmid, quality))
-    .find((file) => file !== undefined)
+  const playableFile = getPreferredPlayableFile(musicInfo, preferredQuality)
   const localPath = playableFile?.finalPath ?? playableFile?.rawPath
 
   if (playableFile && localPath) {
@@ -1153,7 +1151,7 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
   }
 
   const mapped = await resolveEmbyTrackMapping(musicInfo)
-  if (mapped) {
+  if (mapped && await shouldUseMappedEmbyAudio(mapped, musicInfo, preferredQuality)) {
     const action = embyPath.split('/')[3] ?? 'universal'
     const proxied = await proxyToUpstreamEmby(request, `/Audio/${encodeURIComponent(mapped)}/${action}`).catch(() => undefined)
     if (proxied?.ok || proxied?.status === 206) return proxied
@@ -1247,12 +1245,52 @@ async function waitForActivePlayableFile(musicInfo: MusicInfo, preferredQuality:
 
   for (let attempt = 0; attempt < 20; attempt += 1) {
     await new Promise(resolve => setTimeout(resolve, 250))
-    const file = qualities
-      .map((quality) => getPlayableTrackFile(musicInfo.source, musicInfo.songmid, quality))
-      .find((candidate) => candidate !== undefined)
+    const file = getPreferredPlayableFile(musicInfo, preferredQuality)
     if (file) return file
   }
   return undefined
+}
+
+function getPreferredPlayableFile(musicInfo: MusicInfo, preferredQuality: MusicQuality): ReturnType<typeof getPlayableTrackFile> | undefined {
+  const preferredFile = getPlayableTrackFile(musicInfo.source, musicInfo.songmid, preferredQuality)
+  if (preferredFile) return preferredFile
+  if (shouldRefreshPreferredQualityBeforeLocalFallback(musicInfo, preferredQuality)) return undefined
+  return qualityFallbacks(preferredQuality)
+    .slice(1)
+    .map((quality) => getPlayableTrackFile(musicInfo.source, musicInfo.songmid, quality))
+    .find((candidate) => candidate !== undefined)
+}
+
+function shouldRefreshPreferredQualityBeforeLocalFallback(musicInfo: MusicInfo, preferredQuality: MusicQuality): boolean {
+  return preferredQuality === 'flac' && availableSongQualities(musicInfo).includes('flac')
+}
+
+async function shouldUseMappedEmbyAudio(mappedItemId: string, musicInfo: MusicInfo, preferredQuality: MusicQuality): Promise<boolean> {
+  if (!shouldRefreshPreferredQualityBeforeLocalFallback(musicInfo, preferredQuality)) return true
+  const info = await fetchEmbyAudioMediaInfo(mappedItemId)
+  if (!info) return false
+  return embyMediaLooksLikeQuality(info, preferredQuality, readSongQualitySize(musicInfo, preferredQuality))
+}
+
+function embyMediaLooksLikeQuality(
+  info: Awaited<ReturnType<typeof fetchEmbyAudioMediaInfo>>,
+  preferredQuality: MusicQuality,
+  expectedSize?: number,
+): boolean {
+  if (!info) return true
+  const mediaSources = info.mediaSources?.length
+    ? info.mediaSources
+    : [{ container: info.container, path: info.path, size: info.size, mediaStreams: [] }]
+
+  return mediaSources.some(source => {
+    const container = (source.container ?? path.extname(source.path ?? '').slice(1)).toLowerCase()
+    const audioStreams = source.mediaStreams?.filter(stream => (stream.type ?? '').toLowerCase() === 'audio') ?? []
+    if (preferredQuality === 'flac') {
+      if (container.includes('flac') || audioStreams.some(stream => (stream.codec ?? '').toLowerCase() === 'flac')) return true
+      return Boolean(expectedSize && source.size && source.size >= expectedSize * 0.8)
+    }
+    return true
+  })
 }
 
 function syncQQPlayHistoryFromStoredUrlBestEffort(request: Request, musicInfo: MusicInfo, quality: MusicQuality): void {
@@ -1319,10 +1357,8 @@ async function resolveEmbyTrackMapping(musicInfo: MusicInfo): Promise<string | u
   return mapped
 }
 
-async function virtualAudioHeadHeaders(musicInfo: MusicInfo): Promise<Headers> {
-  const playableFile = qualityFallbacks('flac')
-    .map((quality) => getPlayableTrackFile(musicInfo.source, musicInfo.songmid, quality))
-    .find((file) => file !== undefined)
+async function virtualAudioHeadHeaders(musicInfo: MusicInfo, preferredQuality: MusicQuality = 'flac'): Promise<Headers> {
+  const playableFile = getPreferredPlayableFile(musicInfo, preferredQuality)
   const localPath = playableFile?.finalPath ?? playableFile?.rawPath
 
   if (localPath) {
@@ -1354,9 +1390,18 @@ function preferredAudioQualityForRequest(request: Request, musicInfo: MusicInfo)
   const container = (url.searchParams.get('Container') ?? url.searchParams.get('container') ?? '').toLowerCase()
   const audioCodec = (url.searchParams.get('AudioCodec') ?? url.searchParams.get('audioCodec') ?? '').toLowerCase()
   const available = availableSongQualities(musicInfo)
+  if (containerSupportsFlac(container) && available.includes('flac')) return 'flac'
   if ((container.includes('mp3') || audioCodec.includes('mp3')) && available.includes('320k')) return '320k'
   if ((container.includes('mp3') || audioCodec.includes('mp3')) && available.includes('128k')) return '128k'
   return available[0] ?? 'flac'
+}
+
+function containerSupportsFlac(container: string): boolean {
+  return container
+    .split(',')
+    .flatMap(item => item.split('|'))
+    .map(item => item.trim())
+    .includes('flac')
 }
 
 function availableSongQualities(musicInfo: MusicInfo): MusicQuality[] {

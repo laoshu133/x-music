@@ -110,7 +110,23 @@ export const getPlayableTrackFile = (source: OnlineSource, songmid: string, qual
   const record = row ? mapTrackFile(row) : undefined
   if (record?.finalPath && isPlayableAudioPath(record.finalPath)) return record
   if (record?.rawPath && isPlayableAudioPath(record.rawPath)) return record
+  if (record && (record.finalPath || record.rawPath)) {
+    markMissingTrackFile(record.id, `Cached file is missing or not playable: ${record.finalPath ?? record.rawPath}`)
+  }
   return undefined
+}
+
+export const markMissingTrackFile = (trackFileId: number, error = 'Cached file is missing on disk'): void => {
+  db.prepare(`
+    UPDATE track_files
+    SET status = 'missing',
+        error = @error,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE id = @id
+  `).run({
+    id: trackFileId,
+    error,
+  })
 }
 
 export const isPlayableAudioFileName = (filePath: string): boolean => {
