@@ -175,11 +175,15 @@ export function syncQQPlayHistoryBestEffort(input: {
   void syncQQPlayHistory(input).then((result) => {
     if (!result.synced) {
       const detail = result.skipped ? result.reason : result.error
-      console.warn(`QQ play history sync skipped/failed for ${input.musicInfo.songmid}: ${detail}`)
+      if (process.env.X_MUSIC_DEBUG_BACKGROUND_SYNC === '1') {
+        console.debug(`QQ play history sync skipped/failed for ${input.musicInfo.songmid}: ${detail}`)
+      }
     }
   }).catch((error: unknown) => {
-    console.warn(
-      `QQ play history sync crashed for ${input.musicInfo.songmid}: ${error instanceof Error ? error.message : String(error)}`,
-    )
+    if (process.env.X_MUSIC_DEBUG_BACKGROUND_SYNC === '1') {
+      console.debug(
+        `QQ play history sync crashed for ${input.musicInfo.songmid}: ${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
   })
 }

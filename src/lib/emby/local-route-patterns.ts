@@ -1,5 +1,5 @@
 export function isUserRequest(path: string): boolean {
-  return /^\/Users\/[^/]+$/i.test(path)
+  return pathEquals(path, '/Users/Current') || /^\/Users\/[^/]+$/i.test(path)
 }
 
 export function isUserViewsRequest(path: string): boolean {

@@ -9,10 +9,12 @@ export function ensureEmbyMasterCachedBestEffort(input: {
   track: TrackRecord
 }): void {
   void ensureEmbyMasterCached(input).catch((error: unknown) => {
-    console.warn(
-      `failed to cache Emby master for ${input.musicInfo.source}:${input.musicInfo.songmid}`,
-      error,
-    )
+    if (process.env.X_MUSIC_DEBUG_BACKGROUND_SYNC === '1') {
+      console.debug(
+        `failed to cache Emby master for ${input.musicInfo.source}:${input.musicInfo.songmid}`,
+        error,
+      )
+    }
   })
 }
 

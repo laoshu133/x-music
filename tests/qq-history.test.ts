@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { syncQQPlayHistory } from '@/lib/qq/history'
+import { syncQQPlayHistory, syncQQPlayHistoryBestEffort } from '@/lib/qq/history'
 
 const originalFetch = globalThis.fetch
 
@@ -115,4 +115,43 @@ test('syncQQPlayHistory reports failure when sdk playback report is rejected', a
 
   assert.equal(result.synced, false)
   assert.equal('error' in result ? result.error : '', 'QQ play history sdk report request failed')
+})
+
+test('syncQQPlayHistoryBestEffort is quiet by default when network sync fails', async () => {
+  const originalWarn = console.warn
+  const originalDebug = console.debug
+  const originalDebugEnv = process.env.X_MUSIC_DEBUG_BACKGROUND_SYNC
+  const warnings: unknown[] = []
+  const debugs: unknown[] = []
+  try {
+    delete process.env.X_MUSIC_DEBUG_BACKGROUND_SYNC
+    console.warn = (...args: unknown[]) => { warnings.push(args) }
+    console.debug = (...args: unknown[]) => { debugs.push(args) }
+    globalThis.fetch = (async () => {
+      throw new TypeError('fetch failed')
+    }) as typeof fetch
+
+    syncQQPlayHistoryBestEffort({
+      cookie: 'uin=o123456; qm_keyst=test-key;',
+      quality: '320k',
+      playUrl: 'https://cdn.example/song.mp3',
+      musicInfo: {
+        source: 'tx',
+        songmid: 'quiet-history-song',
+        name: 'Quiet History Song',
+        singer: 'QQ Artist',
+      },
+    })
+    await new Promise(resolve => setTimeout(resolve, 0))
+    assert.deepEqual(warnings, [])
+    assert.deepEqual(debugs, [])
+  } finally {
+    console.warn = originalWarn
+    console.debug = originalDebug
+    if (originalDebugEnv === undefined) {
+      delete process.env.X_MUSIC_DEBUG_BACKGROUND_SYNC
+    } else {
+      process.env.X_MUSIC_DEBUG_BACKGROUND_SYNC = originalDebugEnv
+    }
+  }
 })

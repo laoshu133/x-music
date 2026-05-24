@@ -48,6 +48,10 @@ test('emby client compatibility reads access token from common headers and query
     })),
     'auth-token',
   )
+  assert.equal(
+    readClientAccessToken(new Request('http://local/Users/Current?api_key=query-api-key')),
+    'query-api-key',
+  )
 })
 
 test('emby route compatibility accepts legacy and modern mutation endpoints', () => {

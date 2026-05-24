@@ -175,7 +175,7 @@ const LOCAL_ROUTES: LocalRoute[] = [
     name: 'user',
     authorize: true,
     match: ({ request, embyPath }) => request.method === 'GET' && isUserRequest(embyPath),
-    handle: ({ embyPath }) => handleUserRequest(embyPath),
+    handle: ({ request, embyPath }) => handleUserRequest(request, embyPath),
   },
   {
     name: 'user-views',
@@ -542,9 +542,11 @@ function parseTrackRawJson(rawJson: string | undefined): unknown {
   }
 }
 
-function handleUserRequest(path: string): Response | undefined {
+function handleUserRequest(request: Request, path: string): Response | undefined {
   const requestedUserId = decodeURIComponent(path.split('/')[2] ?? '')
-  const account = requestedUserId ? findAccountByLocalOrUpstreamUserId(requestedUserId) : undefined
+  const account = pathEquals(path, '/Users/Current')
+    ? authorizedLocalAccount(request)
+    : requestedUserId ? findAccountByLocalOrUpstreamUserId(requestedUserId) : undefined
   if (!account) {
     return Response.json({ error: 'User not found' }, { status: 404 })
   }
@@ -1230,7 +1232,9 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
 
   const track = ensureTrack(musicInfo)
   try {
-    const resolved = await resolvePlayableUpstreamResponse(musicInfo, preferredQuality, track, request)
+    const resolved = await resolvePlayableUpstreamResponse(musicInfo, preferredQuality, track, request, {
+      allowFullFallback: shouldAllowFullAudioFallback(request),
+    })
     insertPlayEvent(track.id, resolved.quality, authorizedLocalAccount(request)?.qqUin)
     syncQQPlayHistoryBestEffort({
       cookie: qqCookieForRequest(request),
@@ -1266,6 +1270,7 @@ async function resolvePlayableUpstreamResponse(
   preferredQuality: MusicQuality,
   track: TrackRecord,
   request: Request,
+  options: { allowFullFallback?: boolean } = {},
 ): Promise<{
   url: string
   quality: MusicQuality
@@ -1275,7 +1280,7 @@ async function resolvePlayableUpstreamResponse(
   const attempts: Array<{ quality: MusicQuality; error: string }> = []
   let encryptedQQRequiresKey = false
 
-  for (const quality of qualityFallbacks(preferredQuality)) {
+  for (const quality of audioQualityFallbacks(preferredQuality, musicInfo, options)) {
     upsertTrackFileStatus(track.id, quality, 'resolving_url')
     try {
       const resolved = await resolveMusicUrl(musicInfo, quality)
@@ -1491,9 +1496,7 @@ function syncQQPlayHistoryFromStoredUrlBestEffort(request: Request, musicInfo: M
   try {
     if (!getQQLoginState({ cookie })) return
   } catch (error) {
-    console.warn(
-      `QQ play history sync skipped for ${musicInfo.songmid}: ${error instanceof Error ? error.message : String(error)}`,
-    )
+    debugBackgroundSync(`QQ play history sync skipped for ${musicInfo.songmid}: ${error instanceof Error ? error.message : String(error)}`)
     return
   }
 
@@ -1505,10 +1508,12 @@ function syncQQPlayHistoryFromStoredUrlBestEffort(request: Request, musicInfo: M
       playUrl: resolved.url,
     })
   }).catch((error: unknown) => {
-    console.warn(
-      `QQ play history URL resolve failed for ${musicInfo.songmid}: ${error instanceof Error ? error.message : String(error)}`,
-    )
+    debugBackgroundSync(`QQ play history URL resolve failed for ${musicInfo.songmid}: ${error instanceof Error ? error.message : String(error)}`)
   })
+}
+
+function debugBackgroundSync(message: string, error?: unknown): void {
+  if (process.env.X_MUSIC_DEBUG_BACKGROUND_SYNC === '1') console.debug(message, error ?? '')
 }
 
 function qqCookieForRequest(request: Request): string | undefined {
@@ -1596,6 +1601,25 @@ function preferredAudioQualityForPath(pathname: string): MusicQuality | undefine
   if (ext === '.flac') return 'flac'
   if (ext === '.mp3') return '320k'
   return undefined
+}
+
+function shouldAllowFullAudioFallback(request: Request): boolean {
+  const userAgent = request.headers.get('user-agent')?.toLowerCase() ?? ''
+  if (userAgent.includes('narjo')) return true
+  const pathname = new URL(request.url).pathname.toLowerCase()
+  return pathname.endsWith('.mp3') || pathname.endsWith('.flac')
+}
+
+function audioQualityFallbacks(
+  preferredQuality: MusicQuality,
+  musicInfo: MusicInfo,
+  options: { allowFullFallback?: boolean } = {},
+): MusicQuality[] {
+  const fallback = qualityFallbacks(preferredQuality)
+  if (!options.allowFullFallback) return fallback
+  const available = availableSongQualities(musicInfo)
+  const ordered = [preferredQuality, ...available, ...fallback].filter((quality, index, values) => values.indexOf(quality) === index)
+  return ordered.length ? ordered : fallback
 }
 
 function containerSupportsFlac(container: string): boolean {

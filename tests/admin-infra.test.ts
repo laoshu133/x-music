@@ -769,6 +769,37 @@ test('local emby authenticate accepts mobile-compatible casing and form credenti
   }
 })
 
+test('narjo users current returns the authenticated local user', async () => {
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999117')
+    saveQQLoginCookie('uin=o999117; qm_keyst=test-key')
+    markAccountUpstreamBound('999117')
+    const account = getAccountByQQ('999117')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+
+    const response = await dispatchEmbyRequest(
+      new Request(`http://local/Users/Current?api_key=${authPayload.AccessToken}`, {
+        headers: { 'user-agent': 'Narjo/93' },
+      }),
+      stripOptionalEmbyPrefix('/Users/Current'),
+    )
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.Id, authPayload.User.Id)
+    assert.equal(payload.Name, account.embyUsername)
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999117')
+    clearQQLoginCookie()
+  }
+})
+
 test('account emby password can be manually changed', () => {
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999026')
@@ -4338,6 +4369,80 @@ test('narjo virtual audio GET with extension suffix is handled locally', async (
     db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track' AND json_extract(payload_json, '$.songmid') = ?").run('qq-narjo-song-1')
     rmSync(localAudioPath, { force: true })
     globalThis.fetch = originalFetch
+  }
+})
+
+test('narjo mp3 audio request falls back to higher quality when mp3 URL fails', async () => {
+  const originalFetch = globalThis.fetch
+  const originalLxMusicSourceScript = process.env.LX_MUSIC_SOURCE_SCRIPT
+  const songmid = `qq-narjo-mp3-fallback-${Date.now()}`
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999118')
+    process.env.LX_MUSIC_SOURCE_SCRIPT = 'https://script.example/script/lxmusic?key=test-key'
+    saveQQLoginCookie('uin=o999118; qm_keyst=test-key')
+    markAccountUpstreamBound('999118')
+    const account = getAccountByQQ('999118')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const songId = encodeVirtualId({ kind: 'qq-song', songmid })
+    const authHeader = `MediaBrowser Client="Narjo", Version="93", Device="iOS", Token="${authPayload.AccessToken}"`
+    const song: MusicInfo = {
+      source: 'tx',
+      songmid,
+      name: 'Narjo MP3 Fallback Song',
+      singer: 'QQ Artist',
+      interval: '03:08',
+      types: [{ type: 'flac', size: '49 MB' }, { type: '320k', size: '5 MB' }],
+    }
+    db.prepare(`
+      INSERT INTO app_settings (key, value_json, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP
+    `).run(`virtual.song.${songmid}`, JSON.stringify({ song }))
+
+    const requestedQualities: string[] = []
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'script.example') {
+        const body = JSON.parse(String(init?.body ?? '{}')) as { quality?: string }
+        requestedQualities.push(body.quality ?? '')
+        if (body.quality === '320k') throw new TypeError('fetch failed')
+        return Response.json({ url: `https://cdn.example/audio-${body.quality}.flac` })
+      }
+      if (requestUrl.hostname === 'cdn.example') {
+        return new Response(`audio-${requestUrl.pathname}`, { headers: { 'content-type': 'audio/flac' } })
+      }
+      if (requestUrl.hostname === 'stat6.y.qq.com') return new Response('{}')
+      return Response.json({ Items: [], TotalRecordCount: 0 })
+    }) as typeof fetch
+
+    const response = await dispatchEmbyRequest(
+      new Request(`http://local/Audio/${encodeURIComponent(songId)}/universal.mp3?api_key=${authPayload.AccessToken}`, {
+        headers: { 'X-Emby-Authorization': authHeader, 'user-agent': 'Narjo/93' },
+      }),
+      stripOptionalEmbyPrefix(`/Audio/${encodeURIComponent(songId)}/universal.mp3`),
+    )
+    assert.equal(response.status, 200)
+    assert.equal(await response.text(), 'audio-/audio-flac.flac')
+    assert.deepEqual(requestedQualities, ['320k', 'flac'])
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999118')
+    clearQQLoginCookie()
+    db.prepare('DELETE FROM app_settings WHERE key = ?').run(`virtual.song.${songmid}`)
+    db.prepare("DELETE FROM tracks WHERE songmid = ? AND source = 'tx'").run(songmid)
+    db.prepare("DELETE FROM jobs WHERE json_extract(payload_json, '$.songmid') = ?").run(songmid)
+    globalThis.fetch = originalFetch
+    if (originalLxMusicSourceScript === undefined) {
+      delete process.env.LX_MUSIC_SOURCE_SCRIPT
+    } else {
+      process.env.LX_MUSIC_SOURCE_SCRIPT = originalLxMusicSourceScript
+    }
   }
 })
 
