@@ -16,6 +16,10 @@ interface TeeResult {
   completion: Promise<void>
 }
 
+interface UpstreamTeeOptions {
+  librarySync?: boolean
+}
+
 interface EncryptedTeeResult {
   body: ReadableStream<Uint8Array>
   completion: Promise<void>
@@ -67,6 +71,7 @@ export const createUpstreamTeeResponse = async (
   quality: MusicQuality,
   request: Request,
   ekey?: string,
+  options: UpstreamTeeOptions = {},
 ): Promise<TeeResult> => {
   await mkdir(appConfig.stagingDir, { recursive: true })
   await mkdir(appConfig.inboxDir, { recursive: true })
@@ -101,12 +106,14 @@ export const createUpstreamTeeResponse = async (
       fallbackExtension: extension,
       track,
       quality,
+      librarySync: options.librarySync ?? true,
     })
     return createEncryptedUpstreamResponse({
       upstreamBody: upstream.body,
       track,
       quality,
       ekey,
+      librarySync: options.librarySync ?? true,
     })
   }
   if (!isPlayableAudioFileName(extension)) {
@@ -129,6 +136,7 @@ export const createUpstreamTeeResponse = async (
     shouldCache,
     track,
     quality,
+    librarySync: options.librarySync ?? true,
   })
   const headers = buildProxyHeaders(upstream.headers, shouldCache, upstreamUrl)
   return {
@@ -145,11 +153,13 @@ async function createEncryptedUpstreamResponse({
   track,
   quality,
   ekey,
+  librarySync,
 }: {
   upstreamBody: ReadableStream<Uint8Array>
   track: TrackRecord
   quality: MusicQuality
   ekey: string
+  librarySync: boolean
 }): Promise<TeeResult> {
   const cacheKey = `${track.source}-${safeFilePart(track.songmid)}-${quality}-${Date.now()}`
   const partPath = path.join(appConfig.stagingDir, `${cacheKey}.part`)
@@ -165,6 +175,7 @@ async function createEncryptedUpstreamResponse({
     track,
     quality,
     decryptor,
+    librarySync,
   })
   return {
     response: new Response(body, {
@@ -184,11 +195,13 @@ async function createPossiblyPlainEncryptedUpstreamResponse({
   fallbackExtension,
   track,
   quality,
+  librarySync,
 }: {
   upstreamBody: ReadableStream<Uint8Array>
   fallbackExtension: string
   track: TrackRecord
   quality: MusicQuality
+  librarySync: boolean
 }): Promise<TeeResult> {
   const cacheKey = `${track.source}-${safeFilePart(track.songmid)}-${quality}-${Date.now()}`
   const partPath = path.join(appConfig.stagingDir, `${cacheKey}.part`)
@@ -208,6 +221,7 @@ async function createPossiblyPlainEncryptedUpstreamResponse({
     shouldCache: true,
     track,
     quality,
+    librarySync,
   })
 
   return {
@@ -232,6 +246,7 @@ const teeUpstreamToClientAndCache = ({
   shouldCache,
   track,
   quality,
+  librarySync,
 }: {
   upstreamBody?: ReadableStream<Uint8Array>
   reader?: ReadableStreamDefaultReader<Uint8Array>
@@ -241,6 +256,7 @@ const teeUpstreamToClientAndCache = ({
   shouldCache: boolean
   track: TrackRecord
   quality: MusicQuality
+  librarySync: boolean
 }): { body: ReadableStream<Uint8Array>; completion: Promise<void> } => {
   const reader = providedReader ?? upstreamBody?.getReader()
   if (!reader) throw new Error('upstream reader was not provided')
@@ -273,19 +289,21 @@ const teeUpstreamToClientAndCache = ({
       if (writeFailed) throw writeFailed
 
       await rename(partPath, inboxPath)
-      const completedFile = upsertTrackFileStatus(track.id, quality, 'tagging', {
+      const completedFile = upsertTrackFileStatus(track.id, quality, librarySync ? 'tagging' : 'cached_raw', {
         rawPath: inboxPath,
-        finalPath: inboxPath,
+        finalPath: librarySync ? inboxPath : undefined,
         sizeBytes: writtenBytes,
         sha256: hash.digest('hex'),
       })
-      enqueueTagJob(completedFile, track)
-      enqueueEmbyTrackSync({
-        source: track.source,
-        songmid: track.songmid,
-        musicInfo: trackToMusicInfo(track),
-      })
-      triggerInlineTagging()
+      if (librarySync) {
+        enqueueTagJob(completedFile, track)
+        enqueueEmbyTrackSync({
+          source: track.source,
+          songmid: track.songmid,
+          musicInfo: trackToMusicInfo(track),
+        })
+        triggerInlineTagging()
+      }
       resolveCompletion()
     } catch (error) {
       await unlink(partPath).catch(() => undefined)
@@ -356,6 +374,7 @@ const teeEncryptedUpstreamToClientAndCache = ({
   track,
   quality,
   decryptor,
+  librarySync,
 }: {
   upstreamBody: ReadableStream<Uint8Array>
   partPath: string
@@ -363,6 +382,7 @@ const teeEncryptedUpstreamToClientAndCache = ({
   track: TrackRecord
   quality: MusicQuality
   decryptor: { decrypt(buffer: Uint8Array, offset: number): void }
+  librarySync: boolean
 }): EncryptedTeeResult => {
   const reader = upstreamBody.getReader()
   const hash = crypto.createHash('sha256')
@@ -402,19 +422,21 @@ const teeEncryptedUpstreamToClientAndCache = ({
       const extension = finalExtension ?? '.mp3'
       const inboxPath = path.join(appConfig.inboxDir, `${cacheKey}${extension}`)
       await rename(partPath, inboxPath)
-      const completedFile = upsertTrackFileStatus(track.id, quality, 'tagging', {
+      const completedFile = upsertTrackFileStatus(track.id, quality, librarySync ? 'tagging' : 'cached_raw', {
         rawPath: inboxPath,
-        finalPath: inboxPath,
+        finalPath: librarySync ? inboxPath : undefined,
         sizeBytes: writtenBytes,
         sha256: hash.digest('hex'),
       })
-      enqueueTagJob(completedFile, track)
-      enqueueEmbyTrackSync({
-        source: track.source,
-        songmid: track.songmid,
-        musicInfo: trackToMusicInfo(track),
-      })
-      triggerInlineTagging()
+      if (librarySync) {
+        enqueueTagJob(completedFile, track)
+        enqueueEmbyTrackSync({
+          source: track.source,
+          songmid: track.songmid,
+          musicInfo: trackToMusicInfo(track),
+        })
+        triggerInlineTagging()
+      }
       resolveCompletion()
     } catch (error) {
       await unlink(partPath).catch(() => undefined)

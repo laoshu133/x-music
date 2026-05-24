@@ -5,6 +5,9 @@ import {
   isFavoriteItemMutation,
   isAudioRequest,
   isItemsDeleteRequest,
+  isLyricsRequest,
+  isSubsonicGetSongRequest,
+  isSubsonicLyricsRequest,
   isSubtitleStreamRequest,
 } from '@/lib/emby/local-route-patterns'
 import { readClientAccessToken } from '@/lib/emby/client-compat'
@@ -64,4 +67,11 @@ test('emby audio route compatibility accepts Narjo extension suffixes', () => {
   assert.equal(isAudioRequest(`/Audio/${itemId}/stream`), true)
   assert.equal(isAudioRequest(`/Audio/${itemId}/universal.flac`), true)
   assert.equal(isAudioRequest(`/Audio/${itemId}/stream.mp3`), true)
+})
+
+test('narjo lyric and subsonic compatibility paths are handled locally', () => {
+  const itemId = 'mix_virtual_song'
+  assert.equal(isLyricsRequest(`/Audio/${itemId}/Lyrics`), true)
+  assert.equal(isSubsonicLyricsRequest('/rest/getLyricsBySongId.view'), true)
+  assert.equal(isSubsonicGetSongRequest('/rest/getSong.view'), true)
 })

@@ -18,6 +18,7 @@ import { getDefaultUpstreamMusicLibraryLocation } from './auth'
 import { decodeVirtualId } from './virtual-ids'
 import { loadVirtualPlaylist } from './virtual-store'
 import { qualityFallbacks } from '@/lib/music-url/resolve'
+import { highestAvailableQuality } from '@/lib/quality'
 import type { SyncEmbyTrackJobPayload } from './sync'
 import type { MusicQuality } from '@/lib/types'
 import { syncMediaFilesToEmbyWebdav } from './webdav'
@@ -174,7 +175,6 @@ async function waitForCachedMedia(
   const preferredQuality = preferredSyncQuality(payload)
   for (;;) {
     const row = getCachedMedia(payload, [preferredQuality])
-      ?? (Date.now() >= deadline ? getCachedMedia(payload, qualityFallbacks(preferredQuality).slice(1)) : undefined)
     if (row && isSyncableCachedMedia(row, options)) return row
     if (Date.now() >= deadline) return undefined
     await sleep(Math.max(100, Math.min(options.pollIntervalMs, deadline - Date.now())))
@@ -207,12 +207,7 @@ function syncedPlaylistName(playlistId?: string): string | undefined {
 }
 
 function preferredSyncQuality(payload: SyncEmbyTrackJobPayload): MusicQuality {
-  const available = new Set((payload.musicInfo.types ?? [])
-    .map(item => item.type)
-    .filter((quality): quality is MusicQuality => quality === 'flac' || quality === '320k' || quality === '128k'))
-  return qualityFallbacks('flac').find(quality => available.has(quality))
-    ?? getCachedQualities(payload)[0]
-    ?? 'flac'
+  return highestAvailableQuality(payload.musicInfo)
 }
 
 function getCachedQualities(payload: SyncEmbyTrackJobPayload): MusicQuality[] {

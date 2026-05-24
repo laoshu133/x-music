@@ -1,7 +1,9 @@
 import { ensureTrack, getPlayableTrackFile, insertPlayEvent, upsertTrackFileStatus } from '@/lib/cache/store'
 import { createUpstreamTeeResponse, streamLocalFile } from '@/lib/cache/stream'
 import { encryptedQQAudioRequiresKeyMessage, isEncryptedQQAudioFileName, isEncryptedQQAudioRequiresKeyError } from '@/lib/cache/decrypt'
+import { ensureEmbyMasterCachedBestEffort } from '@/lib/emby/master'
 import { MusicUrlConfigError, MusicUrlResolveError, parseRequestedQuality, qualityFallbacks, resolveMusicUrl, resolveMusicUrlWithFallback } from '@/lib/music-url/resolve'
+import { isHighestAvailableQuality } from '@/lib/quality'
 import { getQQLoginState, syncQQPlayHistoryBestEffort } from '@/lib/qq'
 import { logCompletedRequest, logFailedRequest, markRequestSource } from '@/lib/request-log'
 import type { MusicInfo, MusicQuality, OnlineSource } from '@/lib/types'
@@ -59,8 +61,11 @@ const handlePlayRequest = async (request: Request, input: PlayRequest): Promise<
     .find((file) => file !== undefined)
   const localPath = playableFile?.finalPath ?? playableFile?.rawPath
   if (playableFile && localPath) {
+    const track = ensureTrack(musicInfo)
+    if (!isHighestAvailableQuality(musicInfo, playableFile.quality)) {
+      ensureEmbyMasterCachedBestEffort({ musicInfo, track })
+    }
     if (shouldRecordPlayback) {
-      const track = ensureTrack(musicInfo)
       insertPlayEvent(track.id, playableFile.quality)
       syncQQPlayHistoryFromResolvedUrlBestEffort({
         cookie: request.headers.get('x-qq-music-cookie') ?? undefined,
@@ -82,6 +87,9 @@ const handlePlayRequest = async (request: Request, input: PlayRequest): Promise<
         quality: resolved.quality,
         playUrl: resolved.url,
       })
+    }
+    if (!isHighestAvailableQuality(musicInfo, resolved.quality)) {
+      ensureEmbyMasterCachedBestEffort({ musicInfo, track })
     }
 
     resolved.completion.catch((error: unknown) => {
@@ -124,7 +132,14 @@ const resolvePlayableUpstreamResponse = async (
         upsertTrackFileStatus(track.id, quality, 'failed', { error: message })
         continue
       }
-      const { response, completion } = await createUpstreamTeeResponse(resolved.url, track, resolved.quality, request, resolved.ekey)
+      const { response, completion } = await createUpstreamTeeResponse(
+        resolved.url,
+        track,
+        resolved.quality,
+        request,
+        resolved.ekey,
+        { librarySync: isHighestAvailableQuality(musicInfo, resolved.quality) },
+      )
       return {
         url: resolved.url,
         quality: resolved.quality,

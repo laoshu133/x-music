@@ -3525,6 +3525,16 @@ test('local emby virtual song lyrics return timed lyric lines', async () => {
     assert.equal(raw.status, 200)
     assert.match(await raw.text(), /第二句/)
 
+    const audioLyrics = await dispatchEmbyRequest(
+      new Request(`http://local/Audio/${encodeURIComponent(songId)}/Lyrics`, {
+        headers: { authorization: authHeader, 'user-agent': 'Narjo/93' },
+      }),
+      stripOptionalEmbyPrefix(`/Audio/${encodeURIComponent(songId)}/Lyrics`),
+    )
+    assert.equal(audioLyrics.status, 200)
+    const audioLyricsPayload = await audioLyrics.json()
+    assert.deepEqual(audioLyricsPayload.Lyrics, payload.Lyrics)
+
     const playbackInfo = await dispatchEmbyRequest(
       new Request(`http://local/Items/${encodeURIComponent(songId)}/PlaybackInfo`, {
         headers: { authorization: authHeader },
@@ -3588,6 +3598,104 @@ test('local emby virtual song lyrics return timed lyric lines', async () => {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999024')
     clearQQLoginCookie()
     db.prepare("DELETE FROM app_settings WHERE key = 'virtual.song.qq-lyrics-song-1'").run()
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('narjo subsonic lyric requests resolve mapped upstream item ids locally', async () => {
+  const originalFetch = globalThis.fetch
+  const songmid = 'qq-narjo-subsonic-lyrics'
+  const remoteId = '11761871'
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999115')
+    db.prepare('DELETE FROM app_settings WHERE key = ?').run(`virtual.song.${songmid}`)
+    db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run(songmid)
+    db.prepare("DELETE FROM remote_mappings WHERE local_type = 'track' AND local_key = ? AND remote = 'emby'").run(`tx:${songmid}`)
+    saveQQLoginCookie('uin=o999115; qm_keyst=test-key')
+    markAccountUpstreamBound('999115')
+    const account = getAccountByQQ('999115')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const authHeader = `MediaBrowser Client="Narjo", Version="93", Device="iOS", Token="${authPayload.AccessToken}"`
+    const song: MusicInfo = {
+      source: 'tx',
+      songmid,
+      name: 'Narjo Subsonic Lyrics',
+      singer: 'QQ Lyrics Artist',
+      albumName: 'QQ Lyrics Album',
+      interval: '03:08',
+      types: [{ type: '320k', size: '1 MB' }],
+      raw: { songId: 654321, strMediaMid: 'qq-media-narjo-lyrics' },
+    }
+    ensureTrack(song)
+    db.prepare(`
+      INSERT INTO app_settings (key, value_json, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP
+    `).run(`virtual.song.${songmid}`, JSON.stringify({ song }))
+    upsertRemoteMapping({
+      localType: 'track',
+      localKey: `tx:${songmid}`,
+      remote: 'emby',
+      remoteId,
+      raw: song,
+    })
+
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'u.y.qq.com') {
+        return Response.json({
+          code: 0,
+          lyric: {
+            code: 0,
+            data: {
+              lyric: '[00:02.00]Narjo 第一行\n[00:05.50]Narjo 第二行',
+            },
+          },
+        })
+      }
+      return Response.json({ error: 'should not proxy upstream' }, { status: 500 })
+    }) as typeof fetch
+
+    const lyrics = await dispatchEmbyRequest(
+      new Request(`http://local/rest/getLyricsBySongId.view?id=${remoteId}&v=1.16.1&c=Narjo&f=json&u=${account.embyUsername}`, {
+        headers: { 'X-Emby-Authorization': authHeader, 'user-agent': 'Narjo/93' },
+      }),
+      stripOptionalEmbyPrefix('/rest/getLyricsBySongId.view'),
+    )
+    assert.equal(lyrics.status, 200)
+    assert.equal(lyrics.headers.get('x-x-music-source'), 'local')
+    const lyricsPayload = await lyrics.json()
+    const structured = lyricsPayload['subsonic-response'].lyricsList.structuredLyrics[0]
+    assert.equal(structured.synced, true)
+    assert.deepEqual(structured.line, [
+      { start: 2000, value: 'Narjo 第一行' },
+      { start: 5500, value: 'Narjo 第二行' },
+    ])
+
+    const getSong = await dispatchEmbyRequest(
+      new Request(`http://local/rest/getSong.view?id=${remoteId}&v=1.16.1&c=Narjo&f=json&u=${account.embyUsername}`, {
+        headers: { 'X-Emby-Authorization': authHeader, 'user-agent': 'Narjo/93' },
+      }),
+      stripOptionalEmbyPrefix('/rest/getSong.view'),
+    )
+    assert.equal(getSong.status, 200)
+    assert.equal(getSong.headers.get('x-x-music-source'), 'local')
+    const songPayload = await getSong.json()
+    assert.equal(songPayload['subsonic-response'].song.title, 'Narjo Subsonic Lyrics')
+    assert.match(songPayload['subsonic-response'].song.id, /^mix_/)
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999115')
+    clearQQLoginCookie()
+    db.prepare('DELETE FROM app_settings WHERE key = ?').run(`virtual.song.${songmid}`)
+    db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run(songmid)
+    db.prepare("DELETE FROM remote_mappings WHERE local_type = 'track' AND local_key = ? AND remote = 'emby'").run(`tx:${songmid}`)
     globalThis.fetch = originalFetch
   }
 })

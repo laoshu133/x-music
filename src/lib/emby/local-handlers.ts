@@ -4,6 +4,7 @@ import { createUpstreamTeeResponse, streamLocalFile } from '@/lib/cache/stream'
 import { encryptedQQAudioRequiresKeyMessage, isEncryptedQQAudioFileName, isEncryptedQQAudioRequiresKeyError } from '@/lib/cache/decrypt'
 import { db } from '@/lib/db'
 import { MusicUrlConfigError, MusicUrlResolveError, qualityFallbacks, resolveMusicUrl, resolveMusicUrlWithFallback } from '@/lib/music-url/resolve'
+import { isHighestAvailableQuality } from '@/lib/quality'
 import {
   getQQPlaylistDetail,
   getQQFavoriteSongs,
@@ -38,6 +39,7 @@ import {
 import { getRemoteMapping, upsertRemoteMapping } from '@/lib/db/remote-mappings'
 import { deleteEmbyItems, fetchEmbyAudioMediaInfo, fetchEmbyJson, fetchEmbyText, searchEmbyAudioByName, searchEmbyPlaylistByName } from './upstream-api'
 import { proxyToUpstreamEmby } from './upstream-proxy'
+import { ensureEmbyMasterCachedBestEffort } from './master'
 import { getAccountByEmbyUsername, getAccountByEmbyUserId, listAccounts, markAccountActive, markAccountLogin, type AccountRecord } from '@/lib/db/accounts'
 import { ensureUpstreamEmbyUserForAccount, getDefaultUpstreamMusicLibraryId } from './auth'
 import { syncMappedEmbyFavoriteBestEffort } from './favorites'
@@ -60,6 +62,8 @@ import {
   isPlaybackReportRequest,
   isPlaylistItemsRequest,
   isSimilarItemsRequest,
+  isSubsonicGetSongRequest,
+  isSubsonicLyricsRequest,
   isSubtitleStreamRequest,
   isUserRequest,
   isUserViewsRequest,
@@ -230,6 +234,18 @@ const LOCAL_ROUTES: LocalRoute[] = [
     authorize: true,
     match: ({ request, embyPath }) => request.method === 'GET' && isLyricsRequest(embyPath),
     handle: ({ request, embyPath }) => handleLyricsRequest(request, embyPath),
+  },
+  {
+    name: 'subsonic-get-song',
+    authorize: true,
+    match: ({ request, embyPath }) => request.method === 'GET' && isSubsonicGetSongRequest(embyPath),
+    handle: ({ request }) => handleSubsonicGetSongRequest(request),
+  },
+  {
+    name: 'subsonic-lyrics',
+    authorize: true,
+    match: ({ request, embyPath }) => request.method === 'GET' && isSubsonicLyricsRequest(embyPath),
+    handle: ({ request }) => handleSubsonicLyricsRequest(request),
   },
   {
     name: 'items',
@@ -933,38 +949,64 @@ async function handleSimilarItemsRequest(request: Request, embyPath: string): Pr
 
 async function handleLyricsRequest(request: Request, embyPath: string): Promise<Response | undefined> {
   const itemId = extractNestedItemId(embyPath, 'Lyrics')
-  const decoded = itemId ? decodeVirtualId(itemId) : undefined
-  if (!decoded || decoded.kind !== 'qq-song') return undefined
+  const decoded = itemId ? await resolveSongVirtualId(itemId) : undefined
+  if (!decoded) return undefined
 
   const lyrics = await fetchLyrics(decoded.songmid, decoded.playlistId)
   if (wantsRawLyrics(request)) {
-    return new Response(lyrics ?? '', {
+    return markRequestSource(new Response(lyrics ?? '', {
       status: lyrics ? 200 : 404,
       headers: {
         'content-type': 'text/plain; charset=utf-8',
         'cache-control': 'public, max-age=86400',
       },
-    })
+    }), 'local')
   }
 
   if (!lyrics) {
-    return Response.json({
+    return markRequestSource(Response.json({
       Lyrics: [],
       Lines: [],
       Metadata: {
         Provider: 'XMusic',
       },
-    })
+    }), 'local')
   }
 
   const lines = parseLrcLyrics(lyrics)
-  return Response.json({
+  return markRequestSource(Response.json({
     Lyrics: lines,
     Lines: lines,
     Text: lyrics,
     Metadata: {
       Provider: 'QQ Music',
       IsSynced: true,
+    },
+  }), 'local')
+}
+
+async function handleSubsonicGetSongRequest(request: Request): Promise<Response> {
+  const url = new URL(request.url)
+  const rawId = url.searchParams.get('id') ?? ''
+  const decoded = await resolveSongVirtualId(rawId)
+  if (!decoded) return subsonicResponse(request, { error: { code: 70, message: 'Song not found' } }, 404)
+
+  const stored = await loadOrFetchVirtualSong(decoded.songmid, decoded.playlistId)
+  if (!stored) return subsonicResponse(request, { error: { code: 70, message: 'Song not found' } }, 404)
+
+  return subsonicResponse(request, { song: songToSubsonicChild(stored.song) })
+}
+
+async function handleSubsonicLyricsRequest(request: Request): Promise<Response> {
+  const url = new URL(request.url)
+  const rawId = url.searchParams.get('id') ?? ''
+  const decoded = await resolveSongVirtualId(rawId)
+  if (!decoded) return subsonicResponse(request, { lyricsList: { structuredLyrics: [] } })
+
+  const lyrics = await fetchLyrics(decoded.songmid, decoded.playlistId)
+  return subsonicResponse(request, {
+    lyricsList: {
+      structuredLyrics: lyrics ? [subsonicStructuredLyrics(lyrics)] : [],
     },
   })
 }
@@ -1121,6 +1163,13 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
   }
 
   const preferredQuality = preferredAudioQualityForRequest(request, musicInfo)
+  const mapped = await resolveEmbyTrackMapping(musicInfo)
+  if (mapped && await shouldUseMappedEmbyAudio(mapped, musicInfo)) {
+    const action = embyPath.split('/')[3] ?? 'universal'
+    const proxied = await proxyToUpstreamEmby(request, `/Audio/${encodeURIComponent(mapped)}/${action}`).catch(() => undefined)
+    if (proxied?.ok || proxied?.status === 206) return proxied
+  }
+
   const playableFile = getPreferredPlayableFile(musicInfo, preferredQuality)
   const localPath = playableFile?.finalPath ?? playableFile?.rawPath
 
@@ -1128,12 +1177,16 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
     const track = ensureTrack(musicInfo)
     insertPlayEvent(track.id, playableFile.quality, authorizedLocalAccount(request)?.qqUin)
     syncQQPlayHistoryFromStoredUrlBestEffort(request, musicInfo, playableFile.quality)
-    enqueueEmbyTrackSync({
-      source: musicInfo.source,
-      songmid: musicInfo.songmid,
-      playlistId: decoded.playlistId ?? stored.playlistId,
-      musicInfo,
-    })
+    if (isHighestAvailableQuality(musicInfo, playableFile.quality)) {
+      enqueueEmbyTrackSync({
+        source: musicInfo.source,
+        songmid: musicInfo.songmid,
+        playlistId: decoded.playlistId ?? stored.playlistId,
+        musicInfo,
+      })
+    } else {
+      ensureEmbyMasterCachedBestEffort({ musicInfo, track })
+    }
     return markRequestSource(await streamLocalFile(localPath, request), 'local')
   }
 
@@ -1142,20 +1195,17 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
   if (waitedFile && waitedPath) {
     const track = ensureTrack(musicInfo)
     insertPlayEvent(track.id, waitedFile.quality, authorizedLocalAccount(request)?.qqUin)
-    enqueueEmbyTrackSync({
-      source: musicInfo.source,
-      songmid: musicInfo.songmid,
-      playlistId: decoded.playlistId ?? stored.playlistId,
-      musicInfo,
-    })
+    if (isHighestAvailableQuality(musicInfo, waitedFile.quality)) {
+      enqueueEmbyTrackSync({
+        source: musicInfo.source,
+        songmid: musicInfo.songmid,
+        playlistId: decoded.playlistId ?? stored.playlistId,
+        musicInfo,
+      })
+    } else {
+      ensureEmbyMasterCachedBestEffort({ musicInfo, track })
+    }
     return markRequestSource(await streamLocalFile(waitedPath, request), 'local')
-  }
-
-  const mapped = await resolveEmbyTrackMapping(musicInfo)
-  if (mapped && await shouldUseMappedEmbyAudio(mapped, musicInfo, preferredQuality)) {
-    const action = embyPath.split('/')[3] ?? 'universal'
-    const proxied = await proxyToUpstreamEmby(request, `/Audio/${encodeURIComponent(mapped)}/${action}`).catch(() => undefined)
-    if (proxied?.ok || proxied?.status === 206) return proxied
   }
 
   const track = ensureTrack(musicInfo)
@@ -1168,12 +1218,16 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
       quality: resolved.quality,
       playUrl: resolved.url,
     })
-    enqueueEmbyTrackSync({
-      source: musicInfo.source,
-      songmid: musicInfo.songmid,
-      playlistId: decoded.playlistId ?? stored.playlistId,
-      musicInfo,
-    })
+    if (isHighestAvailableQuality(musicInfo, resolved.quality)) {
+      enqueueEmbyTrackSync({
+        source: musicInfo.source,
+        songmid: musicInfo.songmid,
+        playlistId: decoded.playlistId ?? stored.playlistId,
+        musicInfo,
+      })
+    } else {
+      ensureEmbyMasterCachedBestEffort({ musicInfo, track })
+    }
     resolved.completion.catch((error: unknown) => {
       upsertTrackFileStatus(track.id, resolved.quality, 'failed', {
         error: error instanceof Error ? error.message : String(error),
@@ -1211,7 +1265,14 @@ async function resolvePlayableUpstreamResponse(
         upsertTrackFileStatus(track.id, quality, 'failed', { error: message })
         continue
       }
-      const { response, completion } = await createUpstreamTeeResponse(resolved.url, track, resolved.quality, request, resolved.ekey)
+      const { response, completion } = await createUpstreamTeeResponse(
+        resolved.url,
+        track,
+        resolved.quality,
+        request,
+        resolved.ekey,
+        { librarySync: isHighestAvailableQuality(musicInfo, resolved.quality) },
+      )
       return {
         url: resolved.url,
         quality: resolved.quality,
@@ -1240,6 +1301,116 @@ async function loadOrFetchVirtualSong(songmid: string, playlistId?: string): Pro
   return { song, playlistId }
 }
 
+async function resolveSongVirtualId(itemId: string): Promise<Extract<VirtualId, { kind: 'qq-song' }> | undefined> {
+  const decoded = decodeVirtualId(itemId)
+  if (decoded?.kind === 'qq-song') return decoded
+
+  const songmid = songmidForExternalItemId(itemId)
+  if (songmid) return { kind: 'qq-song', songmid }
+
+  const remote = await fetchEmbySongForExternalItemId(itemId)
+  if (remote) {
+    rememberVirtualSong(remote)
+    upsertRemoteMapping({
+      localType: 'track',
+      localKey: `${remote.source}:${remote.songmid}`,
+      remote: 'emby',
+      remoteId: itemId,
+      raw: remote,
+    })
+    return { kind: 'qq-song', songmid: remote.songmid }
+  }
+
+  return undefined
+}
+
+function songmidForExternalItemId(itemId: string): string | undefined {
+  const row = db.prepare(`
+    SELECT local_key AS localKey
+    FROM remote_mappings
+    WHERE remote = 'emby' AND remote_id = ?
+      AND local_type = 'track'
+    LIMIT 1
+  `).get(itemId) as { localKey?: string } | undefined
+  const localKey = row?.localKey ?? ''
+  const match = localKey.match(/^tx:(.+)$/)
+  if (match?.[1]) return match[1]
+
+  const track = db.prepare(`
+    SELECT t.songmid
+    FROM tracks t
+    WHERE t.source = 'tx'
+      AND (t.songmid = @itemId OR json_extract(t.raw_json, '$.songId') = @numericItemId)
+    LIMIT 1
+  `).get({ itemId, numericItemId: Number(itemId) }) as { songmid?: string } | undefined
+  return track?.songmid
+}
+
+async function fetchEmbySongForExternalItemId(itemId: string): Promise<MusicInfo | undefined> {
+  const item = await fetchEmbyJson<{
+    Id?: string
+    Name?: string
+    Album?: string
+    AlbumId?: string
+    Artists?: string[]
+    ArtistItems?: Array<{ Name?: string }>
+    RunTimeTicks?: number
+    ImageTags?: { Primary?: string }
+    ProviderIds?: Record<string, unknown>
+    ExternalIds?: unknown[]
+    Path?: string
+  }>(`/Items/${encodeURIComponent(itemId)}?${new URLSearchParams({
+    Fields: 'Album,AlbumId,Artists,ArtistItems,RunTimeTicks,ImageTags,ProviderIds,ExternalIds,Path',
+  })}`).catch(() => undefined)
+  if (!item?.Id || !item.Name) return undefined
+  const songmid = embyItemSongmid(item)
+  if (!songmid) return undefined
+  return {
+    source: 'tx',
+    songmid,
+    name: item.Name,
+    singer: embyItemArtists(item).join(','),
+    albumName: item.Album,
+    albumId: item.AlbumId,
+    interval: ticksToInterval(item.RunTimeTicks),
+    img: item.ImageTags?.Primary ? `/Items/${encodeURIComponent(item.Id)}/Images/Primary` : undefined,
+    raw: { embyId: item.Id },
+  }
+}
+
+function embyItemSongmid(item: { ProviderIds?: Record<string, unknown>; ExternalIds?: unknown[]; Path?: string; Id?: string }): string | undefined {
+  const providerIds = item.ProviderIds ?? {}
+  for (const key of ['QQMusic', 'QQ', 'TxMusic', 'SongMid', 'songmid']) {
+    const value = providerIds[key]
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+
+  for (const external of Array.isArray(item.ExternalIds) ? item.ExternalIds : []) {
+    if (!external || typeof external !== 'object') continue
+    const record = external as Record<string, unknown>
+    const name = String(record.Name ?? record.Site ?? record.ProviderName ?? '').toLowerCase()
+    const value = typeof record.Value === 'string' ? record.Value.trim() : ''
+    if (value && (name.includes('qq') || name.includes('songmid'))) return value
+  }
+
+  const pathMatch = item.Path?.match(/(?:^|[?&/_-])(?:songmid|mid)[=_-]([A-Za-z0-9]+)/i)
+  return pathMatch?.[1]
+}
+
+function embyItemArtists(item: { Artists?: string[]; ArtistItems?: Array<{ Name?: string }> }): string[] {
+  const artists = item.Artists?.filter(Boolean) ?? []
+  if (artists.length) return artists
+  return item.ArtistItems?.map(artist => artist.Name).filter((name): name is string => Boolean(name)) ?? []
+}
+
+function ticksToInterval(ticks?: number): string | undefined {
+  if (!Number.isFinite(ticks) || !ticks) return undefined
+  const totalSeconds = Math.max(0, Math.round(ticks / 10_000_000))
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+}
+
 async function waitForActivePlayableFile(musicInfo: MusicInfo, preferredQuality: MusicQuality): Promise<ReturnType<typeof getPlayableTrackFile> | undefined> {
   const qualities = qualityFallbacks(preferredQuality)
   if (!hasActiveTrackFile(musicInfo.source, musicInfo.songmid, qualities)) return undefined
@@ -1266,11 +1437,12 @@ function shouldRefreshPreferredQualityBeforeLocalFallback(musicInfo: MusicInfo, 
   return preferredQuality === 'flac' && availableSongQualities(musicInfo).includes('flac')
 }
 
-async function shouldUseMappedEmbyAudio(mappedItemId: string, musicInfo: MusicInfo, preferredQuality: MusicQuality): Promise<boolean> {
-  if (!shouldRefreshPreferredQualityBeforeLocalFallback(musicInfo, preferredQuality)) return true
+async function shouldUseMappedEmbyAudio(mappedItemId: string, musicInfo: MusicInfo): Promise<boolean> {
+  const quality = highestAvailableSongQuality(musicInfo)
+  if (quality !== 'flac') return true
   const info = await fetchEmbyAudioMediaInfo(mappedItemId)
   if (!info) return false
-  return embyMediaLooksLikeQuality(info, preferredQuality, readSongQualitySize(musicInfo, preferredQuality))
+  return embyMediaLooksLikeQuality(info, quality, readSongQualitySize(musicInfo, quality))
 }
 
 function embyMediaLooksLikeQuality(
@@ -2085,6 +2257,10 @@ function songMediaSource(song: MusicInfo, runtimeTicks?: number) {
 }
 
 function preferredSongQuality(song: MusicInfo): MusicQuality {
+  return highestAvailableSongQuality(song)
+}
+
+function highestAvailableSongQuality(song: MusicInfo): MusicQuality {
   const available = song.types?.map(item => item.type) ?? []
   if (available.includes('flac')) return 'flac'
   if (available.includes('320k')) return '320k'
@@ -2708,4 +2884,95 @@ function lrcToTrackEvents(value: string): Array<{ Id: string; Text: string; Star
     StartPositionTicks: line.Start,
     EndPositionTicks: lines[index + 1]?.Start ?? line.Start + 30_000_000,
   }))
+}
+
+function subsonicResponse(request: Request, body: Record<string, unknown>, status = 200): Response {
+  const payload = {
+    'subsonic-response': {
+      status: status >= 400 ? 'failed' : 'ok',
+      version: '1.16.1',
+      type: 'x-music',
+      serverVersion: '0.1.0',
+      ...body,
+    },
+  }
+
+  return wantsSubsonicXml(request)
+    ? markRequestSource(new Response(subsonicXml(payload), {
+      status,
+      headers: { 'content-type': 'application/xml; charset=utf-8', 'cache-control': 'no-store' },
+    }), 'local')
+    : markRequestSource(Response.json(payload, { status, headers: { 'cache-control': 'no-store' } }), 'local')
+}
+
+function wantsSubsonicXml(request: Request): boolean {
+  const url = new URL(request.url)
+  const format = (url.searchParams.get('f') ?? url.searchParams.get('format') ?? '').toLowerCase()
+  const accept = request.headers.get('accept')?.toLowerCase() ?? ''
+  return format === 'xml' || (!format && accept.includes('xml') && !accept.includes('json'))
+}
+
+function songToSubsonicChild(song: MusicInfo): Record<string, unknown> {
+  const runtimeTicks = intervalToTicks(song.interval)
+  const duration = runtimeTicks ? Math.round(runtimeTicks / 10_000_000) : undefined
+  return compactRecord({
+    id: songVirtualId(song),
+    title: song.name,
+    artist: song.singer,
+    album: song.albumName,
+    duration,
+    isDir: false,
+    type: 'music',
+    suffix: preferredSongQuality(song) === 'flac' ? 'flac' : 'mp3',
+    contentType: preferredSongQuality(song) === 'flac' ? 'audio/flac' : 'audio/mpeg',
+    path: `/Audio/${encodeURIComponent(songVirtualId(song))}/universal`,
+  })
+}
+
+function subsonicStructuredLyrics(lyrics: string): Record<string, unknown> {
+  return {
+    displayArtist: '',
+    displayTitle: '',
+    lang: 'zho',
+    synced: true,
+    line: parseLrcLyrics(lyrics).map(line => ({
+      start: Math.floor(line.Start / 10_000),
+      value: line.Text,
+    })),
+  }
+}
+
+function compactRecord(record: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(record).filter(([, value]) => value !== undefined && value !== ''))
+}
+
+function subsonicXml(payload: Record<string, unknown>): string {
+  const body = Object.entries(payload).map(([key, value]) => xmlNode(key, value)).join('')
+  return `<?xml version="1.0" encoding="UTF-8"?>${body}`
+}
+
+function xmlNode(key: string, value: unknown): string {
+  if (Array.isArray(value)) return value.map(item => xmlNode(key, item)).join('')
+  if (!value || typeof value !== 'object') return `<${key}>${escapeXml(String(value ?? ''))}</${key}>`
+
+  const attributes: string[] = []
+  const children: string[] = []
+  for (const [childKey, childValue] of Object.entries(value as Record<string, unknown>)) {
+    if (Array.isArray(childValue) || (childValue && typeof childValue === 'object')) {
+      children.push(xmlNode(childKey, childValue))
+    } else if (childValue !== undefined) {
+      attributes.push(`${childKey}="${escapeXml(String(childValue))}"`)
+    }
+  }
+  const open = attributes.length ? `<${key} ${attributes.join(' ')}>` : `<${key}>`
+  return `${open}${children.join('')}</${key}>`
+}
+
+function escapeXml(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&apos;')
 }

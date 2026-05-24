@@ -36,7 +36,17 @@ export function isSimilarItemsRequest(path: string): boolean {
 }
 
 export function isLyricsRequest(path: string): boolean {
-  return /^\/Items\/[^/]+\/Lyrics(?:\/[^/]+)?$/i.test(path) || /^\/Users\/[^/]+\/Items\/[^/]+\/Lyrics(?:\/[^/]+)?$/i.test(path)
+  return /^\/Items\/[^/]+\/Lyrics(?:\/[^/]+)?$/i.test(path)
+    || /^\/Users\/[^/]+\/Items\/[^/]+\/Lyrics(?:\/[^/]+)?$/i.test(path)
+    || /^\/Audio\/[^/]+\/Lyrics(?:\/[^/]+)?$/i.test(path)
+}
+
+export function isSubsonicGetSongRequest(path: string): boolean {
+  return pathEquals(path, '/rest/getSong.view')
+}
+
+export function isSubsonicLyricsRequest(path: string): boolean {
+  return pathEquals(path, '/rest/getLyricsBySongId.view')
 }
 
 export function isSubtitleStreamRequest(path: string): boolean {
@@ -89,7 +99,9 @@ export function extractNestedItemId(path: string, action: string): string | unde
   const itemMatch = path.match(new RegExp(`^/Items/([^/]+)/${action}(?:/[^/]+)?$`, 'i'))
   if (itemMatch?.[1]) return decodeURIComponent(itemMatch[1])
   const userItemMatch = path.match(new RegExp(`^/Users/[^/]+/Items/([^/]+)/${action}(?:/[^/]+)?$`, 'i'))
-  return userItemMatch?.[1] ? decodeURIComponent(userItemMatch[1]) : undefined
+  if (userItemMatch?.[1]) return decodeURIComponent(userItemMatch[1])
+  const audioMatch = path.match(new RegExp(`^/Audio/([^/]+)/${action}(?:/[^/]+)?$`, 'i'))
+  return audioMatch?.[1] ? decodeURIComponent(audioMatch[1]) : undefined
 }
 
 export function extractSubtitleItemId(path: string): string | undefined {
