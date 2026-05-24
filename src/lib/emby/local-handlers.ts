@@ -623,6 +623,16 @@ async function handleImageRequest(request: Request, embyPath: string): Promise<R
   const itemId = extractImageItemId(embyPath)
   if (!itemId) return emptyImageResponse()
   if (isMusicLibraryId(itemId)) return emptyImageResponse()
+  if (/^\/Users\/[^/]+\/Images\//i.test(embyPath) && findAccountByLocalOrUpstreamUserId(itemId)) return emptyImageResponse()
+
+  const taggedVirtualId = virtualImageTagId(request)
+  if (taggedVirtualId?.kind === 'qq-song') {
+    const response = await virtualSongImageResponse(request, taggedVirtualId)
+    if (response) return response
+  } else if (taggedVirtualId) {
+    const imageUrl = virtualImageUrl(taggedVirtualId)
+    if (imageUrl) return fetchVirtualImageResponse(imageUrl)
+  }
 
   const decoded = decodeClientVirtualId(itemId)
   if (!decoded) {
@@ -636,23 +646,43 @@ async function handleImageRequest(request: Request, embyPath: string): Promise<R
   }
 
   if (decoded.kind === 'qq-song') {
-    const localCover = await readCachedTrackCover({ source: 'tx', songmid: decoded.songmid })
-    if (localCover) return markRequestSource(localCover, 'local')
-
-    const stored = await loadOrFetchVirtualSong(decoded.songmid, decoded.playlistId)
-    if (stored) {
-      const mapped = await resolveEmbyTrackMapping(stored.song)
-      if (mapped) {
-        const proxied = await proxyToUpstreamEmby(request, `/Items/${encodeURIComponent(mapped)}/Images/Primary`).catch(() => undefined)
-        if (proxied?.ok || proxied?.status === 304) return proxied
-      }
-    }
+    const response = await virtualSongImageResponse(request, decoded)
+    if (response) return response
   }
 
   const imageUrl = virtualImageUrl(decoded)
   if (!imageUrl) return emptyImageResponse()
 
   return fetchVirtualImageResponse(imageUrl)
+}
+
+function virtualImageTagId(request: Request): VirtualId | undefined {
+  const url = new URL(request.url)
+  const tag = url.searchParams.get('tag')
+    ?? url.searchParams.get('Tag')
+    ?? url.searchParams.get('imageTag')
+    ?? url.searchParams.get('ImageTag')
+  return tag ? decodeClientVirtualId(tag) : undefined
+}
+
+async function virtualSongImageResponse(
+  request: Request,
+  decoded: Extract<VirtualId, { kind: 'qq-song' }>,
+): Promise<Response | undefined> {
+  const localCover = await readCachedTrackCover({ source: 'tx', songmid: decoded.songmid })
+  if (localCover) return markRequestSource(localCover, 'local')
+
+  const stored = await loadOrFetchVirtualSong(decoded.songmid, decoded.playlistId)
+  if (stored) {
+    const mapped = await resolveEmbyTrackMapping(stored.song)
+    if (mapped) {
+      const proxied = await proxyToUpstreamEmby(request, `/Items/${encodeURIComponent(mapped)}/Images/Primary`).catch(() => undefined)
+      if (proxied?.ok || proxied?.status === 304) return proxied
+    }
+    if (stored.song.img) return fetchVirtualImageResponse(stored.song.img)
+  }
+
+  return undefined
 }
 
 async function fetchVirtualImageResponse(imageUrl: string): Promise<Response> {
@@ -2248,11 +2278,14 @@ function songMediaSource(song: MusicInfo, runtimeTicks?: number) {
   const container = quality === 'flac' ? 'flac' : 'mp3'
   const codec = quality === 'flac' ? 'flac' : 'mp3'
   const id = songVirtualId(song)
+  const directStreamUrl = `/Audio/${encodeURIComponent(id)}/universal`
 
   return {
     Protocol: 'Http',
     Id: id,
-    Path: `/Audio/${encodeURIComponent(id)}/universal`,
+    Path: directStreamUrl,
+    DirectStreamUrl: directStreamUrl,
+    TranscodingUrl: directStreamUrl,
     Type: 'Default',
     Container: container,
     Size: readSongQualitySize(song, quality),

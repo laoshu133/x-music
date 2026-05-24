@@ -2855,11 +2855,81 @@ test('musiver favorite list keeps selected virtual song ids stable across detail
     assert.equal(playbackPayload.MediaSources[0].Id, targetId)
     assert.equal(playbackPayload.MediaSources[0].ItemId, targetId)
     assert.equal(playbackPayload.MediaSources[0].Path, target.MediaSources[0].Path)
+    assert.equal(playbackPayload.MediaSources[0].DirectStreamUrl, target.MediaSources[0].Path)
+    assert.equal(playbackPayload.MediaSources[0].TranscodingUrl, target.MediaSources[0].Path)
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999043')
     clearQQLoginCookie()
     db.prepare("DELETE FROM app_settings WHERE key LIKE 'virtual.song.qq-musiver-before-target'").run()
     db.prepare("DELETE FROM app_settings WHERE key = 'virtual.song.004a6D4b14LK4E'").run()
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('moonfin virtual album image requests use virtual song tag artwork', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999118')
+    saveQQLoginCookie('uin=o999118; qm_keyst=test-key')
+    markAccountUpstreamBound('999118')
+    const account = getAccountByQQ('999118')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+
+    const songmid = '000vRmU843tv0b'
+    const virtualId = encodeVirtualId({ kind: 'qq-song', songmid })
+    db.prepare(`
+      INSERT INTO app_settings (key, value_json, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP
+    `).run(`virtual.song.${songmid}`, JSON.stringify({
+      song: {
+        source: 'tx',
+        songmid,
+        name: 'Moonfin Image Song',
+        singer: 'Moonfin Artist',
+        albumName: 'Moonfin Album',
+        albumId: '0022sX134HQF6u',
+        img: 'https://img.example/moonfin-image.jpg',
+        interval: '03:00',
+        types: [],
+      },
+    }))
+
+    const imageRequests: string[] = []
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'img.example') imageRequests.push(String(url))
+      return new Response('moonfin-image-bytes', {
+        headers: { 'content-type': 'image/jpeg' },
+      })
+    }) as typeof fetch
+
+    db.prepare('DELETE FROM resource_cache WHERE url = ?').run('https://img.example/moonfin-image.jpg')
+    rmSync(join(process.env.MUSIC_DATA_DIR ?? './data', 'resources', 'image'), { recursive: true, force: true })
+
+    const response = await dispatchEmbyRequest(
+      new Request(`http://local/Items/0022sX134HQF6u/Images/Primary?maxHeight=600&tag=${encodeURIComponent(virtualId)}&api_key=${authPayload.AccessToken}`, {
+        headers: { 'user-agent': 'Moonfin' },
+      }),
+      stripOptionalEmbyPrefix('/Items/0022sX134HQF6u/Images/Primary'),
+    )
+
+    assert.equal(response.status, 200)
+    assert.equal(response.headers.get('content-type'), 'image/jpeg')
+    assert.equal(await response.text(), 'moonfin-image-bytes')
+    assert.deepEqual(imageRequests, ['https://img.example/moonfin-image.jpg'])
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999118')
+    clearQQLoginCookie()
+    db.prepare('DELETE FROM app_settings WHERE key = ?').run('virtual.song.000vRmU843tv0b')
+    db.prepare('DELETE FROM resource_cache WHERE url = ?').run('https://img.example/moonfin-image.jpg')
     globalThis.fetch = originalFetch
   }
 })
