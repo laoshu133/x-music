@@ -49,7 +49,7 @@ async function fetchQQPlayLyricInfo(songmid: string, options: { songId?: number;
     timeoutMs: options.timeoutMs ?? 10_000,
     transform: (value) => normalizeLyricsFromPlayLyricInfo(JSON.parse(value) as PlayLyricInfoResponse),
   })
-  return text?.trim() ? text : undefined
+  return text && looksLikeTimedLyrics(text) ? text : undefined
 }
 
 async function fetchLegacyQQLyrics(songmid: string, options: { timeoutMs?: number }): Promise<string | undefined> {
@@ -93,7 +93,8 @@ function playLyricInfoBody(songmid: string, songId?: number): unknown {
 function normalizeLyricsFromPlayLyricInfo(data: PlayLyricInfoResponse): string {
   const payload = data.lyric?.data
   const lyric = firstNonEmpty(payload?.lyric, typeof payload?.qrc === 'string' ? payload.qrc : undefined)
-  return lyric ? normalizeLyrics(decodeMaybeBase64(lyric)) : ''
+  const normalized = lyric ? normalizeLyrics(decodeMaybeBase64(lyric)) : ''
+  return looksLikeTimedLyrics(normalized) ? normalized : ''
 }
 
 function firstNonEmpty(...values: Array<string | undefined>): string | undefined {
@@ -113,4 +114,8 @@ function decodeMaybeBase64(value: string): string {
 
 function normalizeLyrics(value: string): string {
   return value.replace(/\r\n?/g, '\n').trimEnd()
+}
+
+function looksLikeTimedLyrics(value: string): boolean {
+  return /\[\d{1,2}:\d{2}(?:[.:]\d{1,3})?\]/.test(value)
 }

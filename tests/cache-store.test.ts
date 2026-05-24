@@ -10,6 +10,7 @@ import { createUpstreamTeeResponse } from '@/lib/cache/stream'
 import { refreshUmCrypto, resolveUmCryptoLoaderPath } from '@/lib/cache/um-crypto'
 import { appConfig } from '@/lib/config'
 import { db } from '@/lib/db'
+import { getQQLyrics } from '@/lib/qq'
 import type { MusicInfo } from '@/lib/types'
 
 test('cache store returns only ready files that exist on disk', () => {
@@ -492,6 +493,58 @@ test('empty transformed text resources are not cached', async () => {
     globalThis.fetch = originalFetch
   }
 })
+
+test('QQ lyrics falls back when modern API returns encrypted hex payload', async () => {
+  const originalFetch = globalThis.fetch
+  const songmid = `LYRICS_FALLBACK_${Date.now()}`
+  try {
+    db.prepare("DELETE FROM resource_cache WHERE resource_type = 'lyrics'").run()
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'u.y.qq.com') {
+        return Response.json({
+          code: 0,
+          lyric: {
+            code: 0,
+            data: {
+              crypt: 0,
+              lyric: '94049BF6BE72CA653B3D80A72127964A7DC2BAB2A6A291FF',
+            },
+          },
+        })
+      }
+      if (requestUrl.pathname.includes('/lyric/fcgi-bin/fcg_query_lyric_new.fcg')) {
+        return Response.json({
+          lyric: Buffer.from('[00:01.00]旧接口歌词', 'utf8').toString('base64'),
+        })
+      }
+      return Response.json({ error: 'unexpected request' }, { status: 500 })
+    }) as typeof fetch
+
+    const lyrics = await getQQLyrics(songmid)
+    assert.equal(lyrics, '[00:01.00]旧接口歌词')
+    const rows = db.prepare("SELECT url FROM resource_cache WHERE resource_type = 'lyrics'").all() as Array<{ url: string }>
+    assert.deepEqual(rows.map(row => row.url), [expectLegacyLyricsUrl(songmid)])
+  } finally {
+    db.prepare("DELETE FROM resource_cache WHERE resource_type = 'lyrics'").run()
+    globalThis.fetch = originalFetch
+  }
+})
+
+function expectLegacyLyricsUrl(songmid: string): string {
+  return `https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg?${new URLSearchParams({
+    g_tk: '5381',
+    format: 'json',
+    inCharset: 'utf-8',
+    outCharset: 'utf-8',
+    notice: '0',
+    platform: 'h5',
+    needNewCode: '1',
+    ct: '121',
+    cv: '0',
+    songmid,
+  })}`
+}
 
 async function createUmCryptoPackage(input: {
   fixtureDir: string

@@ -3534,10 +3534,21 @@ test('local emby virtual song lyrics return timed lyric lines', async () => {
     assert.equal(playbackInfo.status, 200)
     const playbackPayload = await playbackInfo.json()
     assert.equal(playbackPayload.MediaSources[0].MediaStreams[1].Type, 'Subtitle')
-    assert.equal(playbackPayload.MediaSources[0].MediaStreams[1].Index, 2)
+    assert.equal(playbackPayload.MediaSources[0].MediaStreams[1].Index, 1)
     assert.equal(playbackPayload.MediaSources[0].MediaStreams[1].DeliveryMethod, 'External')
-    assert.match(playbackPayload.MediaSources[0].MediaStreams[1].DeliveryUrl, /Stream\.lrc$/)
-    assert.match(playbackPayload.MediaSources[0].MediaStreams[1].DeliveryUrl, /\/Subtitles\/2\/Stream\.lrc$/)
+    assert.match(playbackPayload.MediaSources[0].MediaStreams[1].DeliveryUrl, /Stream\.js$/)
+    assert.match(playbackPayload.MediaSources[0].MediaStreams[1].DeliveryUrl, /\/Subtitles\/1\/Stream\.js$/)
+
+    const declaredSubtitle = await dispatchEmbyRequest(
+      new Request(`http://local${playbackPayload.MediaSources[0].MediaStreams[1].DeliveryUrl}?Token=${authPayload.AccessToken}`, {
+        headers: { 'user-agent': 'musiver/1.3.9 (Macintosh)' },
+      }),
+      stripOptionalEmbyPrefix(playbackPayload.MediaSources[0].MediaStreams[1].DeliveryUrl),
+    )
+    assert.equal(declaredSubtitle.status, 200)
+    assert.match(declaredSubtitle.headers.get('content-type') ?? '', /application\/json/)
+    const declaredPayload = await declaredSubtitle.json()
+    assert.equal(declaredPayload.TrackEvents[0].Text, '第一句')
 
     const subtitle = await dispatchEmbyRequest(
       new Request(`http://local/Items/${encodeURIComponent(songId)}/${encodeURIComponent(songId)}/Subtitles/1/Stream.lrc`, {
