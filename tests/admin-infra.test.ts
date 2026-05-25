@@ -2477,6 +2477,8 @@ test('local emby favorite list uses mapped upstream item ids for synced QQ songs
     assert.equal(payload.Items[0].MediaSources[0].Id, 'emby-mapped-favorite-item')
     assert.equal(payload.Items[0].MediaSources[0].Path, '/Audio/emby-mapped-favorite-item/universal')
     assert.equal(payload.Items[0].HasLyrics, false)
+    assert.equal(payload.Items[0].MediaSources[0].MediaStreams.length, 1)
+    assert.equal(payload.Items[0].MediaSources[0].DefaultSubtitleStreamIndex, undefined)
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999050')
     clearQQLoginCookie()
