@@ -139,7 +139,6 @@ Optional:
 - `TAGGING_FETCH_TIMEOUT_MS`: network metadata/API timeout, default `5000`.
 - `NEXT_PUBLIC_APP_NAME`: public UI label, default should be `XMusic`.
 - `ANALYTICS_SCRIPT_CODE`: optional production-only analytics script tag. Set it to the complete `<script ...></script>` code provided by your analytics service.
-- `AMPCAST_URL`: optional ampcast upstream override for non-Compose deployments, default `http://ampcast:8000/`.
 
 ## Architecture Notes
 

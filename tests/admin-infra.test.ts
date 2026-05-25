@@ -527,9 +527,7 @@ test('ampcast auto-init credentials pass startup validation requests', async () 
 
 test('ampcast proxy forwards to configured upstream and rewrites embedded assets', async () => {
   const originalFetch = globalThis.fetch
-  const originalAmpcastUrl = process.env.AMPCAST_URL
   try {
-    process.env.AMPCAST_URL = 'https://ampcast.example/base/'
     let forwardedUrl = ''
     globalThis.fetch = (async (url: string | URL | Request) => {
       forwardedUrl = url.toString()
@@ -546,7 +544,7 @@ test('ampcast proxy forwards to configured upstream and rewrites embedded assets
     const response = await proxyToAmpcast(new Request('http://local/@player/?theme=dark'), '/')
     const text = await response.text()
 
-    assert.equal(forwardedUrl, 'https://ampcast.example/base/?theme=dark')
+    assert.equal(forwardedUrl, 'http://ampcast:8000/?theme=dark')
     assert.equal(response.headers.get('content-encoding'), null)
     assert.equal(response.headers.get('content-length'), null)
     assert.equal(response.headers.get('x-frame-options'), null)
@@ -555,20 +553,13 @@ test('ampcast proxy forwards to configured upstream and rewrites embedded assets
     assert.match(text, /"\/@player\/v0\.9\.28\/lib\/media-services\.js"/)
     assert.match(text, /action="\/@player\/login"/)
   } finally {
-    if (originalAmpcastUrl === undefined) {
-      delete process.env.AMPCAST_URL
-    } else {
-      process.env.AMPCAST_URL = originalAmpcastUrl
-    }
     globalThis.fetch = originalFetch
   }
 })
 
 test('ampcast proxy returns friendly unavailable page when upstream fails', async () => {
   const originalFetch = globalThis.fetch
-  const originalAmpcastUrl = process.env.AMPCAST_URL
   try {
-    process.env.AMPCAST_URL = 'https://ampcast.example/base/'
     globalThis.fetch = (async () => {
       throw new TypeError('connect failed')
     }) as typeof fetch
@@ -582,22 +573,15 @@ test('ampcast proxy returns friendly unavailable page when upstream fails', asyn
     assert.match(response.headers.get('content-type') ?? '', /text\/html/)
     assert.match(body, /播放器暂时不可用/)
     assert.match(body, /请检查上游 ampcast 服务状态/)
-    assert.match(body, /https:\/\/ampcast\.example\/base\//)
+    assert.match(body, /http:\/\/ampcast:8000\//)
   } finally {
-    if (originalAmpcastUrl === undefined) {
-      delete process.env.AMPCAST_URL
-    } else {
-      process.env.AMPCAST_URL = originalAmpcastUrl
-    }
     globalThis.fetch = originalFetch
   }
 })
 
 test('ampcast proxy maps root versioned assets to the configured upstream', async () => {
   const originalFetch = globalThis.fetch
-  const originalAmpcastUrl = process.env.AMPCAST_URL
   try {
-    process.env.AMPCAST_URL = 'https://ampcast.example/base/'
     let forwardedUrl = ''
     globalThis.fetch = (async (url: string | URL | Request) => {
       forwardedUrl = url.toString()
@@ -608,9 +592,30 @@ test('ampcast proxy maps root versioned assets to the configured upstream', asyn
 
     const response = await proxyToAmpcast(new Request('http://local/v0.9.28/lib/media-services.js'), '/v0.9.28/lib/media-services.js')
 
-    assert.equal(forwardedUrl, 'https://ampcast.example/base/v0.9.28/lib/media-services.js')
+    assert.equal(forwardedUrl, 'http://ampcast:8000/v0.9.28/lib/media-services.js')
     assert.equal(response.headers.get('content-type'), 'application/javascript')
     assert.equal(await response.text(), 'console.log("media")')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('ampcast proxy ignores legacy AMPCAST_URL environment overrides', async () => {
+  const originalFetch = globalThis.fetch
+  const originalAmpcastUrl = process.env.AMPCAST_URL
+  try {
+    process.env.AMPCAST_URL = 'https://legacy-ampcast.example/'
+    let forwardedUrl = ''
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      forwardedUrl = url.toString()
+      return new Response('<main></main>', {
+        headers: { 'content-type': 'text/html' },
+      })
+    }) as typeof fetch
+
+    await proxyToAmpcast(new Request('http://local/@player/'), '/')
+
+    assert.equal(forwardedUrl, 'http://ampcast:8000/')
   } finally {
     if (originalAmpcastUrl === undefined) {
       delete process.env.AMPCAST_URL
