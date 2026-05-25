@@ -38,7 +38,7 @@ import {
   rememberVirtualSong,
 } from './virtual-store'
 import { getRemoteMapping, getRemoteMappingByRemote, upsertRemoteMapping } from '@/lib/db/remote-mappings'
-import { deleteEmbyItems, fetchEmbyAudioMediaInfo, fetchEmbyJson, fetchEmbyText, searchEmbyAudioByName, searchEmbyPlaylistByName } from './upstream-api'
+import { deleteEmbyItems, fetchEmbyJson, fetchEmbyText, searchEmbyAudioByName, searchEmbyPlaylistByName } from './upstream-api'
 import { proxyToUpstreamEmby } from './upstream-proxy'
 import { ensureEmbyMasterCachedBestEffort } from './master'
 import { getAccountByEmbyUsername, getAccountByEmbyUserId, getAccountByQQ, listAccounts, markAccountActive, markAccountLogin, type AccountRecord } from '@/lib/db/accounts'
@@ -1194,7 +1194,7 @@ async function handleVirtualPlaylistItemsRequest(request: Request, decoded: Virt
 
 async function handleAudioRequest(request: Request, embyPath: string): Promise<Response | undefined> {
   const itemId = decodeURIComponent(embyPath.split('/')[2] ?? '')
-  const decoded = decodeVirtualId(itemId)
+  const decoded = await resolveSongVirtualId(itemId)
   if (!decoded || decoded.kind !== 'qq-song') return undefined
 
   const stored = await loadOrFetchVirtualSong(decoded.songmid, decoded.playlistId)
@@ -1210,7 +1210,7 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
 
   const preferredQuality = preferredAudioQualityForRequest(request, musicInfo)
   const mapped = await resolveEmbyTrackMapping(musicInfo)
-  if (mapped && await shouldUseMappedEmbyAudio(mapped, musicInfo, authorizedLocalAccount(request)?.embyUserId)) {
+  if (mapped) {
     const action = embyPath.split('/')[3] ?? 'universal'
     const proxied = await proxyToUpstreamEmby(request, `/Audio/${encodeURIComponent(mapped)}/${action}`).catch(() => undefined)
     if (proxied?.ok || proxied?.status === 206) return proxied
@@ -1491,35 +1491,6 @@ function getPreferredPlayableFile(musicInfo: MusicInfo, preferredQuality: MusicQ
 
 function shouldRefreshPreferredQualityBeforeLocalFallback(musicInfo: MusicInfo, preferredQuality: MusicQuality): boolean {
   return preferredQuality === 'flac' && availableSongQualities(musicInfo).includes('flac')
-}
-
-async function shouldUseMappedEmbyAudio(mappedItemId: string, musicInfo: MusicInfo, userId?: string): Promise<boolean> {
-  const quality = highestAvailableSongQuality(musicInfo)
-  if (quality !== 'flac') return true
-  const info = await fetchEmbyAudioMediaInfo(mappedItemId, { userId })
-  if (!info) return false
-  return embyMediaLooksLikeQuality(info, quality, readSongQualitySize(musicInfo, quality))
-}
-
-function embyMediaLooksLikeQuality(
-  info: Awaited<ReturnType<typeof fetchEmbyAudioMediaInfo>>,
-  preferredQuality: MusicQuality,
-  expectedSize?: number,
-): boolean {
-  if (!info) return true
-  const mediaSources = info.mediaSources?.length
-    ? info.mediaSources
-    : [{ container: info.container, path: info.path, size: info.size, mediaStreams: [] }]
-
-  return mediaSources.some(source => {
-    const container = (source.container ?? path.extname(source.path ?? '').slice(1)).toLowerCase()
-    const audioStreams = source.mediaStreams?.filter(stream => (stream.type ?? '').toLowerCase() === 'audio') ?? []
-    if (preferredQuality === 'flac') {
-      if (container.includes('flac') || audioStreams.some(stream => (stream.codec ?? '').toLowerCase() === 'flac')) return true
-      return Boolean(expectedSize && source.size && source.size >= expectedSize * 0.8)
-    }
-    return true
-  })
 }
 
 function syncQQPlayHistoryFromStoredUrlBestEffort(request: Request, musicInfo: MusicInfo, quality: MusicQuality): void {
