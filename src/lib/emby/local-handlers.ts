@@ -908,7 +908,7 @@ async function handleCollectionRequest(request: Request, embyPath: string): Prom
 async function handlePlaybackReportRequest(request: Request, embyPath: string): Promise<Response | undefined> {
   const body = await request.clone().json().catch(() => undefined) as { ItemId?: unknown } | undefined
   const itemId = typeof body?.ItemId === 'string' ? body.ItemId : ''
-  const decoded = decodeVirtualId(itemId)
+  const decoded = await resolveSongVirtualId(itemId)
   if (!decoded || decoded.kind !== 'qq-song') return undefined
 
   const stored = loadVirtualSong(decoded.songmid)
@@ -934,7 +934,7 @@ async function handleItemRequest(embyPath: string): Promise<Response | undefined
   const itemId = extractItemId(embyPath)
   if (!itemId) return undefined
 
-  const decoded = decodeVirtualId(itemId)
+  const decoded = await resolveSongVirtualId(itemId)
   if (!decoded) return undefined
 
   if (decoded.kind !== 'qq-song') {

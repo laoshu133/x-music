@@ -5023,6 +5023,95 @@ test('ampcast virtual audio proxies local mapped Emby item before LX fallback', 
   }
 })
 
+test('mapped Emby item detail and playback report are handled locally', async () => {
+  const originalFetch = globalThis.fetch
+  const songmid = `qq-mapped-report-${Date.now()}`
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999119')
+    saveQQLoginCookie('uin=o999119; qm_keyst=test-key')
+    markAccountUpstreamBound('999119')
+    const account = getAccountByQQ('999119')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const authHeader = `MediaBrowser Client="ampcast", Version="0.9.28", Device="PC", Token="${authPayload.AccessToken}"`
+    const song: MusicInfo = {
+      source: 'tx',
+      songmid,
+      name: 'Mapped Report Song',
+      singer: 'QQ Artist',
+      albumName: 'QQ Album',
+      albumId: 'qq-album',
+      interval: '03:08',
+      types: [{ type: '320k', size: '1 MB' }],
+    }
+    db.prepare(`
+      INSERT INTO app_settings (key, value_json, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP
+    `).run(`virtual.song.${songmid}`, JSON.stringify({ song }))
+    upsertRemoteMapping({
+      localType: 'track',
+      localKey: `tx:${songmid}`,
+      remote: 'emby',
+      remoteId: 'stale-emby-mapped-report-item',
+      raw: song,
+    })
+
+    const upstreamRequests: string[] = []
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      upstreamRequests.push(String(url))
+      return new Response('stale upstream item should not be requested', { status: 500 })
+    }) as typeof fetch
+
+    const detail = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items/stale-emby-mapped-report-item`, {
+        headers: { 'X-Emby-Authorization': authHeader },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/Items/stale-emby-mapped-report-item`),
+    )
+    assert.equal(detail.status, 200)
+    const detailPayload = await detail.json()
+    assert.equal(detailPayload.Name, 'Mapped Report Song')
+    assert.equal(detailPayload.Id, 'stale-emby-mapped-report-item')
+    assert.equal(detailPayload.MediaSources[0].Id, 'stale-emby-mapped-report-item')
+    assert.equal(detailPayload.MediaSources[0].Path, '/Audio/stale-emby-mapped-report-item/universal')
+
+    for (const path of ['/emby/Sessions/Playing', '/emby/Sessions/Playing/Progress']) {
+      const response = await dispatchEmbyRequest(
+        new Request(`http://local${path}`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'X-Emby-Authorization': authHeader,
+          },
+          body: JSON.stringify({
+            ItemId: 'stale-emby-mapped-report-item',
+            IsPaused: false,
+            PositionTicks: 0,
+            PlaySessionId: 'mapped-report-session',
+          }),
+        }),
+        stripOptionalEmbyPrefix(path),
+      )
+      assert.equal(response.status, 204)
+    }
+    assert.deepEqual(upstreamRequests, [])
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999119')
+    clearQQLoginCookie()
+    db.prepare('DELETE FROM app_settings WHERE key = ?').run(`virtual.song.${songmid}`)
+    db.prepare("DELETE FROM tracks WHERE songmid = ? AND source = 'tx'").run(songmid)
+    db.prepare("DELETE FROM remote_mappings WHERE local_type = 'track' AND local_key = ? AND remote = 'emby'").run(`tx:${songmid}`)
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('local emby virtual audio uses mapped high-quality Emby item before low local cache', async () => {
   const originalFetch = globalThis.fetch
   const originalLxMusicSourceScript = process.env.LX_MUSIC_SOURCE_SCRIPT
