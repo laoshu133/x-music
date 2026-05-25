@@ -89,3 +89,16 @@ export function getRemoteMappingByRemote(input: {
     LIMIT 1
   `).get(input) as RemoteMappingRecord | undefined
 }
+
+export function deleteRemoteMapping(input: {
+  localType: string
+  localKey: string
+  remote: string
+  remoteId?: string
+}): void {
+  db.prepare(`
+    DELETE FROM remote_mappings
+    WHERE local_type = @localType AND local_key = @localKey AND remote = @remote
+      AND (@remoteId IS NULL OR remote_id = @remoteId)
+  `).run(input)
+}

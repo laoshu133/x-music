@@ -37,7 +37,7 @@ import {
   rememberVirtualPlaylist,
   rememberVirtualSong,
 } from './virtual-store'
-import { getRemoteMapping, getRemoteMappingByRemote, upsertRemoteMapping } from '@/lib/db/remote-mappings'
+import { deleteRemoteMapping, getRemoteMapping, getRemoteMappingByRemote, upsertRemoteMapping, type RemoteMappingRecord } from '@/lib/db/remote-mappings'
 import { deleteEmbyItems, fetchEmbyJson, fetchEmbyText, searchEmbyAudioByName, searchEmbyPlaylistByName } from './upstream-api'
 import { proxyToUpstreamEmby } from './upstream-proxy'
 import { ensureEmbyMasterCachedBestEffort } from './master'
@@ -221,7 +221,7 @@ const LOCAL_ROUTES: LocalRoute[] = [
     name: 'item',
     authorize: true,
     match: ({ request, embyPath }) => request.method === 'GET' && isItemRequest(embyPath),
-    handle: ({ embyPath }) => handleItemRequest(embyPath),
+    handle: ({ request, embyPath }) => handleItemRequest(request, embyPath),
   },
   {
     name: 'playback-info',
@@ -633,7 +633,7 @@ async function handleImageRequest(request: Request, embyPath: string): Promise<R
 
   const decoded = decodeClientVirtualId(itemId)
   if (!decoded) {
-    const songmid = songmidForExternalItemId(itemId) ?? (looksLikeQQSongMid(itemId) ? itemId : undefined)
+    const songmid = localSongmidForExternalItemId(itemId) ?? (looksLikeQQSongMid(itemId) ? itemId : undefined)
     if (!songmid) return proxyToUpstreamEmby(request, embyPath)
     const localCover = await readCachedTrackCover({ source: 'tx', songmid })
     if (localCover) return markRequestSource(localCover, 'local')
@@ -930,9 +930,22 @@ async function handlePlaybackReportRequest(request: Request, embyPath: string): 
   return new Response(null, { status: 204 })
 }
 
-async function handleItemRequest(embyPath: string): Promise<Response | undefined> {
+async function handleItemRequest(request: Request, embyPath: string): Promise<Response | undefined> {
   const itemId = extractItemId(embyPath)
   if (!itemId) return undefined
+
+  const mapped = mappingForExternalTrackItemId(itemId)
+  if (mapped) {
+    const upstream = await proxyToUpstreamEmby(request, embyPath).catch(() => undefined)
+    if (isUsableUpstreamResponse(upstream)) return upstream
+    deleteStaleTrackMapping(mapped)
+    const songmid = songmidFromTrackMapping(mapped)
+    if (songmid) {
+      const stored = await loadOrFetchVirtualSong(songmid)
+      if (!stored) return Response.json({ error: 'Virtual QQ song metadata is not cached. Search or open the virtual playlist again.' }, { status: 404 })
+      return Response.json(songToEmbyItem(stored.song))
+    }
+  }
 
   const decoded = await resolveSongVirtualId(itemId)
   if (!decoded) return undefined
@@ -993,6 +1006,13 @@ async function handleSimilarItemsRequest(request: Request, embyPath: string): Pr
 async function handleLyricsRequest(request: Request, embyPath: string): Promise<Response | undefined> {
   if (!isAuthorizedLocalRequest(request) && !subsonicAccountForRequest(request)) return unauthorizedResponse()
   const itemId = extractNestedItemId(embyPath, 'Lyrics')
+  const mapped = itemId ? mappingForExternalTrackItemId(itemId) : undefined
+  if (mapped) {
+    const upstream = await proxyToUpstreamEmby(request, embyPath).catch(() => undefined)
+    if (isUsableUpstreamResponse(upstream)) return upstream
+    deleteStaleTrackMapping(mapped)
+  }
+
   const decoded = itemId ? await resolveSongVirtualId(itemId) : undefined
   if (!decoded) return undefined
 
@@ -1059,6 +1079,13 @@ async function handleSubsonicLyricsRequest(request: Request): Promise<Response> 
 
 async function handleSubtitleStreamRequest(request: Request, embyPath: string): Promise<Response | undefined> {
   const itemId = extractSubtitleItemId(embyPath)
+  const mapped = itemId ? mappingForExternalTrackItemId(itemId) : undefined
+  if (mapped) {
+    const upstream = await proxyToUpstreamEmby(request, embyPath).catch(() => undefined)
+    if (isUsableUpstreamResponse(upstream)) return upstream
+    deleteStaleTrackMapping(mapped)
+  }
+
   const decoded = itemId ? await resolveSongVirtualId(itemId) : undefined
   if (!decoded) return undefined
 
@@ -1194,6 +1221,13 @@ async function handleVirtualPlaylistItemsRequest(request: Request, decoded: Virt
 
 async function handleAudioRequest(request: Request, embyPath: string): Promise<Response | undefined> {
   const itemId = decodeURIComponent(embyPath.split('/')[2] ?? '')
+  const staleCandidate = mappingForExternalTrackItemId(itemId)
+  if (staleCandidate) {
+    const proxied = await proxyToUpstreamEmby(request, embyPath).catch(() => undefined)
+    if (isUsableUpstreamResponse(proxied)) return proxied
+    deleteStaleTrackMapping(staleCandidate)
+  }
+
   const decoded = await resolveSongVirtualId(itemId)
   if (!decoded || decoded.kind !== 'qq-song') return undefined
 
@@ -1209,10 +1243,10 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
   }
 
   const preferredQuality = preferredAudioQualityForRequest(request, musicInfo)
-  const mapped = await resolveEmbyTrackMapping(musicInfo)
-  if (mapped) {
+  const mappedItemId = await resolveEmbyTrackMapping(musicInfo)
+  if (mappedItemId) {
     const action = embyPath.split('/')[3] ?? 'universal'
-    const proxied = await proxyToUpstreamEmby(request, `/Audio/${encodeURIComponent(mapped)}/${action}`).catch(() => undefined)
+    const proxied = await proxyToUpstreamEmby(request, `/Audio/${encodeURIComponent(mappedItemId)}/${action}`).catch(() => undefined)
     if (proxied?.ok || proxied?.status === 206) return proxied
   }
 
@@ -1372,7 +1406,7 @@ async function resolveSongVirtualId(itemId: string): Promise<Extract<VirtualId, 
   const decoded = decodeClientVirtualId(itemId)
   if (decoded?.kind === 'qq-song') return decoded
 
-  const songmid = songmidForExternalItemId(itemId)
+  const songmid = localSongmidForExternalItemId(itemId)
   if (songmid) return { kind: 'qq-song', songmid }
 
   const remote = await fetchEmbySongForExternalItemId(itemId)
@@ -1391,17 +1425,13 @@ async function resolveSongVirtualId(itemId: string): Promise<Extract<VirtualId, 
   return undefined
 }
 
-function songmidForExternalItemId(itemId: string): string | undefined {
-  const row = db.prepare(`
-    SELECT local_key AS localKey
-    FROM remote_mappings
-    WHERE remote = 'emby' AND remote_id = ?
-      AND local_type = 'track'
-    LIMIT 1
-  `).get(itemId) as { localKey?: string } | undefined
-  const localKey = row?.localKey ?? ''
-  const match = localKey.match(/^tx:(.+)$/)
-  if (match?.[1]) return match[1]
+function localSongmidForExternalItemId(itemId: string): string | undefined {
+  const mapping = mappingForExternalTrackItemId(itemId)
+  const songmid = mapping ? songmidFromTrackMapping(mapping) : undefined
+  if (songmid) return songmid
+
+  const staleSongmid = staleEmbyTrackAliasSongmid(itemId)
+  if (staleSongmid) return staleSongmid
 
   const track = db.prepare(`
     SELECT t.songmid
@@ -1411,6 +1441,66 @@ function songmidForExternalItemId(itemId: string): string | undefined {
     LIMIT 1
   `).get({ itemId, numericItemId: Number(itemId) }) as { songmid?: string } | undefined
   return track?.songmid
+}
+
+function mappingForExternalTrackItemId(itemId: string): RemoteMappingRecord | undefined {
+  const mapping = getRemoteMappingByRemote({ remote: 'emby', remoteId: itemId })
+  return mapping?.localType === 'track' ? mapping : undefined
+}
+
+function songmidFromTrackMapping(mapping: Pick<RemoteMappingRecord, 'localKey'>): string | undefined {
+  return mapping.localKey.match(/^tx:(.+)$/)?.[1]
+}
+
+function deleteStaleTrackMapping(mapping: Pick<RemoteMappingRecord, 'localType' | 'localKey' | 'remote' | 'remoteId' | 'rawJson'>): void {
+  rememberStaleEmbyTrackAlias(mapping)
+  deleteRemoteMapping({ localType: mapping.localType, localKey: mapping.localKey, remote: mapping.remote, remoteId: mapping.remoteId })
+}
+
+function isUsableUpstreamResponse(response: Response | undefined): response is Response {
+  if (!response) return false
+  return response.ok || response.status === 206
+}
+
+function staleEmbyTrackAliasSongmid(itemId: string): string | undefined {
+  const row = db.prepare('SELECT value_json AS valueJson FROM app_settings WHERE key = ?').get(staleEmbyTrackAliasKey(itemId)) as { valueJson?: string } | undefined
+  if (!row?.valueJson) return undefined
+  try {
+    const alias = JSON.parse(row.valueJson) as { source?: string; songmid?: string }
+    return alias.source === 'tx' && alias.songmid ? alias.songmid : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function rememberStaleEmbyTrackAlias(mapping: Pick<RemoteMappingRecord, 'localKey' | 'remoteId' | 'rawJson'>): void {
+  const songmid = songmidFromTrackMapping(mapping)
+  if (!songmid) return
+  let raw: unknown
+  try {
+    raw = mapping.rawJson ? JSON.parse(mapping.rawJson) : undefined
+  } catch {
+    raw = undefined
+  }
+  db.prepare(`
+    INSERT INTO app_settings (key, value_json, updated_at)
+    VALUES (@key, @valueJson, CURRENT_TIMESTAMP)
+    ON CONFLICT(key) DO UPDATE SET
+      value_json = excluded.value_json,
+      updated_at = CURRENT_TIMESTAMP
+  `).run({
+    key: staleEmbyTrackAliasKey(mapping.remoteId),
+    valueJson: JSON.stringify({
+      source: 'tx',
+      songmid,
+      staleRemoteId: mapping.remoteId,
+      raw,
+    }),
+  })
+}
+
+function staleEmbyTrackAliasKey(itemId: string): string {
+  return `stale-emby-track.${itemId}`
 }
 
 async function fetchEmbySongForExternalItemId(itemId: string): Promise<MusicInfo | undefined> {

@@ -5024,7 +5024,7 @@ test('ampcast virtual audio proxies local mapped Emby item before LX fallback', 
   }
 })
 
-test('mapped Emby item detail and playback report are handled locally', async () => {
+test('stale mapped Emby item detail falls back to QQ and removes mapping', async () => {
   const originalFetch = globalThis.fetch
   const songmid = `qq-mapped-report-${Date.now()}`
   try {
@@ -5091,47 +5091,120 @@ test('mapped Emby item detail and playback report are handled locally', async ()
     assert.equal(detail.status, 200)
     const detailPayload = await detail.json()
     assert.equal(detailPayload.Name, 'Mapped Report Song')
-    assert.equal(detailPayload.Id, 'stale-emby-mapped-report-item')
-    assert.equal(detailPayload.MediaSources[0].Id, 'stale-emby-mapped-report-item')
-    assert.equal(detailPayload.MediaSources[0].Path, '/Audio/stale-emby-mapped-report-item/universal')
+    assert.match(detailPayload.Id, /^mix_/)
+    assert.equal(detailPayload.MediaSources[0].Id, detailPayload.Id)
+    assert.equal(detailPayload.MediaSources[0].Path, `/Audio/${encodeURIComponent(detailPayload.Id)}/universal`)
     assert.equal(detailPayload.HasLyrics, true)
-    assert.equal(detailPayload.MediaSources[0].MediaStreams[1].DeliveryUrl, '/Items/stale-emby-mapped-report-item/Subtitles/1/Stream.js')
+    assert.equal(detailPayload.MediaSources[0].MediaStreams[1].DeliveryUrl, `/Items/${encodeURIComponent(detailPayload.Id)}/Subtitles/1/Stream.js`)
+    const mappingCount = db.prepare("SELECT COUNT(*) AS count FROM remote_mappings WHERE local_type = 'track' AND local_key = ? AND remote = 'emby'").get(`tx:${songmid}`) as { count: number }
+    assert.equal(mappingCount.count, 0)
+    const staleAlias = db.prepare('SELECT value_json AS valueJson FROM app_settings WHERE key = ?').get('stale-emby-track.stale-emby-mapped-report-item') as { valueJson?: string } | undefined
+    assert.equal(JSON.parse(staleAlias?.valueJson ?? '{}').songmid, songmid)
 
-    const subtitle = await dispatchEmbyRequest(
-      new Request('http://local/emby/Items/stale-emby-mapped-report-item/Subtitles/1/Stream.js', {
+    const repeatDetail = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items/stale-emby-mapped-report-item`, {
         headers: { 'X-Emby-Authorization': authHeader },
       }),
-      stripOptionalEmbyPrefix('/emby/Items/stale-emby-mapped-report-item/Subtitles/1/Stream.js'),
+      stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/Items/stale-emby-mapped-report-item`),
+    )
+    assert.equal(repeatDetail.status, 200)
+    const repeatPayload = await repeatDetail.json()
+    assert.equal(repeatPayload.Name, 'Mapped Report Song')
+
+    const subtitle = await dispatchEmbyRequest(
+      new Request(`http://local/emby${detailPayload.MediaSources[0].MediaStreams[1].DeliveryUrl}`, {
+        headers: { 'X-Emby-Authorization': authHeader },
+      }),
+      stripOptionalEmbyPrefix(`/emby${detailPayload.MediaSources[0].MediaStreams[1].DeliveryUrl}`),
     )
     assert.equal(subtitle.status, 200)
     assert.match(subtitle.headers.get('content-type') ?? '', /application\/json/)
     const subtitlePayload = await subtitle.json()
     assert.equal(subtitlePayload.TrackEvents[0].Text, '映射歌词')
-
-    for (const path of ['/emby/Sessions/Playing', '/emby/Sessions/Playing/Progress']) {
-      const response = await dispatchEmbyRequest(
-        new Request(`http://local${path}`, {
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            'X-Emby-Authorization': authHeader,
-          },
-          body: JSON.stringify({
-            ItemId: 'stale-emby-mapped-report-item',
-            IsPaused: false,
-            PositionTicks: 0,
-            PlaySessionId: 'mapped-report-session',
-          }),
-        }),
-        stripOptionalEmbyPrefix(path),
-      )
-      assert.equal(response.status, 204)
-    }
-    assert.deepEqual(upstreamRequests, [])
+    assert.equal(new URL(upstreamRequests[0]).pathname, '/Users/emby-user-999119/Items/stale-emby-mapped-report-item')
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999119')
     clearQQLoginCookie()
     db.prepare('DELETE FROM app_settings WHERE key = ?').run(`virtual.song.${songmid}`)
+    db.prepare('DELETE FROM app_settings WHERE key = ?').run('stale-emby-track.stale-emby-mapped-report-item')
+    db.prepare("DELETE FROM tracks WHERE songmid = ? AND source = 'tx'").run(songmid)
+    db.prepare("DELETE FROM remote_mappings WHERE local_type = 'track' AND local_key = ? AND remote = 'emby'").run(`tx:${songmid}`)
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('mapped Emby item detail returns upstream item when mapping is valid', async () => {
+  const originalFetch = globalThis.fetch
+  const songmid = `qq-valid-mapped-detail-${Date.now()}`
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999120')
+    saveQQLoginCookie('uin=o999120; qm_keyst=test-key')
+    markAccountUpstreamBound('999120')
+    const account = getAccountByQQ('999120')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const authHeader = `MediaBrowser Client="ampcast", Version="0.9.28", Device="PC", Token="${authPayload.AccessToken}"`
+    const song: MusicInfo = {
+      source: 'tx',
+      songmid,
+      name: 'Valid Mapped Song',
+      singer: 'QQ Artist',
+      albumName: 'QQ Album',
+      interval: '03:08',
+      types: [{ type: '320k', size: '1 MB' }],
+    }
+    db.prepare(`
+      INSERT INTO app_settings (key, value_json, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP
+    `).run(`virtual.song.${songmid}`, JSON.stringify({ song }))
+    upsertRemoteMapping({
+      localType: 'track',
+      localKey: `tx:${songmid}`,
+      remote: 'emby',
+      remoteId: 'valid-emby-mapped-item',
+      raw: song,
+    })
+
+    const upstreamRequests: string[] = []
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const requestUrl = new URL(String(url))
+      upstreamRequests.push(requestUrl.pathname)
+      if (requestUrl.pathname.endsWith('/Users/emby-user-999120/Items/valid-emby-mapped-item')) {
+        return Response.json({
+          Id: 'valid-emby-mapped-item',
+          Name: 'Upstream Valid Song',
+          HasLyrics: false,
+          MediaSources: [{ Id: 'valid-emby-mapped-item', MediaStreams: [{ Type: 'Audio', Index: 0 }] }],
+        })
+      }
+      return Response.json({ error: 'unexpected upstream request' }, { status: 500 })
+    }) as typeof fetch
+
+    const detail = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items/valid-emby-mapped-item`, {
+        headers: { 'X-Emby-Authorization': authHeader },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/Items/valid-emby-mapped-item`),
+    )
+    assert.equal(detail.status, 200)
+    assert.equal(detail.headers.get('x-x-music-source'), 'upstream')
+    const payload = await detail.json()
+    assert.equal(payload.Name, 'Upstream Valid Song')
+    assert.equal(payload.HasLyrics, false)
+    assert.deepEqual(upstreamRequests, ['/Users/emby-user-999120/Items/valid-emby-mapped-item'])
+    assert.ok(db.prepare("SELECT id FROM remote_mappings WHERE local_type = 'track' AND local_key = ? AND remote = 'emby'").get(`tx:${songmid}`))
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999120')
+    clearQQLoginCookie()
+    db.prepare('DELETE FROM app_settings WHERE key = ?').run(`virtual.song.${songmid}`)
+    db.prepare('DELETE FROM app_settings WHERE key = ?').run('stale-emby-track.valid-emby-mapped-item')
     db.prepare("DELETE FROM tracks WHERE songmid = ? AND source = 'tx'").run(songmid)
     db.prepare("DELETE FROM remote_mappings WHERE local_type = 'track' AND local_key = ? AND remote = 'emby'").run(`tx:${songmid}`)
     globalThis.fetch = originalFetch
