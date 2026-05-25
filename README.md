@@ -151,6 +151,7 @@ Optional:
 - `MUSIC_DATA_DIR`: shared music data root, default `./data`.
 - `PORT`: production/server port, default deployment value `8098`; local `npm run dev` uses `3004`.
 - `AMPCAST_PORT`: optional host port for the bundled ampcast container in Docker Compose, default `8000`.
+- `AMPCAST_URL`: optional ampcast upstream URL for XMusic's same-origin `/@player` proxy, default `http://ampcast:8000/`. Local npm development can use `http://127.0.0.1:8000/`.
 - `EMBY_PROXY_TIMEOUT_MS`: upstream Emby proxy timeout, default `30000`.
 - `X_MUSIC_REQUEST_LOGS`: request logging to stdout for Docker/Dokploy logs. `auto` enables logs in production and leaves local `next dev` to Next's built-in request output; set `true` to force-enable locally or `false` to reduce production log volume. URLs are logged with sensitive token-like query values redacted.
 - `EMBY_SOURCE_WEBDAV_DSN`: optional WebDAV destination for syncing finalized music files to the upstream Emby music library, for example `https://user:password@example.com/dav/music`. The DSN path should map to the same directory Emby reports for its music library, such as `/volume1/music`; XMusic preserves the relative `MUSIC_DATA_DIR/music` layout when uploading.

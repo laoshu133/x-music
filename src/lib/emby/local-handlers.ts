@@ -37,7 +37,7 @@ import {
   rememberVirtualPlaylist,
   rememberVirtualSong,
 } from './virtual-store'
-import { getRemoteMapping, upsertRemoteMapping } from '@/lib/db/remote-mappings'
+import { getRemoteMapping, getRemoteMappingByRemote, upsertRemoteMapping } from '@/lib/db/remote-mappings'
 import { deleteEmbyItems, fetchEmbyAudioMediaInfo, fetchEmbyJson, fetchEmbyText, searchEmbyAudioByName, searchEmbyPlaylistByName } from './upstream-api'
 import { proxyToUpstreamEmby } from './upstream-proxy'
 import { ensureEmbyMasterCachedBestEffort } from './master'
@@ -165,7 +165,7 @@ const LOCAL_ROUTES: LocalRoute[] = [
     name: 'favorite-item-mutation',
     authorize: true,
     match: ({ request, embyPath }) => isFavoriteItemMutation(request.method, embyPath)
-      && isVirtualFavoriteItemMutation(embyPath),
+      && isLocallyHandledFavoriteItemMutation(embyPath),
     handle: ({ request, embyPath }) => handleFavoriteItemMutationRequest(
       request,
       extractFavoriteItemId(embyPath)!,
@@ -462,7 +462,7 @@ function forgetVirtualItem(decoded: VirtualId): void {
 }
 
 async function handleFavoriteItemMutationRequest(request: Request, itemId: string, favorite: boolean): Promise<Response> {
-  const decoded = decodeVirtualId(itemId)
+  const decoded = await resolveSongVirtualId(itemId)
   if (!decoded) return favoriteItemMutationResponse(itemId, favorite)
 
   if (decoded.kind !== 'qq-song') {
@@ -518,6 +518,12 @@ function favoriteItemMutationResponse(itemId: string, favorite: boolean): Respon
     ItemId: itemId,
     ServerId: LOCAL_SERVER_ID,
   })
+}
+
+function getMappedSongmidForEmbyItemId(itemId: string): string | undefined {
+  const mapping = getRemoteMappingByRemote({ remote: 'emby', remoteId: itemId })
+  if (mapping?.localType !== 'track') return undefined
+  return mapping.localKey.match(/^tx:(.+)$/)?.[1]
 }
 
 function favoriteItemMutationState(request: Request, path: string): boolean {
@@ -600,9 +606,9 @@ function findAccountByLocalOrUpstreamUserId(userId: string): AccountRecord | und
   return getAccountByEmbyUserId(userId) ?? listAccounts().find(account => localUserId(account) === userId)
 }
 
-function isVirtualFavoriteItemMutation(path: string): boolean {
+function isLocallyHandledFavoriteItemMutation(path: string): boolean {
   const itemId = extractFavoriteItemId(path)
-  return Boolean(itemId && decodeVirtualId(itemId))
+  return Boolean(itemId && (decodeVirtualId(itemId) || getMappedSongmidForEmbyItemId(itemId)))
 }
 
 function isLocalEmptyCollectionRequest(path: string): boolean {
@@ -2186,14 +2192,16 @@ function nonEmptyString(value: unknown): string | undefined {
 function songToEmbyItem(song: MusicInfo, _playlistId?: string, isFavorite = false) {
   const artists = splitArtists(song.singer)
   const runtimeTicks = intervalToTicks(song.interval)
-  const mediaSource = songMediaSource(song, runtimeTicks)
-  const imageTag = songImageTag(song)
+  const itemId = embyFacingSongItemId(song)
+  const virtualId = songVirtualId(song)
+  const mediaSource = songMediaSource(song, runtimeTicks, itemId, virtualId)
+  const imageTag = songImageTag(song, itemId)
   const albumId = nonEmptyString(song.albumId)
 
   return compactRecord({
     Name: song.name,
     ServerId: LOCAL_SERVER_ID,
-    Id: songVirtualId(song),
+    Id: itemId,
     DateCreated: '2000-01-01T00:00:00.0000000Z',
     CanDelete: false,
     CanDownload: true,
@@ -2215,7 +2223,7 @@ function songToEmbyItem(song: MusicInfo, _playlistId?: string, isFavorite = fals
     ArtistItems: artists.map((name, index) => ({ Name: name, Id: `${song.songmid}-artist-${index}` })),
     Composers: [],
     RunTimeTicks: runtimeTicks,
-    HasLyrics: true,
+    HasLyrics: itemId === virtualId,
     MediaSources: [mediaSource],
     ImageTags: imageTag ? { Primary: imageTag } : {},
     UserData: {
@@ -2225,6 +2233,10 @@ function songToEmbyItem(song: MusicInfo, _playlistId?: string, isFavorite = fals
       Played: false,
     },
   })
+}
+
+function embyFacingSongItemId(song: MusicInfo): string {
+  return validEmbyTrackMapping(song) ?? songVirtualId(song)
 }
 
 function favoriteSongToEmbyItem(song: MusicInfo, index: number) {
@@ -2269,17 +2281,19 @@ function readNestedRawValue(raw: unknown, keys: string[]): unknown {
   return undefined
 }
 
-function songMediaSource(song: MusicInfo, runtimeTicks?: number) {
+function songMediaSource(song: MusicInfo, runtimeTicks?: number, itemId = songVirtualId(song), virtualId = songVirtualId(song)) {
   const quality = preferredSongQuality(song)
   const bitrate = quality === 'flac' ? 900_000 : quality === '128k' ? 128_000 : 320_000
   const container = quality === 'flac' ? 'flac' : 'mp3'
   const codec = quality === 'flac' ? 'flac' : 'mp3'
-  const id = songVirtualId(song)
+  const subtitleDeliveryUrl = itemId === virtualId
+    ? `/Items/${encodeURIComponent(virtualId)}/Subtitles/1/Stream.js`
+    : undefined
 
   return {
     Protocol: 'Http',
-    Id: id,
-    Path: `/Audio/${encodeURIComponent(id)}/universal`,
+    Id: itemId,
+    Path: `/Audio/${encodeURIComponent(itemId)}/universal`,
     Type: 'Default',
     Container: container,
     Size: readSongQualitySize(song, quality),
@@ -2334,7 +2348,7 @@ function songMediaSource(song: MusicInfo, runtimeTicks?: number) {
         SupportsExternalStream: true,
         Protocol: 'Http',
         DeliveryMethod: 'External',
-        DeliveryUrl: `/Items/${encodeURIComponent(id)}/Subtitles/1/Stream.js`,
+        DeliveryUrl: subtitleDeliveryUrl,
         Language: 'zho',
         AttachmentSize: 0,
       },
@@ -2346,7 +2360,7 @@ function songMediaSource(song: MusicInfo, runtimeTicks?: number) {
     ReadAtNativeFramerate: false,
     DefaultAudioStreamIndex: 0,
     DefaultSubtitleStreamIndex: 1,
-    ItemId: id,
+    ItemId: itemId,
   }
 }
 
@@ -2373,9 +2387,9 @@ function readSongQualitySize(song: MusicInfo, quality: MusicQuality): number | u
   return Math.round(value * multiplier)
 }
 
-function songImageTag(song: MusicInfo): string | undefined {
+function songImageTag(song: MusicInfo, itemId = songVirtualId(song)): string | undefined {
   if (!song.img) return undefined
-  return songVirtualId(song)
+  return itemId
 }
 
 function songProductionYear(song: MusicInfo): number | undefined {

@@ -603,7 +603,7 @@ test('ampcast proxy maps root versioned assets to the configured upstream', asyn
   }
 })
 
-test('ampcast proxy ignores legacy AMPCAST_URL environment overrides', async () => {
+test('ampcast proxy uses optional AMPCAST_URL environment override', async () => {
   const originalFetch = globalThis.fetch
   const originalAmpcastUrl = process.env.AMPCAST_URL
   try {
@@ -618,7 +618,7 @@ test('ampcast proxy ignores legacy AMPCAST_URL environment overrides', async () 
 
     await proxyToAmpcast(new Request('http://local/@player/'), '/')
 
-    assert.equal(forwardedUrl, 'http://ampcast:8000/')
+    assert.equal(forwardedUrl, 'https://legacy-ampcast.example/')
   } finally {
     if (originalAmpcastUrl === undefined) {
       delete process.env.AMPCAST_URL
@@ -2397,6 +2397,91 @@ test('local emby favorite songs pages through QQ results beyond 200', async () =
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999012')
     clearQQLoginCookie()
     db.prepare("DELETE FROM app_settings WHERE key LIKE 'virtual.song.qq-favorite-page-%'").run()
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('local emby favorite list uses mapped upstream item ids for synced QQ songs', async () => {
+  const originalFetch = globalThis.fetch
+  const songmid = `qq-favorite-mapped-${Date.now()}`
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999050')
+    saveQQLoginCookie('uin=o999050; euin=encrypted999050; qm_keyst=test-key')
+    markAccountUpstreamBound('999050')
+    const account = getAccountByQQ('999050')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const authHeader = `MediaBrowser Client="ampcast", Version="0.9.28", Device="PC", Token="${authPayload.AccessToken}"`
+
+    const mappedSong: MusicInfo = {
+      source: 'tx',
+      songmid,
+      name: 'Mapped Favorite Song',
+      singer: 'QQ Artist',
+      albumName: 'Mapped Favorite Album',
+      albumId: 'qq-album-1',
+      interval: '03:08',
+      img: 'https://y.gtimg.cn/music/photo_new/T002R500x500M000qq-album-1.jpg',
+      types: [{ type: 'flac', size: '10 MB' }],
+      raw: { songId: 449205, songmid },
+    }
+    upsertRemoteMapping({
+      localType: 'track',
+      localKey: `tx:${songmid}`,
+      remote: 'emby',
+      remoteId: 'emby-mapped-favorite-item',
+      raw: mappedSong,
+    })
+
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'u.y.qq.com') {
+        return Response.json({
+          code: 0,
+          req: {
+            code: 0,
+            data: {
+              songlist: [{
+                id: 449205,
+                mid: songmid,
+                title: mappedSong.name,
+                interval: 188,
+                singer: [{ name: mappedSong.singer, mid: 'qq-artist-1' }],
+                album: { name: mappedSong.albumName, mid: mappedSong.albumId },
+                file: { media_mid: songmid, size_flac: 10 * 1024 * 1024 },
+              }],
+              total_song_num: 1,
+            },
+          },
+        })
+      }
+
+      return Response.json({ Items: [], TotalRecordCount: 0 })
+    }) as typeof fetch
+
+    const response = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio&ParentId=x-music-music&Filters=IsFavorite&Limit=100&StartIndex=0`, {
+        headers: { 'X-Emby-Authorization': authHeader },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/Items`),
+    )
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.Items[0].Id, 'emby-mapped-favorite-item')
+    assert.equal(payload.Items[0].MediaSources[0].Id, 'emby-mapped-favorite-item')
+    assert.equal(payload.Items[0].MediaSources[0].Path, '/Audio/emby-mapped-favorite-item/universal')
+    assert.equal(payload.Items[0].HasLyrics, false)
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999050')
+    clearQQLoginCookie()
+    db.prepare("DELETE FROM app_settings WHERE key = ?").run(`virtual.song.${songmid}`)
+    db.prepare("DELETE FROM remote_mappings WHERE local_type = 'track' AND local_key = ? AND remote = 'emby'").run(`tx:${songmid}`)
     globalThis.fetch = originalFetch
   }
 })

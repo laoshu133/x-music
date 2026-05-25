@@ -10,6 +10,7 @@ const envSchema = z.object({
   LX_MUSIC_SOURCE_SCRIPT: z.string().url().optional(),
   DATABASE_URL: z.string().default('file:./data/app.sqlite'),
   MUSIC_DATA_DIR: z.string().default('./data'),
+  AMPCAST_URL: z.string().url().default(defaultAmpcastUrl),
   EMBY_UPSTREAM_URL: z.string().url(),
   EMBY_API_KEY: z.string().min(1),
   EMBY_PROXY_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),
@@ -44,7 +45,7 @@ export const appConfig = {
     return currentEnv().EMBY_SOURCE_WEBDAV_DSN
   },
   get ampcastUrl() {
-    return defaultAmpcastUrl
+    return currentEnv().AMPCAST_URL
   },
   get adminQQUins() {
     return parseAdminQQUins(currentEnv().ADMIN_QQ_UINS)
