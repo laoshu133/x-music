@@ -22,6 +22,7 @@ import {
   Music2,
   PlayCircle,
   RefreshCw,
+  Heart,
   Trash2,
   Settings,
   Sparkles,
@@ -103,6 +104,26 @@ interface HealthStatus {
   resourceCache: { total: number; totalBytes: number; byType: Record<string, { count: number; bytes: number }> }
   config: { missing: string[]; lxMusicSourceScript: boolean }
   permissions?: { isAdmin: boolean }
+}
+
+interface FavoriteStatusSummary {
+  qqTotal: number
+  embyTotal: number
+}
+
+interface FavoriteStatusSyncResult extends FavoriteStatusSummary {
+  changed: number
+  skipped: number
+  failed: number
+  sync: {
+    attempted: number
+    synced: number
+    failed: number
+    skipped: number
+    beforeEmbyTotal: number
+    afterEmbyTotal: number
+    errors: Array<{ songmid: string; error: string }>
+  }
 }
 
 interface JobsResult {
@@ -254,6 +275,7 @@ export default function MusicClient() {
   const [accountEmbyConfig, setAccountEmbyConfig] = useState<ApiState<AccountEmbyConfig>>(emptyState)
   const [adminConfig, setAdminConfig] = useState<ApiState<AdminConfig>>(emptyState)
   const [health, setHealth] = useState<ApiState<HealthStatus>>(emptyState)
+  const [favoriteStatus, setFavoriteStatus] = useState<ApiState<FavoriteStatusSummary>>(emptyState)
   const [jobs, setJobs] = useState<ApiState<JobsResult>>(emptyState)
   const [users, setUsers] = useState<ApiState<UsersResult>>(emptyState)
   const [message, setMessage] = useState('')
@@ -295,6 +317,23 @@ export default function MusicClient() {
     if (!body) throw new Error(`Request failed: ${response.status}`)
     return body
   })
+  const loadFavoriteStatus = () => run(s => setFavoriteStatus(s), () => fetchJson<FavoriteStatusSummary>('/api/favorites/status'))
+  const syncFavoriteStatus = async () => {
+    setMessage('')
+    setFavoriteStatus({ loading: true, error: '', data: favoriteStatus.data })
+    try {
+      const result = await fetchJson<FavoriteStatusSyncResult>('/api/favorites/status', { method: 'POST' })
+      setFavoriteStatus({ loading: false, error: '', data: { qqTotal: result.qqTotal, embyTotal: result.embyTotal } })
+      setMessage(`同步收藏完成：新增 ${result.changed} 首；QQ 源收藏 ${result.qqTotal} 首，Emby 源收藏 ${result.embyTotal} 首`)
+      loadHealth()
+    } catch (error) {
+      setFavoriteStatus({
+        loading: false,
+        error: error instanceof Error ? error.message : String(error),
+        data: favoriteStatus.data,
+      })
+    }
+  }
   const loadJobs = () => run(s => setJobs(s), () => fetchJson<JobsResult>('/api/jobs?limit=100'))
   const clearJobs = async (status: 'failed' | 'completed') => {
     setMessage('')
@@ -391,7 +430,10 @@ export default function MusicClient() {
   const loadViewData = (next: View) => {
     if (next === 'home' || next === 'player' || next === 'config') loadAdminConfig()
     if (next === 'home' || next === 'player' || next === 'config') loadAccountEmbyConfig()
-    if (next === 'status') loadHealth()
+    if (next === 'status') {
+      loadHealth()
+      loadFavoriteStatus()
+    }
     if (next === 'users' && account.data?.isAdmin) loadUsers()
     if (next === 'jobs' && account.data?.isAdmin) loadJobs()
   }
@@ -580,11 +622,18 @@ export default function MusicClient() {
             <div className="section-head">
               <h3>运行状态</h3>
               <div className="toolbar">
-                <IconButton label="刷新" onClick={loadHealth} disabled={health.loading}><RefreshCw size={16} /></IconButton>
+                <IconButton label="刷新" onClick={() => { loadHealth(); loadFavoriteStatus() }} disabled={health.loading || favoriteStatus.loading}><RefreshCw size={16} /></IconButton>
               </div>
             </div>
             <Status state={health} />
-            {health.data ? <HealthPanel health={health.data} isAdmin={Boolean(account.data?.isAdmin)} /> : null}
+            {health.data ? (
+              <HealthPanel
+                health={health.data}
+                favoriteStatus={favoriteStatus}
+                isAdmin={Boolean(account.data?.isAdmin)}
+                onSyncFavorites={syncFavoriteStatus}
+              />
+            ) : null}
           </section>
         )}
 
@@ -913,7 +962,17 @@ function ConfigPanel({
   )
 }
 
-function HealthPanel({ health, isAdmin }: { health: HealthStatus; isAdmin: boolean }) {
+function HealthPanel({
+  health,
+  favoriteStatus,
+  isAdmin,
+  onSyncFavorites,
+}: {
+  health: HealthStatus
+  favoriteStatus: ApiState<FavoriteStatusSummary>
+  isAdmin: boolean
+  onSyncFavorites: () => void
+}) {
   const cacheEntries = Object.entries(health.resourceCache.byType)
   return (
     <div className="ops-layout">
@@ -934,6 +993,38 @@ function HealthPanel({ health, isAdmin }: { health: HealthStatus; isAdmin: boole
 
       <section className="ops-grid">
         <article>
+          <div className="section-head compact-head">
+            <h3>收藏状态</h3>
+            <button className="secondary-button compact-button" onClick={onSyncFavorites} disabled={favoriteStatus.loading}>
+              <Heart size={15} />同步收藏
+            </button>
+          </div>
+          <Status state={favoriteStatus} />
+          <div className="status-table">
+            <div>
+              <span>QQ 源收藏数</span>
+              <strong>{favoriteStatus.data?.qqTotal ?? '-'}</strong>
+              <small>QQ 音乐实时读取</small>
+            </div>
+            <div>
+              <span>Emby 源收藏数</span>
+              <strong>{favoriteStatus.data?.embyTotal ?? '-'}</strong>
+              <small>当前 Emby 用户收藏</small>
+            </div>
+            <div>
+              <span>等待同步</span>
+              <strong>{health.favorites.pendingCount}</strong>
+              <small>本地收藏队列</small>
+            </div>
+            <div>
+              <span>同步失败</span>
+              <strong>{health.favorites.failedCount}</strong>
+              <small>{health.favorites.failedCount ? '需要检查任务详情' : '无需处理'}</small>
+            </div>
+          </div>
+        </article>
+
+        <article>
           <h3>资源缓存</h3>
           <div className="status-table">
             <div>
@@ -948,27 +1039,6 @@ function HealthPanel({ health, isAdmin }: { health: HealthStatus; isAdmin: boole
                 <small>{formatBytes(item.bytes)}</small>
               </div>
             )) : <p>暂无缓存</p>}
-          </div>
-        </article>
-
-        <article>
-          <h3>收藏同步</h3>
-          <div className="status-table">
-            <div>
-              <span>已收藏</span>
-              <strong>{health.favorites.favoriteCount}</strong>
-              <small>当前帐号收藏</small>
-            </div>
-            <div>
-              <span>等待同步</span>
-              <strong>{health.favorites.pendingCount}</strong>
-              <small>稍后会自动处理</small>
-            </div>
-            <div>
-              <span>同步失败</span>
-              <strong>{health.favorites.failedCount}</strong>
-              <small>{health.favorites.failedCount ? '需要检查任务详情' : '无需处理'}</small>
-            </div>
           </div>
         </article>
       </section>

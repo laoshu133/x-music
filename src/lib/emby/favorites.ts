@@ -205,6 +205,45 @@ export async function syncEmbyFavoritesFromQQList(input: {
   }
 }
 
+export async function getEmbyFavoriteCount(input: {
+  account: AccountRecord | undefined
+  limit?: number
+}): Promise<number> {
+  const embyUserId = input.account?.embyUserId
+  if (!embyUserId) return 0
+
+  const response = await fetchEmbyFavoriteAudioItems({
+    userId: embyUserId,
+    limit: input.limit ?? 1,
+  })
+
+  return response.TotalRecordCount ?? response.Items?.length ?? 0
+}
+
+export async function syncEmbyFavoritesFromQQFavorites(input: {
+  account: AccountRecord | undefined
+  qqFavorites: MusicInfo[]
+  limit?: number
+}): Promise<{
+  attempted: number
+  synced: number
+  failed: number
+  skipped: number
+  beforeEmbyTotal: number
+  afterEmbyTotal: number
+  errors: Array<{ songmid: string; error: string }>
+}> {
+  const beforeEmbyTotal = await getEmbyFavoriteCount({ account: input.account })
+  const sync = await syncEmbyFavoritesFromQQList(input)
+  const afterEmbyTotal = await getEmbyFavoriteCount({ account: input.account })
+
+  return {
+    ...sync,
+    beforeEmbyTotal,
+    afterEmbyTotal,
+  }
+}
+
 function dedupeSongs(songs: MusicInfo[]): MusicInfo[] {
   const seen = new Set<string>()
   const result: MusicInfo[] = []
