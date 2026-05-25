@@ -5233,13 +5233,15 @@ test('local emby virtual audio keeps low quality playback cache out of Emby unti
   }
 })
 
-test('local emby virtual audio falls back to 320k when requested flac is unavailable without syncing low quality to Emby', async () => {
+test('local emby virtual audio syncs best available fallback quality when requested flac is unavailable', async () => {
   const originalFetch = globalThis.fetch
   const originalLxMusicSourceScript = process.env.LX_MUSIC_SOURCE_SCRIPT
+  const originalScanWaitMs = process.env.EMBY_SYNC_SCAN_WAIT_MS
   const songmid = `qq-flac-unavailable-${Date.now()}`
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999051')
     process.env.LX_MUSIC_SOURCE_SCRIPT = 'https://script.example/script/lxmusic?key=test-key'
+    process.env.EMBY_SYNC_SCAN_WAIT_MS = '0'
     saveQQLoginCookie('uin=o999051; qm_keyst=test-key')
     markAccountUpstreamBound('999051')
     const account = getAccountByQQ('999051')
@@ -5302,7 +5304,7 @@ test('local emby virtual audio falls back to 320k when requested flac is unavail
         INNER JOIN tracks t ON t.id = tf.track_id
         WHERE t.source = 'tx' AND t.songmid = ? AND tf.quality = '320k'
       `).get(songmid) as { status?: string } | undefined
-      return row?.status === 'cached_raw'
+      return row?.status === 'tagging' || row?.status === 'ready'
     })
 
     const rows = db.prepare(`
@@ -5316,28 +5318,34 @@ test('local emby virtual audio falls back to 320k when requested flac is unavail
     const fallback = rows.find(row => row.quality === '320k')
     assert.equal(flac?.status, 'failed')
     assert.match(flac?.error ?? '', /404/)
-    assert.equal(fallback?.status, 'cached_raw')
-    assert.equal(fallback?.finalPath, null)
+    assert.ok(fallback?.status === 'tagging' || fallback?.status === 'ready')
+    assert.ok(fallback?.finalPath?.includes('/inbox/') || fallback?.finalPath?.includes('/music/'))
     assert.ok(fallback?.rawPath?.includes('/inbox/'))
 
-    const syncJobs = db.prepare(`
+    const tagOrSyncJobs = db.prepare(`
       SELECT COUNT(*) AS count
       FROM jobs
-      WHERE type = 'sync_emby_track'
+      WHERE type IN ('tag_track_file', 'sync_emby_track')
         AND json_extract(payload_json, '$.songmid') = ?
     `).get(songmid) as { count: number }
-    assert.equal(syncJobs.count, 0)
+    assert.ok(tagOrSyncJobs.count >= 1 || fallback?.status === 'ready')
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999051')
     clearQQLoginCookie()
     db.prepare('DELETE FROM app_settings WHERE key = ?').run(`virtual.song.${songmid}`)
     db.prepare("DELETE FROM tracks WHERE songmid = ? AND source = 'tx'").run(songmid)
     db.prepare("DELETE FROM jobs WHERE json_extract(payload_json, '$.songmid') = ?").run(songmid)
+    db.prepare("DELETE FROM remote_mappings WHERE local_type = 'track' AND local_key = ? AND remote = 'emby'").run(`tx:${songmid}`)
     globalThis.fetch = originalFetch
     if (originalLxMusicSourceScript === undefined) {
       delete process.env.LX_MUSIC_SOURCE_SCRIPT
     } else {
       process.env.LX_MUSIC_SOURCE_SCRIPT = originalLxMusicSourceScript
+    }
+    if (originalScanWaitMs === undefined) {
+      delete process.env.EMBY_SYNC_SCAN_WAIT_MS
+    } else {
+      process.env.EMBY_SYNC_SCAN_WAIT_MS = originalScanWaitMs
     }
   }
 })

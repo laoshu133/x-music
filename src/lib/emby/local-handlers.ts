@@ -1320,7 +1320,7 @@ async function resolvePlayableUpstreamResponse(
         resolved.quality,
         request,
         resolved.ekey,
-        { librarySync: isHighestAvailableQuality(musicInfo, resolved.quality) },
+        { librarySync: shouldSyncResolvedQualityToEmby(musicInfo, preferredQuality, resolved.quality, attempts) },
       )
       return {
         url: resolved.url,
@@ -1338,6 +1338,17 @@ async function resolvePlayableUpstreamResponse(
   }
 
   throw new MusicUrlResolveError('Unable to resolve a playable music URL', attempts)
+}
+
+function shouldSyncResolvedQualityToEmby(
+  musicInfo: MusicInfo,
+  preferredQuality: MusicQuality,
+  resolvedQuality: MusicQuality,
+  attempts: Array<{ quality: MusicQuality; error: string }>,
+): boolean {
+  if (isHighestAvailableQuality(musicInfo, resolvedQuality)) return true
+  return preferredQuality === highestAvailableSongQuality(musicInfo)
+    && attempts.some(attempt => attempt.quality === preferredQuality)
 }
 
 async function loadOrFetchVirtualSong(songmid: string, playlistId?: string): Promise<{ song: MusicInfo; playlistId?: string } | undefined> {
