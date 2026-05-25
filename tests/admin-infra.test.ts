@@ -581,7 +581,7 @@ test('ampcast proxy returns friendly unavailable page when upstream fails', asyn
     assert.equal(response.status, 502)
     assert.match(response.headers.get('content-type') ?? '', /text\/html/)
     assert.match(body, /播放器暂时不可用/)
-    assert.match(body, /AMPCAST_URL/)
+    assert.match(body, /请检查上游 ampcast 服务状态/)
     assert.match(body, /https:\/\/ampcast\.example\/base\//)
   } finally {
     if (originalAmpcastUrl === undefined) {

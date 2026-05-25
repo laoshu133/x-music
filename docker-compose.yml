@@ -13,7 +13,7 @@ services:
     volumes:
       - x-music-data:/app/data
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:${PORT:-8098}/api/health >/dev/null || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8098/api/health >/dev/null || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 5
@@ -30,6 +30,12 @@ services:
       - .env
     volumes:
       - x-music-data:/app/data
+
+  ampcast:
+    image: ghcr.io/rekkyrosso/ampcast:0.9.28
+    restart: unless-stopped
+    ports:
+      - "${AMPCAST_PORT:-8000}:8000"
 
 volumes:
   x-music-data:

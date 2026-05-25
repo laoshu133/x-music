@@ -12,7 +12,7 @@ const envSchema = z.object({
   EMBY_API_KEY: z.string().min(1),
   EMBY_PROXY_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),
   EMBY_SOURCE_WEBDAV_DSN: z.string().url().optional(),
-  AMPCAST_URL: z.string().url().default('https://ampcast.app/'),
+  AMPCAST_URL: z.string().url().default('http://ampcast:8000/'),
   ADMIN_QQ_UINS: z.string().default(''),
 })
 

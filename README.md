@@ -64,10 +64,19 @@ cp .env.example .env
 docker compose up --build
 ```
 
-Compose starts two services:
+Compose starts three services:
 
 - `web`: Next.js UI, APIs, and Emby gateway on port `8098`.
 - `worker`: SQLite job poller for cache, tagging, and Emby sync jobs.
+- `ampcast`: bundled ampcast web player on port `8000`, used by XMusic's same-origin `/@player` proxy.
+
+XMusic uses the internal player URL `http://ampcast:8000/` by default, so the
+embedded player no longer depends on the public `https://ampcast.app/` service.
+You can still open the player directly from the host at:
+
+```text
+http://localhost:8000
+```
 
 All services share `./data`:
 
@@ -117,10 +126,10 @@ Optional:
 - `DATABASE_URL`: SQLite database URL, default `file:./data/app.sqlite`.
 - `MUSIC_DATA_DIR`: shared music data root, default `./data`.
 - `PORT`: production/server port, default deployment value `8098`; local `npm run dev` uses `3004`.
+- `AMPCAST_PORT`: optional host port for the bundled ampcast container in Docker Compose, default `8000`.
 - `EMBY_PROXY_TIMEOUT_MS`: upstream Emby proxy timeout, default `30000`.
 - `X_MUSIC_REQUEST_LOGS`: request logging to stdout for Docker/Dokploy logs. `auto` enables logs in production and leaves local `next dev` to Next's built-in request output; set `true` to force-enable locally or `false` to reduce production log volume. URLs are logged with sensitive token-like query values redacted.
 - `EMBY_SOURCE_WEBDAV_DSN`: optional WebDAV destination for syncing finalized music files to the upstream Emby music library, for example `https://user:password@example.com/dav/music`. The DSN path should map to the same directory Emby reports for its music library, such as `/volume1/music`; XMusic preserves the relative `MUSIC_DATA_DIR/music` layout when uploading.
-- `AMPCAST_URL`: ampcast upstream web entry reverse-proxied by the embedded `/@player` route, default `https://ampcast.app/`.
 - `ADMIN_QQ_UINS`: QQ UIN allowlist for admin-only pages such as user management and jobs. Accepts comma, semicolon, or whitespace separated values.
 - `WORKER_POLL_INTERVAL_MS`: idle worker polling interval, default `5000`.
 - `WORKER_MAX_ATTEMPTS`: max job attempts before failure, default `3`.
@@ -130,6 +139,7 @@ Optional:
 - `TAGGING_FETCH_TIMEOUT_MS`: network metadata/API timeout, default `5000`.
 - `NEXT_PUBLIC_APP_NAME`: public UI label, default should be `XMusic`.
 - `ANALYTICS_SCRIPT_CODE`: optional production-only analytics script tag. Set it to the complete `<script ...></script>` code provided by your analytics service.
+- `AMPCAST_URL`: optional ampcast upstream override for non-Compose deployments, default `http://ampcast:8000/`.
 
 ## Architecture Notes
 

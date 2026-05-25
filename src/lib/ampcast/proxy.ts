@@ -284,7 +284,7 @@ function ampcastUnavailableResponse(request: Request, upstreamBaseUrl: URL, erro
 <body>
   <main>
     <h1>播放器暂时不可用</h1>
-    <p>${escapeHtml(detail)}请检查 <code>AMPCAST_URL</code> 配置或上游 ampcast 服务状态。</p>
+    <p>${escapeHtml(detail)}请检查上游 ampcast 服务状态。</p>
     <p>当前上游：<code>${escapeHtml(upstreamBaseUrl.toString())}</code></p>
     <a href="/">返回 XMusic 首页</a>
   </main>
