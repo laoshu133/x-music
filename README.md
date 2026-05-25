@@ -78,6 +78,30 @@ You can still open the player directly from the host at:
 http://localhost:8000
 ```
 
+To deploy XMusic together with a bundled Emby server, use the overlay Compose
+file:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.emby.yml up --build
+```
+
+Then set XMusic's upstream Emby URL in `.env` to the internal Compose service:
+
+```env
+EMBY_UPSTREAM_URL=http://emby:8096
+```
+
+For an external Emby server, `EMBY_UPSTREAM_URL` must be reachable from the
+XMusic container. Use `host.docker.internal` for a host-machine Emby service
+where supported, or a LAN/reverse-proxy address for another machine.
+
+The bundled Emby service stores configuration in the `emby-config` volume and
+mounts XMusic's shared data volume read-only at `/app/data`. In Emby, add
+`/app/data/music` as the music library path so XMusic sync jobs can match the
+final organized file paths. If you already run Emby elsewhere, keep using the
+default `docker-compose.yml` and point `EMBY_UPSTREAM_URL` at that external
+server instead.
+
 All services share `./data`:
 
 ```text

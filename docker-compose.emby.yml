@@ -1,0 +1,13 @@
+services:
+  emby:
+    image: emby/embyserver:latest
+    restart: unless-stopped
+    ports:
+      - "${EMBY_PORT:-8096}:8096"
+      - "${EMBY_HTTPS_PORT:-8920}:8920"
+    volumes:
+      - emby-config:/config
+      - x-music-data:/app/data:ro
+
+volumes:
+  emby-config:
