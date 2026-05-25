@@ -123,10 +123,11 @@ export const createUpstreamTeeResponse = async (
   const inboxPath = path.join(appConfig.inboxDir, `${cacheKey}${extension}`)
   const shouldCache = !range
 
-  const trackFile = upsertTrackFileStatus(track.id, quality, 'streaming_and_caching', {
-    rawPath: shouldCache ? partPath : undefined,
-    error: shouldCache ? undefined : 'Range request is not cached',
-  })
+  if (shouldCache) {
+    upsertTrackFileStatus(track.id, quality, 'streaming_and_caching', {
+      rawPath: partPath,
+    })
+  }
 
   const { body, completion } = teeUpstreamToClientAndCache({
     upstreamBody: upstream.body,

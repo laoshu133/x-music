@@ -219,9 +219,7 @@ test('upstream range stream is not cached as a playable raw file', async () => {
       INNER JOIN tracks t ON t.id = tf.track_id
       WHERE t.source = 'tx' AND t.songmid = ? AND tf.quality = '320k'
     `).get(songmid) as { status: string; rawPath?: string | null; error?: string | null } | undefined
-    assert.equal(row?.status, 'streaming_and_caching')
-    assert.equal(row?.rawPath, null)
-    assert.equal(row?.error, 'Range request is not cached')
+    assert.equal(row, undefined)
   } finally {
     globalThis.fetch = originalFetch
     db.prepare("DELETE FROM tracks WHERE songmid = ? AND source = 'tx'").run(songmid)

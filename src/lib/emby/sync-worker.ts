@@ -345,7 +345,9 @@ async function deleteLocalSyncedMedia(input: {
     if (deletedColumns.length) {
       db.prepare(`
         UPDATE track_files
-        SET ${deletedColumns.map(column => `${column} = NULL`).join(', ')},
+        SET status = 'missing',
+            ${deletedColumns.map(column => `${column} = NULL`).join(', ')},
+            error = 'Synced to Emby source and removed from local cache',
             updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
       `).run(row.id)

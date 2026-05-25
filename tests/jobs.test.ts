@@ -835,6 +835,22 @@ test('emby sync job uploads ready media through WebDAV before scanning Emby', as
     const itemSearch = requests.find(request => request.pathname.endsWith('/Items') && request.search?.includes('Path='))
     assert.match(itemSearch?.search ?? '', /Path=.*%2Fvolume1%2Fmusic%2FWebDAV\+Artist%2FWebDAV\+Album%2FWebDAV\+Artist\+-\+WebDAV\+Song\.flac/)
     assert.equal(existsSync(path.dirname(finalPath)), false)
+    const row = db.prepare(`
+      SELECT status, final_path AS finalPath, lyrics_path AS lyricsPath, cover_path AS coverPath, error
+      FROM track_files
+      WHERE id = ?
+    `).get(trackFile.id) as {
+      status: string
+      finalPath?: string | null
+      lyricsPath?: string | null
+      coverPath?: string | null
+      error?: string | null
+    }
+    assert.equal(row.status, 'missing')
+    assert.equal(row.finalPath, null)
+    assert.equal(row.lyricsPath, null)
+    assert.equal(row.coverPath, null)
+    assert.equal(row.error, 'Synced to Emby source and removed from local cache')
   } finally {
     rmSync(path.join(appConfig.musicDir, 'WebDAV Artist'), { recursive: true, force: true })
     process.env.EMBY_SOURCE_WEBDAV_DSN = originalWebdavDsn

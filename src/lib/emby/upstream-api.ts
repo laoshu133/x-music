@@ -83,7 +83,7 @@ export async function searchEmbyAudioByPath(path: string): Promise<string | unde
   return match?.Id
 }
 
-export async function fetchEmbyAudioMediaInfo(itemId: string): Promise<{
+export async function fetchEmbyAudioMediaInfo(itemId: string, options: { userId?: string } = {}): Promise<{
   id?: string
   name?: string
   path?: string
@@ -116,7 +116,7 @@ export async function fetchEmbyAudioMediaInfo(itemId: string): Promise<{
         BitRate?: number
       }>
     }>
-  }>(`/Items/${encodeURIComponent(itemId)}?${new URLSearchParams({
+  }>(`${embyItemInfoPath(itemId, options.userId)}?${new URLSearchParams({
     Fields: 'Path,MediaSources,MediaStreams,Size',
   })}`).catch(() => undefined)
 
@@ -138,6 +138,13 @@ export async function fetchEmbyAudioMediaInfo(itemId: string): Promise<{
       })),
     })),
   }
+}
+
+function embyItemInfoPath(itemId: string, userId?: string): string {
+  const encodedItemId = encodeURIComponent(itemId)
+  return userId
+    ? `/Users/${encodeURIComponent(userId)}/Items/${encodedItemId}`
+    : `/Items/${encodedItemId}`
 }
 
 export async function searchEmbyPlaylistByName(name: string): Promise<string | undefined> {

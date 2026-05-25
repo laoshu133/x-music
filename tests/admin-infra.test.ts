@@ -3652,6 +3652,7 @@ test('local emby virtual song lyrics return timed lyric lines', async () => {
     const playbackPayload = await playbackInfo.json()
     assert.equal(playbackPayload.MediaSources[0].MediaStreams[1].Type, 'Subtitle')
     assert.equal(playbackPayload.MediaSources[0].MediaStreams[1].Index, 1)
+    assert.equal(playbackPayload.MediaSources[0].DefaultSubtitleStreamIndex, 1)
     assert.equal(playbackPayload.MediaSources[0].MediaStreams[1].DeliveryMethod, 'External')
     assert.match(playbackPayload.MediaSources[0].MediaStreams[1].DeliveryUrl, /Stream\.js$/)
     assert.match(playbackPayload.MediaSources[0].MediaStreams[1].DeliveryUrl, /\/Subtitles\/1\/Stream\.js$/)
@@ -4913,7 +4914,10 @@ test('local emby virtual audio uses mapped high-quality Emby item before low loc
         requestedQualities.push(body.quality ?? '')
         return Response.json({ url: 'https://cdn.example/audio.flac' })
       }
-      if (requestUrl.pathname.endsWith('/Items/emby-flac-master-item')) {
+      if (requestUrl.pathname.endsWith('/Items/emby-flac-master-item') && !requestUrl.pathname.includes('/Users/')) {
+        return Response.json({ error: 'Not found' }, { status: 404 })
+      }
+      if (requestUrl.pathname.endsWith('/Users/emby-user-999049/Items/emby-flac-master-item')) {
         return Response.json({
           Id: 'emby-flac-master-item',
           Container: 'flac',

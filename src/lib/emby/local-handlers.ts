@@ -1204,7 +1204,7 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
 
   const preferredQuality = preferredAudioQualityForRequest(request, musicInfo)
   const mapped = await resolveEmbyTrackMapping(musicInfo)
-  if (mapped && await shouldUseMappedEmbyAudio(mapped, musicInfo)) {
+  if (mapped && await shouldUseMappedEmbyAudio(mapped, musicInfo, authorizedLocalAccount(request)?.embyUserId)) {
     const action = embyPath.split('/')[3] ?? 'universal'
     const proxied = await proxyToUpstreamEmby(request, `/Audio/${encodeURIComponent(mapped)}/${action}`).catch(() => undefined)
     if (proxied?.ok || proxied?.status === 206) return proxied
@@ -1487,10 +1487,10 @@ function shouldRefreshPreferredQualityBeforeLocalFallback(musicInfo: MusicInfo, 
   return preferredQuality === 'flac' && availableSongQualities(musicInfo).includes('flac')
 }
 
-async function shouldUseMappedEmbyAudio(mappedItemId: string, musicInfo: MusicInfo): Promise<boolean> {
+async function shouldUseMappedEmbyAudio(mappedItemId: string, musicInfo: MusicInfo, userId?: string): Promise<boolean> {
   const quality = highestAvailableSongQuality(musicInfo)
   if (quality !== 'flac') return true
-  const info = await fetchEmbyAudioMediaInfo(mappedItemId)
+  const info = await fetchEmbyAudioMediaInfo(mappedItemId, { userId })
   if (!info) return false
   return embyMediaLooksLikeQuality(info, quality, readSongQualitySize(musicInfo, quality))
 }
@@ -2345,6 +2345,7 @@ function songMediaSource(song: MusicInfo, runtimeTicks?: number) {
     AddApiKeyToDirectStreamUrl: false,
     ReadAtNativeFramerate: false,
     DefaultAudioStreamIndex: 0,
+    DefaultSubtitleStreamIndex: 1,
     ItemId: id,
   }
 }
