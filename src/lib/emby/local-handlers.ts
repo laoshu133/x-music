@@ -2205,7 +2205,7 @@ function songToEmbyItem(song: MusicInfo, _playlistId?: string, isFavorite = fals
     ArtistItems: artists.map((name, index) => ({ Name: name, Id: `${song.songmid}-artist-${index}` })),
     Composers: [],
     RunTimeTicks: runtimeTicks,
-    HasLyrics: itemId === virtualId,
+    HasLyrics: true,
     MediaSources: [mediaSource],
     ImageTags: imageTag ? { Primary: imageTag } : {},
     UserData: {
@@ -2263,14 +2263,12 @@ function readNestedRawValue(raw: unknown, keys: string[]): unknown {
   return undefined
 }
 
-function songMediaSource(song: MusicInfo, runtimeTicks?: number, itemId = songVirtualId(song), virtualId = songVirtualId(song)) {
+function songMediaSource(song: MusicInfo, runtimeTicks?: number, itemId = songVirtualId(song), _virtualId = songVirtualId(song)) {
   const quality = preferredSongQuality(song)
   const bitrate = quality === 'flac' ? 900_000 : quality === '128k' ? 128_000 : 320_000
   const container = quality === 'flac' ? 'flac' : 'mp3'
   const codec = quality === 'flac' ? 'flac' : 'mp3'
-  const subtitleDeliveryUrl = itemId === virtualId
-    ? `/Items/${encodeURIComponent(virtualId)}/Subtitles/1/Stream.js`
-    : undefined
+  const subtitleDeliveryUrl = `/Items/${encodeURIComponent(itemId)}/Subtitles/1/Stream.js`
   const mediaStreams = compactRecord({
     Codec: codec,
     TimeBase: '1/44100',

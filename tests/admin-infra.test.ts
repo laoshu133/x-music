@@ -2476,9 +2476,10 @@ test('local emby favorite list uses mapped upstream item ids for synced QQ songs
     assert.equal(payload.Items[0].Id, 'emby-mapped-favorite-item')
     assert.equal(payload.Items[0].MediaSources[0].Id, 'emby-mapped-favorite-item')
     assert.equal(payload.Items[0].MediaSources[0].Path, '/Audio/emby-mapped-favorite-item/universal')
-    assert.equal(payload.Items[0].HasLyrics, false)
-    assert.equal(payload.Items[0].MediaSources[0].MediaStreams.length, 1)
-    assert.equal(payload.Items[0].MediaSources[0].DefaultSubtitleStreamIndex, undefined)
+    assert.equal(payload.Items[0].HasLyrics, true)
+    assert.equal(payload.Items[0].MediaSources[0].MediaStreams[1].Type, 'Subtitle')
+    assert.equal(payload.Items[0].MediaSources[0].MediaStreams[1].DeliveryUrl, '/Items/emby-mapped-favorite-item/Subtitles/1/Stream.js')
+    assert.equal(payload.Items[0].MediaSources[0].DefaultSubtitleStreamIndex, 1)
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999050')
     clearQQLoginCookie()
@@ -5065,6 +5066,18 @@ test('mapped Emby item detail and playback report are handled locally', async ()
 
     const upstreamRequests: string[] = []
     globalThis.fetch = (async (url: string | URL | Request) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'u.y.qq.com') {
+        return Response.json({
+          code: 0,
+          lyric: {
+            code: 0,
+            data: {
+              lyric: '[00:01.00]映射歌词',
+            },
+          },
+        })
+      }
       upstreamRequests.push(String(url))
       return new Response('stale upstream item should not be requested', { status: 500 })
     }) as typeof fetch
@@ -5081,6 +5094,19 @@ test('mapped Emby item detail and playback report are handled locally', async ()
     assert.equal(detailPayload.Id, 'stale-emby-mapped-report-item')
     assert.equal(detailPayload.MediaSources[0].Id, 'stale-emby-mapped-report-item')
     assert.equal(detailPayload.MediaSources[0].Path, '/Audio/stale-emby-mapped-report-item/universal')
+    assert.equal(detailPayload.HasLyrics, true)
+    assert.equal(detailPayload.MediaSources[0].MediaStreams[1].DeliveryUrl, '/Items/stale-emby-mapped-report-item/Subtitles/1/Stream.js')
+
+    const subtitle = await dispatchEmbyRequest(
+      new Request('http://local/emby/Items/stale-emby-mapped-report-item/Subtitles/1/Stream.js', {
+        headers: { 'X-Emby-Authorization': authHeader },
+      }),
+      stripOptionalEmbyPrefix('/emby/Items/stale-emby-mapped-report-item/Subtitles/1/Stream.js'),
+    )
+    assert.equal(subtitle.status, 200)
+    assert.match(subtitle.headers.get('content-type') ?? '', /application\/json/)
+    const subtitlePayload = await subtitle.json()
+    assert.equal(subtitlePayload.TrackEvents[0].Text, '映射歌词')
 
     for (const path of ['/emby/Sessions/Playing', '/emby/Sessions/Playing/Progress']) {
       const response = await dispatchEmbyRequest(

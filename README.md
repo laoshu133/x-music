@@ -4,31 +4,16 @@ XMusic (code: `x-music`) is a private QQ Music to Emby gateway. It lets Emby-com
 
 The app is for personal/private deployment. It is not designed as a public multi-user music service.
 
-## Current Capabilities
+## Core Features
 
-- QQ account login by QR code or pasted y.qq.com Cookie.
-- Per-QQ Emby gateway account creation. Usernames are normalized as `QQ${QQ_UID}`.
-- Upstream Emby user binding with restricted policy:
-  - only the music library is enabled;
-  - channel access is disabled;
-  - remote control and shared device control are disabled.
-- Emby-compatible gateway endpoints for ampcast:
-  - local authentication;
-  - user views and virtual music library;
-  - merged songs, albums, playlists, genres, favorites, most played, and recently played lists;
-  - QQ virtual playlist and album expansion;
-  - image proxying for real Emby items and QQ virtual artwork;
-  - virtual QQ audio playback;
-  - playback report handling without leaking virtual IDs to upstream Emby.
-- QQ Music list pagination is capped to safe upstream page sizes and walks `StartIndex + Limit` windows.
-- Local playback cache:
-  - first playback streams upstream audio while teeing to local storage;
-  - later playback reuses ready or playable cached files;
-  - cached local files support HTTP Range.
-- SQLite-backed persistence for accounts, tracks, files, jobs, play events, favorites, virtual items, and remote mappings.
-- Worker job pipeline for tagging, file organization, and Emby sync jobs.
-- Built-in metadata/tagging path using QQ metadata, lyrics, covers, MP3/FLAC tags, and Emby-friendly sidecars.
-- Health/config APIs and a management UI for login, connection info, runtime settings, and status checks.
+- QQ Music account access with QR-code login or pasted y.qq.com Cookie. Each QQ account gets a local Emby gateway account using the normalized username `QQ${QQ_UID}`.
+- Emby-compatible music gateway for ampcast and other clients. XMusic exposes authentication, user views, a virtual music library, merged songs/albums/playlists/genres, favorites, most-played and recently-played lists, artwork routes, lyrics/subtitle routes, and QQ virtual audio playback from the service root.
+- Merged upstream Emby and QQ Music library views. Real Emby music items are proxied from the configured upstream server, while QQ playlists, albums, recommendations, top lists, favorites, and play history are expanded into virtual Emby-compatible items.
+- Private local playback cache. First playback streams from the resolved QQ source while teeing audio into local storage; later playback can reuse ready or partially playable cached files with HTTP Range support.
+- Metadata and library organization pipeline. Background workers handle tagging, lyric and cover collection, file organization, Emby-friendly sidecar generation, duplicate cleanup, and optional upstream Emby sync.
+- Restricted upstream Emby account binding. Generated upstream users are limited to the music library, with channel access, remote control, and shared device control disabled.
+- SQLite-backed persistence for accounts, tracks, cached files, jobs, play events, favorites, virtual items, remote mappings, and runtime settings.
+- Management UI and APIs for login, connection information, runtime configuration, user administration, job status, health checks, and cache/job visibility.
 
 ## Development
 
@@ -173,24 +158,6 @@ Optional:
 - LX source scripts are loaded server-side. The browser never receives the script URL or key.
 - The upstream Emby API key is a service credential. Player-facing passwords are maintained locally by XMusic.
 - Generated QQ upstream Emby users are intentionally restricted to the music library only.
-
-## Recent Changelog
-
-### 2026-05-24
-
-- Improved Narjo, Musiver, Subsonic, and ampcast compatibility for local Emby routes, including universal audio paths, lyrics/subtitle streams, image routes, and query/header token variants.
-- Added local handling for more virtual QQ Music playback paths so compatible clients can request audio, lyrics, and artwork without leaking virtual IDs to the upstream Emby server.
-- Aligned QQ lyric lookup with the LX playback flow and persisted fetched lyrics in the local cache for later tagging, sidecar generation, and client subtitle requests.
-- Added WebDAV-based duplicate cleanup tooling for upstream Emby libraries, with dry-run/apply modes and optional deletion through Emby or WebDAV.
-- Hardened Emby sync behavior around FLAC preference, exact path matching, empty directory pruning, stale jobs, and retry backoff.
-- Moved ampcast into the same-origin `@player` flow and fixed embedded resource proxying so the homepage can open the player directly without URL-passed credentials.
-
-### 2026-05-23
-
-- Migrated QQ encrypted audio handling to the local UM crypto path, removing the need for an external decryption CLI in normal playback/cache flows.
-- Reworked Emby virtual item mapping and playlist expansion for merged upstream Emby plus QQ Music library views.
-- Added admin/runtime management improvements for users, jobs, account connection details, and runtime settings.
-- Expanded automated coverage for Emby compatibility, cache reuse, job processing, QQ favorites/history, and admin infrastructure.
 
 ## Current Risks
 
