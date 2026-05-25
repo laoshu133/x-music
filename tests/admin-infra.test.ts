@@ -459,6 +459,8 @@ test('upstream emby account binding normalizes existing username and reapplies r
 test('emby path helpers normalize optional emby prefix', () => {
   assert.equal(stripOptionalEmbyPrefix('/emby/Items'), '/Items')
   assert.equal(stripOptionalEmbyPrefix('/Items'), '/Items')
+  assert.equal(normalizeEmbyPath(['emby', 'Audio', 'mix_song', 'universal']), '/Audio/mix_song/universal')
+  assert.equal(normalizeEmbyPath(['emby', 'Items', 'mix_song', 'Lyrics']), '/Items/mix_song/Lyrics')
   assert.equal(normalizeEmbyPath(['emby', 'System', 'Info', 'Public']), '/System/Info/Public')
 })
 
@@ -470,6 +472,7 @@ test('ampcast player path maps to embedded proxy route', () => {
   assert.equal(playerPathFromEmbyPath(normalizeEmbyPath(['@player'])), '/')
   assert.equal(playerPathFromEmbyPath(normalizeEmbyPath(['@player', 'assets', 'app.js'])), '/assets/app.js')
   assert.equal(playerPathFromEmbyPath('/v0.9.28/lib/media-services.js'), '/v0.9.28/lib/media-services.js')
+  assert.equal(playerPathFromEmbyPath('/service-worker-v2.js'), '/service-worker-v2.js')
   assert.equal(playerPathFromEmbyPath('/Items'), undefined)
 })
 

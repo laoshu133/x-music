@@ -1053,8 +1053,8 @@ async function handleSubsonicLyricsRequest(request: Request): Promise<Response> 
 
 async function handleSubtitleStreamRequest(request: Request, embyPath: string): Promise<Response | undefined> {
   const itemId = extractSubtitleItemId(embyPath)
-  const decoded = itemId ? decodeVirtualId(itemId) : undefined
-  if (!decoded || decoded.kind !== 'qq-song') return undefined
+  const decoded = itemId ? await resolveSongVirtualId(itemId) : undefined
+  if (!decoded) return undefined
 
   const lyrics = await fetchLyrics(decoded.songmid, decoded.playlistId)
   const format = subtitleStreamFormat(embyPath)
@@ -1337,6 +1337,13 @@ async function resolvePlayableUpstreamResponse(
 async function loadOrFetchVirtualSong(songmid: string, playlistId?: string): Promise<{ song: MusicInfo; playlistId?: string } | undefined> {
   const stored = loadVirtualSong(songmid)
   if (stored) return stored
+
+  const tracked = getTrack('tx', songmid)
+  if (tracked) {
+    const song = trackRecordToMusicInfo(tracked)
+    rememberVirtualSong(song, playlistId)
+    return { song, playlistId }
+  }
 
   const song = await getQQSongDetail(songmid).catch(() => undefined)
   if (!song) return undefined

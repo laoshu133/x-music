@@ -34,7 +34,7 @@ const rootAssetPathPatterns = [
   /^\/icons(?:\/|$)/i,
   /^\/lib(?:\/|$)/i,
   /^\/manifest(?:\.webmanifest|\.json)?$/i,
-  /^\/service-worker\.js$/i,
+  /^\/service-worker(?:-[^/]+)?\.js$/i,
   /^\/sw\.js$/i,
 ]
 
@@ -233,7 +233,7 @@ function rewriteRootRelativeUrls(value: string): string {
   return value
     .replace(/\b(href|src|action)=(["'])\/(?!\/|@player\/)/gi, '$1=$2/@player/')
     .replace(/url\((["']?)\/(?!\/|@player\/)/gi, 'url($1/@player/')
-    .replace(/(["'`])\/(?!\/|@player\/)(v\d+(?:\.\d+)*(?:\/[^"'`]*)?|assets\/[^"'`]*|icons\/[^"'`]*|lib\/[^"'`]*|manifest(?:\.webmanifest|\.json)?|service-worker\.js|sw\.js)/gi, '$1/@player/$2')
+    .replace(/(["'`])\/(?!\/|@player\/)(v\d+(?:\.\d+)*(?:\/[^"'`]*)?|assets\/[^"'`]*|icons\/[^"'`]*|lib\/[^"'`]*|manifest(?:\.webmanifest|\.json)?|service-worker(?:-[^"'`/]*)?\.js|sw\.js)/gi, '$1/@player/$2')
 }
 
 function isAmpcastRootAssetPath(pathname: string): boolean {

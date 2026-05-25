@@ -76,6 +76,7 @@ test('emby audio route compatibility accepts Narjo extension suffixes', () => {
 test('narjo lyric and subsonic compatibility paths are handled locally', () => {
   const itemId = 'mix_virtual_song'
   assert.equal(isLyricsRequest(`/Audio/${itemId}/Lyrics`), true)
+  assert.equal(isLyricsRequest(`/Items/${itemId}/Lyrics`), true)
   assert.equal(isSubsonicLyricsRequest('/rest/getLyricsBySongId.view'), true)
   assert.equal(isSubsonicGetSongRequest('/rest/getSong.view'), true)
 })
