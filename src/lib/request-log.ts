@@ -88,6 +88,18 @@ export function logFailedRequest(
   }, 'error')
 }
 
+export function logServiceEvent(
+  event: string,
+  details: Record<string, unknown> = {},
+  level: 'info' | 'error' = 'info',
+): void {
+  if (!requestLoggingEnabled()) return
+  writeRequestLog({
+    event,
+    ...details,
+  }, level)
+}
+
 export function requestLoggingEnabled(): boolean {
   const setting = process.env.X_MUSIC_REQUEST_LOGS?.trim().toLowerCase()
   if (setting && setting !== 'auto') return ['1', 'true', 'on', 'yes'].includes(setting)

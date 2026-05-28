@@ -22,7 +22,7 @@ import { updateAccountEmbyPassword } from '@/lib/db/accounts'
 import { ensureTrack, insertPlayEvent, upsertTrackFileStatus } from '@/lib/cache/store'
 import type { MusicInfo } from '@/lib/types'
 import { syncMappedEmbyFavoriteBestEffort } from '@/lib/emby/favorites'
-import { logCompletedRequest, logFailedRequest, requestLoggingEnabled, safeRequestPath } from '@/lib/request-log'
+import { logCompletedRequest, logFailedRequest, logServiceEvent, requestLoggingEnabled, safeRequestPath } from '@/lib/request-log'
 
 function markAccountUpstreamBound(qqUin: string, embyUserId = `emby-user-${qqUin}`, embyAccessToken?: string): void {
   db.prepare('UPDATE accounts SET emby_user_id = ?, emby_access_token = COALESCE(?, emby_access_token) WHERE qq_uin = ?').run(embyUserId, embyAccessToken ?? null, qqUin)
@@ -183,6 +183,13 @@ test('request logging defaults to production only and logs only non-success resp
     assert.equal(failedResponsePayload.event, 'http_response')
     assert.equal(failedResponsePayload.status, 500)
     assert.equal(failedResponsePayload.error, 'boom')
+
+    logServiceEvent('virtual_audio_playback_failed', { songmid: 'song-1', error: 'upstream returned 404' }, 'error')
+    assert.equal(errorMessages.length, 3)
+    const eventPayload = JSON.parse(errorMessages[2]!) as Record<string, unknown>
+    assert.equal(eventPayload.event, 'virtual_audio_playback_failed')
+    assert.equal(eventPayload.songmid, 'song-1')
+    assert.equal(eventPayload.error, 'upstream returned 404')
   } finally {
     console.info = originalInfo
     console.error = originalError

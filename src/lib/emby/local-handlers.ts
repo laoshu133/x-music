@@ -23,7 +23,7 @@ import { getFavoriteStatusForAccount, listLocalFavoritesForAccount, setLocalFavo
 import type { MusicInfo, MusicQuality, PlayHistoryRecord, QQPlaylistInfo, TrackRecord } from '@/lib/types'
 import { enqueueEmbyTrackSync } from './sync'
 import { hasEmbySyncableCachedMedia } from './sync-worker'
-import { markRequestSource } from '@/lib/request-log'
+import { logServiceEvent, markRequestSource, safeRequestPath } from '@/lib/request-log'
 import { albumVirtualId, decodeVirtualId, encodeVirtualId, genreVirtualId, playlistVirtualId, songVirtualId, type VirtualId } from './virtual-ids'
 import {
   forgetVirtualAlbum,
@@ -1223,8 +1223,23 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
   const itemId = decodeURIComponent(embyPath.split('/')[2] ?? '')
   const staleCandidate = mappingForExternalTrackItemId(itemId)
   if (staleCandidate) {
-    const proxied = await proxyToUpstreamEmby(request, embyPath).catch(() => undefined)
+    const proxied: Response | undefined = await proxyToUpstreamEmby(request, embyPath).catch((error: unknown) => {
+      logVirtualAudioEvent('virtual_audio_stale_mapping_proxy_failed', request, {
+        itemId,
+        mappedItemId: staleCandidate.remoteId,
+        localKey: staleCandidate.localKey,
+        error: errorMessage(error),
+      }, 'error')
+      return undefined
+    })
+    const upstreamStatus = proxied?.status
     if (isUsableUpstreamResponse(proxied)) return proxied
+    logVirtualAudioEvent('virtual_audio_stale_mapping_removed', request, {
+      itemId,
+      mappedItemId: staleCandidate.remoteId,
+      localKey: staleCandidate.localKey,
+      upstreamStatus,
+    })
     deleteStaleTrackMapping(staleCandidate)
   }
 
@@ -1233,6 +1248,11 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
 
   const stored = await loadOrFetchVirtualSong(decoded.songmid, decoded.playlistId)
   if (!stored) {
+    logVirtualAudioEvent('virtual_audio_metadata_missing', request, {
+      itemId,
+      songmid: decoded.songmid,
+      playlistId: decoded.playlistId,
+    }, 'error')
     return Response.json({ error: 'Virtual QQ song metadata is not cached. Search or open the virtual playlist again.' }, { status: 404 })
   }
 
@@ -1246,8 +1266,27 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
   const mappedItemId = await resolveEmbyTrackMapping(musicInfo)
   if (mappedItemId) {
     const action = embyPath.split('/')[3] ?? 'universal'
-    const proxied = await proxyToUpstreamEmby(request, `/Audio/${encodeURIComponent(mappedItemId)}/${action}`).catch(() => undefined)
+    const proxied: Response | undefined = await proxyToUpstreamEmby(request, `/Audio/${encodeURIComponent(mappedItemId)}/${action}`).catch((error: unknown) => {
+      logVirtualAudioEvent('virtual_audio_mapped_proxy_failed', request, {
+        itemId,
+        songmid: decoded.songmid,
+        mappedItemId,
+        action,
+        preferredQuality,
+        error: errorMessage(error),
+      }, 'error')
+      return undefined
+    })
+    const upstreamStatus = proxied?.status
     if (proxied?.ok || proxied?.status === 206) return proxied
+    logVirtualAudioEvent('virtual_audio_mapped_proxy_unusable', request, {
+      itemId,
+      songmid: decoded.songmid,
+      mappedItemId,
+      action,
+      preferredQuality,
+      upstreamStatus,
+    }, 'error')
   }
 
   const playableFile = getPreferredPlayableFile(musicInfo, preferredQuality)
@@ -1319,6 +1358,16 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
   } catch (error) {
     const message = playbackErrorMessage(error)
     upsertTrackFileStatus(track.id, preferredQuality, 'failed', { error: message })
+    logVirtualAudioEvent('virtual_audio_playback_failed', request, {
+      itemId,
+      songmid: decoded.songmid,
+      playlistId: decoded.playlistId ?? stored.playlistId,
+      preferredQuality,
+      availableQualities: availableSongQualities(musicInfo),
+      allowFullFallback: shouldAllowFullAudioFallback(request),
+      error: message,
+      attempts: error instanceof MusicUrlResolveError ? error.attempts : undefined,
+    }, 'error')
     return Response.json({ error: message }, { status: 502 })
   }
 }
@@ -1342,10 +1391,25 @@ async function resolvePlayableUpstreamResponse(
     upsertTrackFileStatus(track.id, quality, 'resolving_url')
     try {
       const resolved = await resolveMusicUrl(musicInfo, quality)
+      logVirtualAudioEvent('virtual_audio_url_resolved', request, {
+        songmid: musicInfo.songmid,
+        preferredQuality,
+        quality,
+        resolvedQuality: resolved.quality,
+        upstream: summarizeAudioUrl(resolved.url),
+        hasEkey: Boolean(resolved.ekey),
+      })
       if (encryptedQQRequiresKey && isEncryptedQQAudioFileName(resolved.url)) {
         const message = 'Skipped encrypted QQ audio because a previous encrypted quality already required a local QQ Music key'
         attempts.push({ quality, error: message })
         upsertTrackFileStatus(track.id, quality, 'failed', { error: message })
+        logVirtualAudioEvent('virtual_audio_quality_failed', request, {
+          songmid: musicInfo.songmid,
+          preferredQuality,
+          quality,
+          upstream: summarizeAudioUrl(resolved.url),
+          error: message,
+        }, 'error')
         continue
       }
       const { response, completion } = await createUpstreamTeeResponse(
@@ -1367,6 +1431,13 @@ async function resolvePlayableUpstreamResponse(
       const message = error instanceof Error ? error.message : String(error)
       attempts.push({ quality, error: message })
       upsertTrackFileStatus(track.id, quality, 'failed', { error: message })
+      logVirtualAudioEvent('virtual_audio_quality_failed', request, {
+        songmid: musicInfo.songmid,
+        preferredQuality,
+        quality,
+        error: message,
+        encryptedQQRequiresKey: isEncryptedQQAudioRequiresKeyError(error) || undefined,
+      }, 'error')
       if (isEncryptedQQAudioRequiresKeyError(error)) encryptedQQRequiresKey = true
     }
   }
@@ -1731,6 +1802,47 @@ function audioQualityFallbacks(
   const available = availableSongQualities(musicInfo)
   const ordered = [preferredQuality, ...available, ...fallback].filter((quality, index, values) => values.indexOf(quality) === index)
   return ordered.length ? ordered : fallback
+}
+
+function logVirtualAudioEvent(
+  event: string,
+  request: Request,
+  details: Record<string, unknown> = {},
+  level: 'info' | 'error' = 'info',
+): void {
+  const url = new URL(request.url)
+  logServiceEvent(event, {
+    method: request.method,
+    path: safeRequestPath(request.url),
+    userAgent: request.headers.get('user-agent') ?? undefined,
+    range: request.headers.get('range') ?? undefined,
+    container: url.searchParams.get('Container') ?? url.searchParams.get('container') ?? undefined,
+    audioCodec: url.searchParams.get('AudioCodec') ?? url.searchParams.get('audioCodec') ?? undefined,
+    transcodingProtocol: url.searchParams.get('TranscodingProtocol') ?? url.searchParams.get('transcodingProtocol') ?? undefined,
+    transcodingContainer: url.searchParams.get('TranscodingContainer') ?? url.searchParams.get('transcodingContainer') ?? undefined,
+    deviceId: url.searchParams.get('DeviceId') ?? url.searchParams.get('deviceId') ?? undefined,
+    playSessionId: url.searchParams.get('PlaySessionId') ?? url.searchParams.get('playSessionId') ?? undefined,
+    ...details,
+  }, level)
+}
+
+function summarizeAudioUrl(value: string): Record<string, unknown> {
+  try {
+    const url = new URL(value)
+    return {
+      protocol: url.protocol.replace(/:$/, ''),
+      host: url.host,
+      pathnameExt: path.extname(url.pathname).toLowerCase() || undefined,
+    }
+  } catch {
+    return {
+      pathnameExt: path.extname(value).toLowerCase() || undefined,
+    }
+  }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 function containerSupportsFlac(container: string): boolean {
