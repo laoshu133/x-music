@@ -947,13 +947,14 @@ async function handleItemRequest(request: Request, embyPath: string): Promise<Re
     }
   }
 
-  const decoded = await resolveSongVirtualId(itemId)
-  if (!decoded) return undefined
-
-  if (decoded.kind !== 'qq-song') {
-    const item = virtualContainerToEmbyItem(decoded)
+  const virtualItem = decodeClientVirtualId(itemId)
+  if (virtualItem && virtualItem.kind !== 'qq-song') {
+    const item = virtualContainerToEmbyItem(virtualItem)
     return item ? Response.json(item) : undefined
   }
+
+  const decoded = await resolveSongVirtualId(itemId)
+  if (!decoded) return undefined
 
   const stored = await loadOrFetchVirtualSong(decoded.songmid, decoded.playlistId)
   if (!stored) {
