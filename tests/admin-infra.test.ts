@@ -223,6 +223,28 @@ test('catch-all route returns friendly 404 for browser navigation to unknown pat
   assert.match(body, /\/xxx/)
 })
 
+test('catch-all route handles apple touch icon probes locally', async () => {
+  const route = await import('@/app/[...path]/route')
+  const originalFetch = globalThis.fetch
+  try {
+    let upstreamRequests = 0
+    globalThis.fetch = (async () => {
+      upstreamRequests += 1
+      return Response.json({ error: 'should not proxy apple icon' }, { status: 500 })
+    }) as typeof fetch
+
+    const response = await route.GET(new Request('http://local/apple-touch-icon-120x120-precomposed.png'), {
+      params: Promise.resolve({ path: ['apple-touch-icon-120x120-precomposed.png'] }),
+    })
+
+    assert.equal(response.status, 404)
+    assert.equal(response.headers.get('cache-control'), 'public, max-age=86400')
+    assert.equal(upstreamRequests, 0)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('QQ login creates a per-account Emby gateway account', () => {
   db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('123456')
   try {
@@ -3322,6 +3344,94 @@ test('local emby recommendation playlists cap QQ recommendation limit', async ()
   }
 })
 
+test('local emby recommendation playlists filter recently unavailable songs', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999122')
+    saveQQLoginCookie('uin=o999122; qm_keyst=test-key')
+    markAccountUpstreamBound('999122')
+    const account = getAccountByQQ('999122')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const guessId = encodeVirtualId({ kind: 'qq-guess' })
+
+    db.prepare(`
+      INSERT INTO app_settings (key, value_json, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP
+    `).run('music-url.unplayable.tx.qq-rec-unavailable', JSON.stringify({
+      source: 'tx',
+      songmid: 'qq-rec-unavailable',
+      reason: 'ERR无版权',
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    }))
+
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'u.y.qq.com') {
+        const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {}
+        if (body.req?.module === 'music.radioProxy.MbTrackRadioSvr') {
+          return Response.json({
+            code: 0,
+            req: {
+              code: 0,
+              data: {
+                Tracks: [
+                  {
+                    id: 1,
+                    mid: 'qq-rec-unavailable',
+                    title: 'Unavailable Rec',
+                    interval: 188,
+                    singer: [{ name: 'QQ Artist', mid: 'qq-artist-1' }],
+                    album: { name: 'QQ Album', mid: 'qq-album-1' },
+                    file: { media_mid: 'qq-media-1', size_320mp3: 1024 },
+                  },
+                  {
+                    id: 2,
+                    mid: 'qq-rec-playable',
+                    title: 'Playable Rec',
+                    interval: 188,
+                    singer: [{ name: 'QQ Artist', mid: 'qq-artist-1' }],
+                    album: { name: 'QQ Album', mid: 'qq-album-1' },
+                    file: { media_mid: 'qq-media-2', size_320mp3: 1024 },
+                  },
+                ],
+              },
+            },
+          })
+        }
+      }
+
+      return Response.json({ Items: [], TotalRecordCount: 0 })
+    }) as typeof fetch
+
+    const response = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio&ParentId=${encodeURIComponent(guessId)}&Limit=10&StartIndex=0`, {
+        headers: {
+          'X-Emby-Authorization': `MediaBrowser Client="ampcast", Version="0.9.28", Device="PC", Token="${authPayload.AccessToken}"`,
+        },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/Items`),
+    )
+
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.deepEqual(payload.Items.map((item: any) => item.Name), ['Playable Rec'])
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999122')
+    clearQQLoginCookie()
+    db.prepare("DELETE FROM app_settings WHERE key IN ('music-url.unplayable.tx.qq-rec-unavailable', 'virtual.song.qq-rec-playable')").run()
+    db.prepare("DELETE FROM app_settings WHERE key = 'virtual.song.qq-rec-unavailable'").run()
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('local emby virtual playlist item details stay local', async () => {
   const originalFetch = globalThis.fetch
   try {
@@ -4762,6 +4872,86 @@ test('local emby virtual audio GET returns playable errors as 502 JSON', async (
     db.prepare('DELETE FROM app_settings WHERE key = ?').run('virtual.song.qq-audio-error-song-1')
     db.prepare("DELETE FROM tracks WHERE songmid = ? AND source = 'tx'").run('qq-audio-error-song-1')
     db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track' AND json_extract(payload_json, '$.songmid') = ?").run('qq-audio-error-song-1')
+    globalThis.fetch = originalFetch
+    if (originalLxMusicSourceScript === undefined) {
+      delete process.env.LX_MUSIC_SOURCE_SCRIPT
+    } else {
+      process.env.LX_MUSIC_SOURCE_SCRIPT = originalLxMusicSourceScript
+    }
+  }
+})
+
+test('local emby virtual audio caches unavailable music-url responses as 451', async () => {
+  const originalFetch = globalThis.fetch
+  const originalLxMusicSourceScript = process.env.LX_MUSIC_SOURCE_SCRIPT
+  const songmid = `qq-unavailable-song-${Date.now()}`
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999121')
+    process.env.LX_MUSIC_SOURCE_SCRIPT = 'https://script.example/script/lxmusic?key=test-key'
+    saveQQLoginCookie('uin=o999121; qm_keyst=test-key')
+    markAccountUpstreamBound('999121')
+    const account = getAccountByQQ('999121')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const songId = encodeVirtualId({ kind: 'qq-song', songmid })
+    const authHeader = `MediaBrowser Client="ampcast", Version="0.9.28", Device="PC", Token="${authPayload.AccessToken}"`
+
+    db.prepare(`
+      INSERT INTO app_settings (key, value_json, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP
+    `).run(`virtual.song.${songmid}`, JSON.stringify({
+      song: {
+        source: 'tx',
+        songmid,
+        name: 'QQ Unavailable Song',
+        singer: 'QQ Artist',
+        interval: '03:08',
+        types: [{ type: 'flac', size: '10 MB' }, { type: '320k', size: '5 MB' }, { type: '128k', size: '1 MB' }],
+      },
+    }))
+
+    let musicUrlRequests = 0
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'script.example') {
+        musicUrlRequests += 1
+        return Response.json({ code: 500, message: 'ERR无版权' })
+      }
+      return Response.json({ Items: [], TotalRecordCount: 0 })
+    }) as typeof fetch
+
+    const first = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Audio/${encodeURIComponent(songId)}/universal?api_key=${authPayload.AccessToken}`, {
+        headers: { 'X-Emby-Authorization': authHeader },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Audio/${encodeURIComponent(songId)}/universal`),
+    )
+    assert.equal(first.status, 451)
+    assert.match((await first.json()).error, /ERR无版权/)
+    assert.equal(musicUrlRequests, 3)
+
+    const second = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Audio/${encodeURIComponent(songId)}/universal?api_key=${authPayload.AccessToken}`, {
+        headers: { 'X-Emby-Authorization': authHeader },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Audio/${encodeURIComponent(songId)}/universal`),
+    )
+    assert.equal(second.status, 451)
+    assert.equal(musicUrlRequests, 3)
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999121')
+    clearQQLoginCookie()
+    db.prepare('DELETE FROM app_settings WHERE key = ?').run(`virtual.song.${songmid}`)
+    db.prepare("DELETE FROM app_settings WHERE key LIKE ?").run(`music-url.unplayable.tx.${songmid}%`)
+    db.prepare("DELETE FROM tracks WHERE songmid = ? AND source = 'tx'").run(songmid)
+    db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track' AND json_extract(payload_json, '$.songmid') = ?").run(songmid)
     globalThis.fetch = originalFetch
     if (originalLxMusicSourceScript === undefined) {
       delete process.env.LX_MUSIC_SOURCE_SCRIPT

@@ -49,6 +49,17 @@ export class MusicUrlConfigError extends Error {
   }
 }
 
+export class MusicUrlUnavailableError extends Error {
+  constructor(
+    message: string,
+    readonly reason: string,
+    readonly payload?: unknown,
+  ) {
+    super(message)
+    this.name = 'MusicUrlUnavailableError'
+  }
+}
+
 export const qualityFallbacks = (preferred?: MusicQuality): MusicQuality[] => {
   if (!preferred) return preferredQualities
   const startIndex = preferredQualities.indexOf(preferred)
@@ -148,6 +159,10 @@ const requestMusicUrlFromApi = async (
 
   const result = extractMusicUrlResult(body)
   if (!result.url) {
+    const unavailable = musicUrlUnavailableReason(body)
+    if (unavailable) {
+      throw new MusicUrlUnavailableError(`music-url API unavailable: ${unavailable.reason}`, unavailable.reason, unavailable.payload)
+    }
     throw new Error(`music-url API did not return a URL: ${body.slice(0, 160)}`)
   }
 
@@ -173,6 +188,30 @@ const parseJson = (value: string): unknown => {
   } catch {
     return undefined
   }
+}
+
+export const isMusicUrlUnavailableError = (error: unknown): error is MusicUrlUnavailableError => {
+  if (error instanceof MusicUrlUnavailableError) return true
+  return typeof error === 'object'
+    && error !== null
+    && (error as { name?: unknown }).name === 'MusicUrlUnavailableError'
+}
+
+export const isMusicUrlUnavailableMessage = (value: string): boolean => {
+  const normalized = value.toLowerCase()
+  return value.includes('ERR无版权')
+    || value.includes('无版权')
+    || normalized.includes('no copyright')
+    || normalized.includes('copyright unavailable')
+}
+
+function musicUrlUnavailableReason(body: string): { reason: string; payload?: unknown } | undefined {
+  const parsed = parseJson(body.trim())
+  if (!parsed || typeof parsed !== 'object') return undefined
+  const record = parsed as Record<string, unknown>
+  const message = String(record.message ?? record.msg ?? record.error ?? '')
+  if (!isMusicUrlUnavailableMessage(message)) return undefined
+  return { reason: message || 'unavailable', payload: parsed }
 }
 
 const extractMusicUrlFromUnknown = (value: unknown): LxMusicUrlResult => {

@@ -15,6 +15,7 @@ type RouteContext = {
 async function handle(request: Request, context: RouteContext): Promise<Response> {
   const params = await context.params
   const embyPath = normalizeEmbyPath(params.path ?? [])
+  if (isAppleTouchIconPath(embyPath)) return emptyIconNotFoundResponse()
   if (isAmpcastAutoInitPath(embyPath)) return ampcastAutoInitResponse(request)
 
   const playerPath = playerPathFromEmbyPath(embyPath)
@@ -66,6 +67,19 @@ function isBrowserNavigation(request: Request): boolean {
 function isAmpcastAutoInitPath(pathname: string): boolean {
   const lower = pathname.toLowerCase()
   return lower === '/@player/auto-init' || lower === '/%40player/auto-init'
+}
+
+function isAppleTouchIconPath(pathname: string): boolean {
+  return /^\/apple-touch-icon(?:-\d+x\d+)?(?:-precomposed)?\.png$/i.test(pathname)
+}
+
+function emptyIconNotFoundResponse(): Response {
+  return new Response(null, {
+    status: 404,
+    headers: {
+      'cache-control': 'public, max-age=86400',
+    },
+  })
 }
 
 async function ampcastAutoInitResponse(request: Request): Promise<Response> {
