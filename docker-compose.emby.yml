@@ -1,4 +1,52 @@
 services:
+  web:
+    image: x-music-app:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: node server.js
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PORT: 8098
+      EMBY_UPSTREAM_URL: http://emby:8096
+    depends_on:
+      - emby
+      - ampcast
+    ports:
+      - "${PORT:-8098}:8098"
+    volumes:
+      - x-music-data:/app/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8098/api/health >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  worker:
+    image: x-music-app:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: npm run worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      EMBY_UPSTREAM_URL: http://emby:8096
+    depends_on:
+      - emby
+    volumes:
+      - x-music-data:/app/data
+
+  ampcast:
+    image: ghcr.io/rekkyrosso/ampcast:0.9.28
+    restart: unless-stopped
+    ports:
+      - "${AMPCAST_PORT:-8000}:8000"
+
   emby:
     image: emby/embyserver:latest
     restart: unless-stopped
@@ -10,4 +58,5 @@ services:
       - x-music-data:/app/data:ro
 
 volumes:
+  x-music-data:
   emby-config:
