@@ -382,6 +382,16 @@ function authorizedLocalAccount(request: Request): AccountRecord | undefined {
   return authorizedAccountByRequest.get(request)
 }
 
+function accountForUpstreamFallback(request: Request): AccountRecord | undefined {
+  const account = authorizedLocalAccount(request)
+  if (account) return account
+  const token = readClientAccessToken(request)
+  if (!token) return undefined
+  const matched = listAccounts().find(account => token === createLocalAccessToken(account))
+  if (matched) markAccountActive(matched.qqUin)
+  return matched
+}
+
 function subsonicAccountForRequest(request: Request): AccountRecord | undefined {
   const username = new URL(request.url).searchParams.get('u')?.trim()
   if (!username) return undefined
@@ -392,6 +402,10 @@ function subsonicAccountForRequest(request: Request): AccountRecord | undefined 
 
 async function isAuthorizedLocalRequest(request: Request): Promise<boolean> {
   return Boolean(await authorizeLocalRequest(request))
+}
+
+async function accountForSubsonicRequest(request: Request): Promise<AccountRecord | undefined> {
+  return await authorizeLocalRequest(request) ?? subsonicAccountForRequest(request)
 }
 
 function unauthorizedResponse(): Response {
@@ -427,7 +441,8 @@ async function handleItemsDeleteRequest(request: Request, embyPath: string): Pro
   }
 
   try {
-    await deleteEmbyItems(upstreamIds, { token: authorizedLocalAccount(request)?.embyAccessToken })
+    const account = authorizedLocalAccount(request)
+    await deleteEmbyItems(upstreamIds, { account, token: account?.embyAccessToken })
   } catch (error) {
     return embyDeleteFailureResponse(error)
   }
@@ -466,7 +481,8 @@ function forgetVirtualItem(decoded: VirtualId): void {
 }
 
 async function handleFavoriteItemMutationRequest(request: Request, itemId: string, favorite: boolean): Promise<Response> {
-  const decoded = await resolveSongVirtualId(itemId)
+  const account = authorizedLocalAccount(request)
+  const decoded = await resolveSongVirtualId(itemId, account)
   if (!decoded) return favoriteItemMutationResponse(itemId, favorite)
 
   if (decoded.kind !== 'qq-song') {
@@ -480,7 +496,6 @@ async function handleFavoriteItemMutationRequest(request: Request, itemId: strin
     if (!favorite) {
       const tracked = getTrack('tx', decoded.songmid)
       if (tracked) {
-        const account = authorizedLocalAccount(request)
         const song = trackRecordToMusicInfo(tracked)
         setLocalFavorite(song, false, account?.qqUin)
         await syncMappedEmbyFavoriteBestEffort(account, song, false)
@@ -490,7 +505,6 @@ async function handleFavoriteItemMutationRequest(request: Request, itemId: strin
     return Response.json({ error: 'Virtual song not found' }, { status: 404 })
   }
 
-  const account = authorizedLocalAccount(request)
   setLocalFavorite(loaded.song, favorite, account?.qqUin)
   if (favorite) enqueueArchiveForSong(loaded.song, 'favorite', decoded.playlistId ?? loaded.playlistId)
 
@@ -639,7 +653,10 @@ async function handleImageRequest(request: Request, embyPath: string): Promise<R
   const decoded = decodeClientVirtualId(itemId)
   if (!decoded) {
     const songmid = localSongmidForExternalItemId(itemId) ?? (looksLikeQQSongMid(itemId) ? itemId : undefined)
-    if (!songmid) return hasUpstreamEmbyConfigured() ? proxyToUpstreamEmby(request, embyPath) : emptyImageResponse()
+    if (!songmid) {
+      const account = accountForUpstreamFallback(request)
+      return hasUpstreamEmbyConfigured(account) ? proxyToUpstreamEmby(request, embyPath) : emptyImageResponse()
+    }
     const localCover = await readCachedTrackCover({ source: 'tx', songmid })
     if (localCover) return markRequestSource(localCover, 'local')
     const stored = await loadOrFetchVirtualSong(songmid)
@@ -667,7 +684,7 @@ async function virtualSongImageResponse(
 
   const stored = await loadOrFetchVirtualSong(decoded.songmid, decoded.playlistId)
   if (stored) {
-    const mapped = await resolveEmbyTrackMapping(stored.song)
+    const mapped = await resolveEmbyTrackMapping(stored.song, accountForUpstreamFallback(request))
     if (mapped) {
       const proxied = await proxyToUpstreamEmby(request, `/Items/${encodeURIComponent(mapped)}/Images/Primary`).catch(() => undefined)
       if (proxied?.ok || proxied?.status === 304) return proxied
@@ -913,7 +930,8 @@ async function handleCollectionRequest(request: Request, embyPath: string): Prom
 async function handlePlaybackReportRequest(request: Request, embyPath: string): Promise<Response | undefined> {
   const body = await request.clone().json().catch(() => undefined) as { ItemId?: unknown } | undefined
   const itemId = typeof body?.ItemId === 'string' ? body.ItemId : ''
-  const decoded = await resolveSongVirtualId(itemId)
+  const account = authorizedLocalAccount(request)
+  const decoded = await resolveSongVirtualId(itemId, account)
   if (!decoded || decoded.kind !== 'qq-song') return undefined
 
   const stored = loadVirtualSong(decoded.songmid)
@@ -921,7 +939,7 @@ async function handlePlaybackReportRequest(request: Request, embyPath: string): 
     const playableQuality = playableQualityForSong(stored.song)
     const quality = playableQuality ?? '320k'
     const track = ensureTrack(stored.song)
-    insertPlayEvent(track.id, quality, authorizedLocalAccount(request)?.qqUin)
+    insertPlayEvent(track.id, quality, account?.qqUin)
     enqueueArchiveForSong(stored.song, 'playback_completed', decoded.playlistId ?? stored.playlistId)
     if (hasSyncableEmbyMedia(stored.song)) {
       enqueueEmbyTrackSync({
@@ -929,6 +947,7 @@ async function handlePlaybackReportRequest(request: Request, embyPath: string): 
         songmid: stored.song.songmid,
         playlistId: decoded.playlistId ?? stored.playlistId,
         musicInfo: stored.song,
+        qqUin: account?.qqUin,
       })
     }
   }
@@ -953,6 +972,7 @@ function enqueueArchiveForSong(
 async function handleItemRequest(request: Request, embyPath: string): Promise<Response | undefined> {
   const itemId = extractItemId(embyPath)
   if (!itemId) return undefined
+  const account = authorizedLocalAccount(request)
 
   const mapped = mappingForExternalTrackItemId(itemId)
   if (mapped) {
@@ -973,7 +993,7 @@ async function handleItemRequest(request: Request, embyPath: string): Promise<Re
     return item ? Response.json(item) : undefined
   }
 
-  const decoded = await resolveSongVirtualId(itemId)
+  const decoded = await resolveSongVirtualId(itemId, account)
   if (!decoded) return undefined
 
   const stored = await loadOrFetchVirtualSong(decoded.songmid, decoded.playlistId)
@@ -1034,10 +1054,11 @@ async function handleLyricsRequest(request: Request, embyPath: string): Promise<
     deleteStaleTrackMapping(mapped)
   }
 
-  const decoded = itemId ? await resolveSongVirtualId(itemId) : undefined
+  const account = accountForUpstreamFallback(request)
+  const decoded = itemId ? await resolveSongVirtualId(itemId, account) : undefined
   if (!decoded) return undefined
 
-  const lyrics = await fetchLyrics(decoded.songmid, decoded.playlistId)
+  const lyrics = await fetchLyrics(decoded.songmid, decoded.playlistId, account)
   if (wantsRawLyrics(request)) {
     return markRequestSource(new Response(lyrics ?? '', {
       status: lyrics ? 200 : 404,
@@ -1071,10 +1092,11 @@ async function handleLyricsRequest(request: Request, embyPath: string): Promise<
 }
 
 async function handleSubsonicGetSongRequest(request: Request): Promise<Response> {
-  if (!await isAuthorizedLocalRequest(request) && !subsonicAccountForRequest(request)) return subsonicResponse(request, { error: { code: 40, message: 'Unauthorized' } }, 401)
+  const account = await accountForSubsonicRequest(request)
+  if (!account) return subsonicResponse(request, { error: { code: 40, message: 'Unauthorized' } }, 401)
   const url = new URL(request.url)
   const rawId = url.searchParams.get('id') ?? ''
-  const decoded = await resolveSongVirtualId(rawId)
+  const decoded = await resolveSongVirtualId(rawId, account)
   if (!decoded) return subsonicResponse(request, { error: { code: 70, message: 'Song not found' } }, 404)
 
   const stored = await loadOrFetchVirtualSong(decoded.songmid, decoded.playlistId)
@@ -1084,13 +1106,14 @@ async function handleSubsonicGetSongRequest(request: Request): Promise<Response>
 }
 
 async function handleSubsonicLyricsRequest(request: Request): Promise<Response> {
-  if (!await isAuthorizedLocalRequest(request) && !subsonicAccountForRequest(request)) return subsonicResponse(request, { error: { code: 40, message: 'Unauthorized' } }, 401)
+  const account = await accountForSubsonicRequest(request)
+  if (!account) return subsonicResponse(request, { error: { code: 40, message: 'Unauthorized' } }, 401)
   const url = new URL(request.url)
   const rawId = url.searchParams.get('id') ?? ''
-  const decoded = await resolveSongVirtualId(rawId)
+  const decoded = await resolveSongVirtualId(rawId, account)
   if (!decoded) return subsonicResponse(request, { lyricsList: { structuredLyrics: [] } })
 
-  const lyrics = await fetchLyrics(decoded.songmid, decoded.playlistId)
+  const lyrics = await fetchLyrics(decoded.songmid, decoded.playlistId, account)
   return subsonicResponse(request, {
     lyricsList: {
       structuredLyrics: lyrics ? [subsonicStructuredLyrics(lyrics)] : [],
@@ -1107,10 +1130,11 @@ async function handleSubtitleStreamRequest(request: Request, embyPath: string): 
     deleteStaleTrackMapping(mapped)
   }
 
-  const decoded = itemId ? await resolveSongVirtualId(itemId) : undefined
+  const account = accountForUpstreamFallback(request)
+  const decoded = itemId ? await resolveSongVirtualId(itemId, account) : undefined
   if (!decoded) return undefined
 
-  const lyrics = await fetchLyrics(decoded.songmid, decoded.playlistId)
+  const lyrics = await fetchLyrics(decoded.songmid, decoded.playlistId, account)
   const format = subtitleStreamFormat(embyPath)
   const headers = {
     'content-type': subtitleContentType(format),
@@ -1186,14 +1210,15 @@ async function handlePlaylistItemsRequest(request: Request, embyPath: string): P
 
   const decoded = decodeVirtualId(playlistId)
   if (!decoded) return undefined
+  const account = authorizedLocalAccount(request)
 
   if (decoded.kind === 'qq-playlist') {
     const playlist = loadVirtualPlaylist(decoded.id)
     const mapped = getRemoteMapping({ localType: 'playlist', localKey: `qq:${decoded.id}`, remote: 'emby' })?.remoteId
-      ?? (playlist ? await searchEmbyPlaylistByName(playlist.name).catch(() => undefined) : undefined)
+      ?? (playlist ? await searchEmbyPlaylistByName(playlist.name, { account }).catch(() => undefined) : undefined)
     if (mapped) {
       upsertRemoteMapping({ localType: 'playlist', localKey: `qq:${decoded.id}`, remote: 'emby', remoteId: mapped, raw: playlist })
-      if (hasUpstreamEmbyConfigured()) return proxyToUpstreamEmby(request, `/Playlists/${encodeURIComponent(mapped)}/Items`)
+      if (hasUpstreamEmbyConfigured(account)) return proxyToUpstreamEmby(request, `/Playlists/${encodeURIComponent(mapped)}/Items`)
     }
   }
 
@@ -1243,6 +1268,7 @@ async function handleVirtualPlaylistItemsRequest(request: Request, decoded: Virt
 
 async function handleAudioRequest(request: Request, embyPath: string): Promise<Response | undefined> {
   const itemId = decodeURIComponent(embyPath.split('/')[2] ?? '')
+  const account = accountForUpstreamFallback(request)
   const staleCandidate = mappingForExternalTrackItemId(itemId)
   if (staleCandidate) {
     const proxied: Response | undefined = await proxyToUpstreamEmby(request, embyPath).catch((error: unknown) => {
@@ -1265,7 +1291,7 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
     deleteStaleTrackMapping(staleCandidate)
   }
 
-  const decoded = await resolveSongVirtualId(itemId)
+  const decoded = await resolveSongVirtualId(itemId, account)
   if (!decoded || decoded.kind !== 'qq-song') return undefined
 
   const stored = await loadOrFetchVirtualSong(decoded.songmid, decoded.playlistId)
@@ -1298,7 +1324,7 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
     return Response.json({ error: cachedUnplayable.reason, unavailable: true }, { status: 451 })
   }
 
-  const mappedItemId = await resolveEmbyTrackMapping(musicInfo)
+  const mappedItemId = await resolveEmbyTrackMapping(musicInfo, account)
   if (mappedItemId) {
     const action = embyPath.split('/')[3] ?? 'universal'
     const proxied: Response | undefined = await proxyToUpstreamEmby(request, `/Audio/${encodeURIComponent(mappedItemId)}/${action}`).catch((error: unknown) => {
@@ -1337,6 +1363,7 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
         songmid: musicInfo.songmid,
         playlistId: decoded.playlistId ?? stored.playlistId,
         musicInfo,
+        qqUin: authorizedLocalAccount(request)?.qqUin,
       })
     } else {
       ensureEmbyMasterCachedBestEffort({ musicInfo, track })
@@ -1355,6 +1382,7 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
         songmid: musicInfo.songmid,
         playlistId: decoded.playlistId ?? stored.playlistId,
         musicInfo,
+        qqUin: authorizedLocalAccount(request)?.qqUin,
       })
     } else {
       ensureEmbyMasterCachedBestEffort({ musicInfo, track })
@@ -1380,6 +1408,7 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
         songmid: musicInfo.songmid,
         playlistId: decoded.playlistId ?? stored.playlistId,
         musicInfo,
+        qqUin: authorizedLocalAccount(request)?.qqUin,
       })
     } else if (!isHighestAvailableQuality(musicInfo, resolved.quality)) {
       ensureEmbyMasterCachedBestEffort({ musicInfo, track })
@@ -1544,14 +1573,14 @@ async function loadOrFetchVirtualSong(songmid: string, playlistId?: string): Pro
   return { song, playlistId }
 }
 
-async function resolveSongVirtualId(itemId: string): Promise<Extract<VirtualId, { kind: 'qq-song' }> | undefined> {
+async function resolveSongVirtualId(itemId: string, account?: AccountRecord): Promise<Extract<VirtualId, { kind: 'qq-song' }> | undefined> {
   const decoded = decodeClientVirtualId(itemId)
   if (decoded?.kind === 'qq-song') return decoded
 
   const songmid = localSongmidForExternalItemId(itemId)
   if (songmid) return { kind: 'qq-song', songmid }
 
-  const remote = await fetchEmbySongForExternalItemId(itemId)
+  const remote = await fetchEmbySongForExternalItemId(itemId, account)
   if (remote) {
     rememberVirtualSong(remote)
     upsertRemoteMapping({
@@ -1645,7 +1674,7 @@ function staleEmbyTrackAliasKey(itemId: string): string {
   return `stale-emby-track.${itemId}`
 }
 
-async function fetchEmbySongForExternalItemId(itemId: string): Promise<MusicInfo | undefined> {
+async function fetchEmbySongForExternalItemId(itemId: string, account?: AccountRecord): Promise<MusicInfo | undefined> {
   const item = await fetchEmbyJson<{
     Id?: string
     Name?: string
@@ -1660,7 +1689,7 @@ async function fetchEmbySongForExternalItemId(itemId: string): Promise<MusicInfo
     Path?: string
   }>(`/Items/${encodeURIComponent(itemId)}?${new URLSearchParams({
     Fields: 'Album,AlbumId,Artists,ArtistItems,RunTimeTicks,ImageTags,ProviderIds,ExternalIds,Path',
-  })}`).catch(() => undefined)
+  })}`, {}, { account }).catch(() => undefined)
   if (!item?.Id || !item.Name) return undefined
   const songmid = embyItemSongmid(item)
   if (!songmid) return undefined
@@ -1786,9 +1815,9 @@ function validEmbyTrackMapping(musicInfo: MusicInfo): string | undefined {
   return undefined
 }
 
-async function resolveEmbyTrackMapping(musicInfo: MusicInfo): Promise<string | undefined> {
+async function resolveEmbyTrackMapping(musicInfo: MusicInfo, account?: AccountRecord): Promise<string | undefined> {
   const mapped = validEmbyTrackMapping(musicInfo)
-    ?? await searchEmbyAudioByName(musicInfo).catch(() => undefined)
+    ?? await searchEmbyAudioByName(musicInfo, { account }).catch(() => undefined)
   if (!mapped) return undefined
   upsertRemoteMapping({
     localType: 'track',
@@ -2685,16 +2714,16 @@ function readNestedString(record: Record<string, unknown>, keys: string[]): stri
   return typeof current === 'string' && current.trim() ? current.trim() : undefined
 }
 
-async function fetchLyrics(songmid: string, playlistId?: string): Promise<string | undefined> {
+async function fetchLyrics(songmid: string, playlistId?: string, account?: AccountRecord): Promise<string | undefined> {
   const stored = await loadOrFetchVirtualSong(songmid, playlistId)
   const cachedLyrics = await readCachedTrackLyrics({ source: 'tx', songmid })
   if (cachedLyrics) {
-    void cleanupCachedLyricsIfEmbyHasLyrics(stored?.song).catch(() => undefined)
+    void cleanupCachedLyricsIfEmbyHasLyrics(stored?.song, account).catch(() => undefined)
     return cachedLyrics
   }
 
   if (stored) {
-    const embyLyrics = await fetchEmbyLyrics(stored.song)
+    const embyLyrics = await fetchEmbyLyrics(stored.song, account)
     if (embyLyrics) {
       await cleanupCachedTrackLyrics({ source: 'tx', songmid }).catch(() => undefined)
       return embyLyrics
@@ -2763,9 +2792,9 @@ function firstWritableTrackFile(song: Pick<MusicInfo, 'source' | 'songmid'>): Re
   return undefined
 }
 
-async function cleanupCachedLyricsIfEmbyHasLyrics(song: MusicInfo | undefined): Promise<void> {
+async function cleanupCachedLyricsIfEmbyHasLyrics(song: MusicInfo | undefined, account?: AccountRecord): Promise<void> {
   if (!song) return
-  const embyLyrics = await fetchEmbyLyrics(song).catch(() => undefined)
+  const embyLyrics = await fetchEmbyLyrics(song, account).catch(() => undefined)
   if (embyLyrics) await cleanupCachedTrackLyrics(song)
 }
 
@@ -2788,33 +2817,33 @@ async function cleanupCachedTrackLyrics(song: Pick<MusicInfo, 'source' | 'songmi
   }
 }
 
-async function fetchEmbyLyrics(song: MusicInfo): Promise<string | undefined> {
-  const mapped = await resolveEmbyTrackMapping(song)
+async function fetchEmbyLyrics(song: MusicInfo, account?: AccountRecord): Promise<string | undefined> {
+  const mapped = await resolveEmbyTrackMapping(song, account)
   if (!mapped) return undefined
 
-  const raw = await fetchEmbyRawLyrics(mapped)
+  const raw = await fetchEmbyRawLyrics(mapped, account)
   if (raw) return raw
 
-  const json = await fetchEmbyStructuredLyrics(mapped)
+  const json = await fetchEmbyStructuredLyrics(mapped, account)
   if (json) return json
 
   return undefined
 }
 
-async function fetchEmbyRawLyrics(itemId: string): Promise<string | undefined> {
+async function fetchEmbyRawLyrics(itemId: string, account?: AccountRecord): Promise<string | undefined> {
   for (const path of [
     `/Items/${encodeURIComponent(itemId)}/Lyrics?format=lrc`,
     `/Items/${encodeURIComponent(itemId)}/Subtitles/2/Stream.lrc`,
   ]) {
-    const text = await fetchEmbyText(path).catch(() => undefined)
+    const text = await fetchEmbyText(path, {}, { account }).catch(() => undefined)
     const normalized = text?.trim()
     if (normalized && !looksLikeJson(normalized)) return normalizeLyrics(normalized)
   }
   return undefined
 }
 
-async function fetchEmbyStructuredLyrics(itemId: string): Promise<string | undefined> {
-  const data = await fetchEmbyJson<any>(`/Items/${encodeURIComponent(itemId)}/Lyrics`).catch(() => undefined)
+async function fetchEmbyStructuredLyrics(itemId: string, account?: AccountRecord): Promise<string | undefined> {
+  const data = await fetchEmbyJson<any>(`/Items/${encodeURIComponent(itemId)}/Lyrics`, {}, { account }).catch(() => undefined)
   const text = typeof data?.Text === 'string' ? data.Text : undefined
   if (text?.trim()) return normalizeLyrics(text)
 
@@ -3093,7 +3122,11 @@ async function tryReadItemsResponse(
   pageOverride?: { startIndex?: number; limit?: number },
 ): Promise<{ Items?: any[]; TotalRecordCount?: number } | undefined> {
   try {
-    return await fetchEmbyJson<{ Items?: any[]; TotalRecordCount?: number }>(`${embyPath}${await upstreamSearch(request, pageOverride)}`)
+    return await fetchEmbyJson<{ Items?: any[]; TotalRecordCount?: number }>(
+      `${embyPath}${await upstreamSearch(request, pageOverride)}`,
+      {},
+      { account: accountForUpstreamFallback(request) },
+    )
   } catch {
     return undefined
   }

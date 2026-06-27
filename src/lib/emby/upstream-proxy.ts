@@ -1,7 +1,7 @@
-import { getEffectiveSettings } from '@/lib/db/settings'
 import { markRequestSource } from '@/lib/request-log'
 import { listAccounts, markAccountActive } from '@/lib/db/accounts'
 import { embyAuthorizationHeader, getDefaultUpstreamMusicLibraryId, getEmbyAccessToken } from './auth'
+import { embyConfigForAccount } from './config'
 import { createLocalAccessToken, readEmbyAccessToken } from './tokens'
 
 const MUSIC_LIBRARY_ID = 'x-music-music'
@@ -24,25 +24,25 @@ const decodedBodyHeaders = new Set([
 ])
 
 export async function proxyToUpstreamEmby(request: Request, embyPath: string): Promise<Response> {
-  const settings = getEffectiveSettings()
-  if (!settings.emby.baseUrl) {
+  const account = findAccountForRequest(request)
+  const settings = embyConfigForAccount(account)
+  if (!settings.baseUrl) {
     return Response.json({
       error: 'Upstream Emby is not configured',
-      actionable: 'Set Emby base URL in /admin or EMBY_UPSTREAM_URL.',
+      actionable: '在帐号配置中填写你的 Emby 服务器地址和 API Key。',
     }, { status: 502 })
   }
 
   const incomingUrl = new URL(request.url)
-  const upstreamUrl = new URL(settings.emby.baseUrl)
+  const upstreamUrl = new URL(settings.baseUrl)
   upstreamUrl.pathname = joinPaths(upstreamUrl.pathname, embyPath)
   upstreamUrl.search = incomingUrl.search
-  await applyLocalLibraryMapping(upstreamUrl)
+  await applyLocalLibraryMapping(upstreamUrl, account)
 
   const headers = new Headers()
   request.headers.forEach((value, key) => {
     if (!hopByHopHeaders.has(key.toLowerCase())) headers.set(key, value)
   })
-  const account = findAccountForRequest(request)
   const token = await getEmbyAccessToken(account)
   applyToken(upstreamUrl, headers, token)
   const method = request.method.toUpperCase()
@@ -52,7 +52,7 @@ export async function proxyToUpstreamEmby(request: Request, embyPath: string): P
     headers,
     body,
     cache: 'no-store',
-    signal: AbortSignal.timeout(settings.emby.proxyTimeoutMs),
+    signal: AbortSignal.timeout(settings.proxyTimeoutMs),
     duplex: body ? 'half' : undefined,
   } as RequestInit & { duplex?: 'half' }
   const response = await fetch(upstreamUrl, init)
@@ -88,10 +88,10 @@ function applyToken(url: URL, headers: Headers, token: string | undefined): void
   headers.set('X-Emby-Authorization', embyAuthorizationHeader(token))
 }
 
-async function applyLocalLibraryMapping(url: URL): Promise<void> {
+async function applyLocalLibraryMapping(url: URL, account: ReturnType<typeof findAccountForRequest>): Promise<void> {
   for (const key of ['ParentId', 'parentId']) {
     if (url.searchParams.get(key) !== MUSIC_LIBRARY_ID) continue
-    const upstreamMusicLibraryId = await getDefaultUpstreamMusicLibraryId().catch(() => undefined)
+    const upstreamMusicLibraryId = await getDefaultUpstreamMusicLibraryId(account).catch(() => undefined)
     if (upstreamMusicLibraryId) {
       url.searchParams.set(key, upstreamMusicLibraryId)
     } else {

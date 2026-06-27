@@ -14,7 +14,7 @@ import { handleLocalEmbyRequest } from '@/lib/emby/local-handlers'
 import { normalizeEmbyPath, stripOptionalEmbyPrefix } from '@/lib/emby/paths'
 import { proxyToUpstreamEmby } from '@/lib/emby/upstream-proxy'
 import { ampcastAutoConnectConfig, ampcastAutoInitHtml, playerPathFromEmbyPath, proxyToAmpcast } from '@/lib/ampcast/proxy'
-import { readEmbyAccessToken } from '@/lib/emby/tokens'
+import { createLocalAccessToken, readEmbyAccessToken } from '@/lib/emby/tokens'
 import { decodeVirtualId, encodeVirtualId, songVirtualId } from '@/lib/emby/virtual-ids'
 import { getFavoriteStatus, setLocalFavoriteSynced } from '@/lib/db/favorites'
 import { upsertRemoteMapping } from '@/lib/db/remote-mappings'
@@ -26,7 +26,30 @@ import { logCompletedRequest, logFailedRequest, logServiceEvent, requestLoggingE
 import { QQAuthExpiredError, requireActiveQQAccount } from '@/lib/qq/auth-state'
 
 function markAccountUpstreamBound(qqUin: string, embyUserId = `emby-user-${qqUin}`, embyAccessToken?: string): void {
-  db.prepare('UPDATE accounts SET emby_user_id = ?, emby_access_token = COALESCE(?, emby_access_token) WHERE qq_uin = ?').run(embyUserId, embyAccessToken ?? null, qqUin)
+  configureAccountUpstreamEmby(qqUin)
+  db.prepare(`
+    UPDATE accounts
+    SET emby_user_id = ?,
+        emby_access_token = COALESCE(?, emby_access_token)
+    WHERE qq_uin = ?
+  `).run(embyUserId, embyAccessToken ?? null, qqUin)
+}
+
+function configureAccountUpstreamEmby(qqUin: string): void {
+  db.prepare(`
+    UPDATE accounts
+    SET
+        emby_base_url = 'http://127.0.0.1:8096',
+        emby_api_key = 'test-emby-api-key',
+        emby_proxy_timeout_ms = 30000
+    WHERE qq_uin = ?
+  `).run(qqUin)
+}
+
+function localEmbyRequestForAccount(account: NonNullable<ReturnType<typeof getAccountByQQ>>, url: string, init: RequestInit = {}): Request {
+  const headers = new Headers(init.headers)
+  headers.set('X-Emby-Token', createLocalAccessToken(account))
+  return new Request(url, { ...init, headers })
 }
 
 function clearUpstreamMusicLibraryCache(): void {
@@ -295,6 +318,7 @@ test('upstream emby account creation uses QQ-prefixed username and restricts acc
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999019')
     saveQQLoginCookie('uin=o999019; qm_keyst=test-key')
+    configureAccountUpstreamEmby('999019')
     const account = getAccountByQQ('999019')
     assert.ok(account)
 
@@ -304,8 +328,8 @@ test('upstream emby account creation uses QQ-prefixed username and restricts acc
       const body = typeof init?.body === 'string' ? JSON.parse(init.body) as Record<string, unknown> : undefined
       requests.push({ url: requestUrl, init, body })
 
-      if (requestUrl.pathname.endsWith('/Users')) return Response.json([])
       if (requestUrl.pathname.endsWith('/Users/New')) return Response.json({ Id: 'emby-user-999019', Name: body?.Name })
+      if (requestUrl.pathname.endsWith('/Users')) return Response.json([])
       if (requestUrl.pathname.endsWith('/Users/emby-user-999019') && init?.method !== 'POST') {
         return Response.json({
           Id: 'emby-user-999019',
@@ -357,6 +381,7 @@ test('upstream emby account policy falls back to collection folder music id', as
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999021')
     saveQQLoginCookie('uin=o999021; qm_keyst=test-key')
+    configureAccountUpstreamEmby('999021')
     const account = getAccountByQQ('999021')
     assert.ok(account)
 
@@ -416,6 +441,7 @@ test('upstream emby account binding fails when policy verification misses music 
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999024')
     saveQQLoginCookie('uin=o999024; qm_keyst=test-key')
+    configureAccountUpstreamEmby('999024')
     const account = getAccountByQQ('999024')
     assert.ok(account)
 
@@ -459,6 +485,7 @@ test('upstream emby account binding normalizes existing username and reapplies r
     saveQQLoginCookie('uin=o999020; qm_keyst=test-key')
     db.prepare('UPDATE accounts SET emby_user_id = ?, emby_username = ? WHERE qq_uin = ?')
       .run('emby-user-999020', 'QQ999020', '999020')
+    markAccountUpstreamBound('999020', 'emby-user-999020')
     const account = getAccountByQQ('999020')
     assert.ok(account)
 
@@ -723,6 +750,11 @@ test('emby dispatch adds cors headers for external players', async () => {
 test('upstream proxy strips decoded-body compression headers', async () => {
   const originalFetch = globalThis.fetch
   try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999971')
+    saveQQLoginCookie('uin=o999971; qm_keyst=test-key')
+    markAccountUpstreamBound('999971')
+    const account = getAccountByQQ('999971')
+    assert.ok(account)
     globalThis.fetch = (async () => new Response(JSON.stringify({ Items: [] }), {
       headers: {
         'content-type': 'application/json',
@@ -731,7 +763,7 @@ test('upstream proxy strips decoded-body compression headers', async () => {
       },
     })) as typeof fetch
 
-    const response = await proxyToUpstreamEmby(new Request('http://local/Items?Limit=1'), '/Items')
+    const response = await proxyToUpstreamEmby(localEmbyRequestForAccount(account, 'http://local/Items?Limit=1'), '/Items')
 
     assert.equal(response.status, 200)
     assert.equal(response.headers.get('content-type'), 'application/json')
@@ -739,6 +771,8 @@ test('upstream proxy strips decoded-body compression headers', async () => {
     assert.equal(response.headers.get('content-length'), null)
     assert.deepEqual(await response.json(), { Items: [] })
   } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999971')
+    clearQQLoginCookie()
     globalThis.fetch = originalFetch
   }
 })
@@ -746,13 +780,18 @@ test('upstream proxy strips decoded-body compression headers', async () => {
 test('upstream proxy omits empty request body for body-capable methods', async () => {
   const originalFetch = globalThis.fetch
   try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999972')
+    saveQQLoginCookie('uin=o999972; qm_keyst=test-key')
+    markAccountUpstreamBound('999972')
+    const account = getAccountByQQ('999972')
+    assert.ok(account)
     let forwardedInit: RequestInit | undefined
     globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
       forwardedInit = init
       return Response.json({ ok: true })
     }) as typeof fetch
 
-    const response = await proxyToUpstreamEmby(new Request('http://local/Sessions/Capabilities/Full', {
+    const response = await proxyToUpstreamEmby(localEmbyRequestForAccount(account, 'http://local/Sessions/Capabilities/Full', {
       method: 'POST',
     }), '/Sessions/Capabilities/Full')
 
@@ -761,6 +800,8 @@ test('upstream proxy omits empty request body for body-capable methods', async (
     assert.equal(forwardedInit?.body, undefined)
     assert.equal((forwardedInit as RequestInit & { duplex?: string } | undefined)?.duplex, undefined)
   } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999972')
+    clearQQLoginCookie()
     globalThis.fetch = originalFetch
   }
 })
@@ -778,8 +819,7 @@ test('emby token parser accepts ampcast authorization header', () => {
 test('runtime config updates do not accept upstream Emby or LX fields', () => {
   updateEffectiveSettings({ qqEnabled: false })
   const settings = getEffectiveSettings().emby
-  assert.equal(settings.baseUrl, process.env.EMBY_UPSTREAM_URL)
-  assert.equal(settings.apiKey, process.env.EMBY_API_KEY)
+  assert.deepEqual(Object.keys(settings), ['proxyTimeoutMs'])
   assert.equal(getEffectiveSettings().qq.enabled, false)
 
   deleteSetting('qq.enabled')
@@ -816,11 +856,7 @@ test('local emby authenticate by name succeeds and rejects bad credentials', asy
 })
 
 test('local emby authenticate by name works without upstream Emby configuration', async () => {
-  const previousUrl = process.env.EMBY_UPSTREAM_URL
-  const previousKey = process.env.EMBY_API_KEY
   try {
-    delete process.env.EMBY_UPSTREAM_URL
-    delete process.env.EMBY_API_KEY
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999901')
     saveQQLoginCookie('uin=o999901; qm_keyst=test-key')
     const account = getAccountByQQ('999901')
@@ -835,31 +871,16 @@ test('local emby authenticate by name works without upstream Emby configuration'
     assert.equal(payload.User.Name, account.embyUsername)
     assert.equal(typeof payload.AccessToken, 'string')
   } finally {
-    if (previousUrl === undefined) delete process.env.EMBY_UPSTREAM_URL
-    else process.env.EMBY_UPSTREAM_URL = previousUrl
-    if (previousKey === undefined) delete process.env.EMBY_API_KEY
-    else process.env.EMBY_API_KEY = previousKey
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999901')
     clearQQLoginCookie()
   }
 })
 
 test('local emby dispatch returns local-only 404 without upstream Emby configuration', async () => {
-  const previousUrl = process.env.EMBY_UPSTREAM_URL
-  const previousKey = process.env.EMBY_API_KEY
-  try {
-    delete process.env.EMBY_UPSTREAM_URL
-    delete process.env.EMBY_API_KEY
-    const response = await dispatchEmbyRequest(new Request('http://local/Unknown/Path'), '/Unknown/Path')
-    assert.equal(response.status, 404)
-    const payload = await response.json()
-    assert.equal(payload.message, 'XMusic local Emby gateway did not handle this path, and no upstream Emby server is configured.')
-  } finally {
-    if (previousUrl === undefined) delete process.env.EMBY_UPSTREAM_URL
-    else process.env.EMBY_UPSTREAM_URL = previousUrl
-    if (previousKey === undefined) delete process.env.EMBY_API_KEY
-    else process.env.EMBY_API_KEY = previousKey
-  }
+  const response = await dispatchEmbyRequest(new Request('http://local/Unknown/Path'), '/Unknown/Path')
+  assert.equal(response.status, 404)
+  const payload = await response.json()
+  assert.equal(payload.message, 'XMusic local Emby gateway did not handle this path, and no upstream Emby server is configured.')
 })
 
 test('local emby authenticate accepts mobile-compatible casing and form credentials', async () => {

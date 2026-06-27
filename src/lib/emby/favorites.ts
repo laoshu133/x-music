@@ -30,7 +30,7 @@ export async function syncMappedEmbyFavoriteBestEffort(
       userId: embyUserId,
       itemId: remoteItemId,
       favorite,
-    })
+    }, { account })
     return { attempted: true, synced: true, remoteItemId }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
@@ -69,7 +69,7 @@ export async function pushLocalFavoritesToEmby(input: {
       continue
     }
     try {
-      await setEmbyFavorite({ userId: embyUserId, itemId: remoteItemId, favorite: true })
+      await setEmbyFavorite({ userId: embyUserId, itemId: remoteItemId, favorite: true }, { account: input.account })
       synced += 1
     } catch (error) {
       errors.push({ songmid: record.songmid, error: error instanceof Error ? error.message : String(error) })
@@ -107,7 +107,7 @@ export async function pullEmbyFavorites(input: {
   const response = await fetchEmbyFavoriteAudioItems({
     userId: account.embyUserId,
     limit: input.limit ?? 200,
-  })
+  }, { account })
   const errors: Array<{ itemId?: string; songmid?: string; error: string }> = []
   let pulled = 0
   let qqSynced = 0
@@ -167,7 +167,7 @@ export async function syncEmbyFavoritesFromQQList(input: {
   const embyFavorites = await fetchEmbyFavoriteAudioItems({
     userId: embyUserId,
     limit: input.limit ?? 500,
-  }).catch(() => ({ Items: [] }))
+  }, { account: input.account }).catch(() => ({ Items: [] }))
   const embyFavoriteIds = new Set((embyFavorites.Items ?? []).map(item => item.Id).filter((id): id is string => Boolean(id)))
   const mappings = dedupeSongs(input.qqFavorites)
     .map(song => getRemoteMapping({ localType: 'track', localKey: `${song.source}:${song.songmid}`, remote: 'emby' }))
@@ -189,7 +189,7 @@ export async function syncEmbyFavoritesFromQQList(input: {
         userId: embyUserId,
         itemId: mapping.remoteId,
         favorite: true,
-      })
+      }, { account: input.account })
       synced += 1
     } catch (error) {
       errors.push({ songmid, error: error instanceof Error ? error.message : String(error) })
@@ -215,7 +215,7 @@ export async function getEmbyFavoriteCount(input: {
   const response = await fetchEmbyFavoriteAudioItems({
     userId: embyUserId,
     limit: input.limit ?? 1,
-  })
+  }, { account: input.account })
 
   return response.TotalRecordCount ?? response.Items?.length ?? 0
 }

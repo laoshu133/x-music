@@ -27,11 +27,6 @@ export async function PUT(request: Request): Promise<Response> {
 function redactSettings(settings = getEffectiveSettings()) {
   return {
     ...settings,
-    emby: {
-      ...settings.emby,
-      hasApiKey: Boolean(settings.emby.apiKey),
-      apiKey: settings.emby.apiKey ? '********' : undefined,
-    },
     gateway: {
       accountMode: settings.gateway.accountMode,
     },

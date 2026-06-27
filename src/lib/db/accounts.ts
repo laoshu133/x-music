@@ -19,6 +19,10 @@ export interface AccountRecord {
   embyUsername: string
   embyPassword: string
   embyAccessToken?: string
+  embyBaseUrl?: string
+  embyApiKey?: string
+  embySourceWebdavDsn?: string
+  embyProxyTimeoutMs?: number
   lastLoginAt?: string
   lastLoginIp?: string
   lastActiveAt?: string
@@ -59,6 +63,10 @@ interface AccountRow {
   emby_username: string
   emby_password: string
   emby_access_token: string | null
+  emby_base_url: string | null
+  emby_api_key: string | null
+  emby_source_webdav_dsn: string | null
+  emby_proxy_timeout_ms: number | null
   last_login_at: string | null
   last_login_ip: string | null
   last_active_at: string | null
@@ -92,6 +100,10 @@ export interface AccountDetail {
     hasQQMusicKey: boolean
     hasEmbyPassword: boolean
     hasEmbyAccessToken: boolean
+    hasEmbyApiKey: boolean
+    embyBaseUrl?: string
+    hasEmbySourceWebdavDsn: boolean
+    embyProxyTimeoutMs?: number
   }
   qq: ReturnType<typeof summarizeQQLoginState>
   favorites: {
@@ -129,6 +141,10 @@ export function upsertAccountFromQQCookie(cookieText: string, options: { loginIp
       emby_username,
       emby_password,
       emby_access_token,
+      emby_base_url,
+      emby_api_key,
+      emby_source_webdav_dsn,
+      emby_proxy_timeout_ms,
       last_login_at,
       last_login_ip,
       last_active_at,
@@ -147,6 +163,10 @@ export function upsertAccountFromQQCookie(cookieText: string, options: { loginIp
       @embyUsername,
       @embyPassword,
       @embyAccessToken,
+      @embyBaseUrl,
+      @embyApiKey,
+      @embySourceWebdavDsn,
+      @embyProxyTimeoutMs,
       CURRENT_TIMESTAMP,
       @lastLoginIp,
       CURRENT_TIMESTAMP,
@@ -176,6 +196,10 @@ export function upsertAccountFromQQCookie(cookieText: string, options: { loginIp
     embyUsername,
     embyPassword,
     embyAccessToken: existing?.embyAccessToken ?? null,
+    embyBaseUrl: existing?.embyBaseUrl ?? null,
+    embyApiKey: existing?.embyApiKey ?? null,
+    embySourceWebdavDsn: existing?.embySourceWebdavDsn ?? null,
+    embyProxyTimeoutMs: existing?.embyProxyTimeoutMs ?? null,
     lastLoginIp: options.loginIp ?? null,
   })
 
@@ -254,6 +278,10 @@ export function getAccountProfile(qqUin: string): AccountProfile | undefined {
       hasQQMusicKey: Boolean(account.qqmusicKey),
       hasEmbyPassword: Boolean(account.embyPassword),
       hasEmbyAccessToken: Boolean(account.embyAccessToken),
+      hasEmbyApiKey: Boolean(account.embyApiKey),
+      embyBaseUrl: account.embyBaseUrl,
+      hasEmbySourceWebdavDsn: Boolean(account.embySourceWebdavDsn),
+      embyProxyTimeoutMs: account.embyProxyTimeoutMs,
     },
     qq: summarizeQQLoginState(accountToQQLoginState(account)),
   }
@@ -423,6 +451,47 @@ export function updateAccountEmbyPassword(qqUin: string, password: string): Acco
   return getAccountByQQ(qqUin)
 }
 
+export function updateAccountEmbyConfig(
+  qqUin: string,
+  input: {
+    password?: string
+    baseUrl?: string | null
+    apiKey?: string | null
+    sourceWebdavDsn?: string | null
+    proxyTimeoutMs?: number | null
+  },
+): AccountRecord | undefined {
+  const current = getAccountByQQ(qqUin)
+  if (!current) return undefined
+  const password = input.password !== undefined ? input.password.trim() : current.embyPassword
+  if (!password) return current
+  const baseUrl = normalizeOptionalUrl(input.baseUrl, current.embyBaseUrl)
+  const apiKey = normalizeOptionalSecret(input.apiKey, current.embyApiKey)
+  const sourceWebdavDsn = normalizeOptionalUrl(input.sourceWebdavDsn, current.embySourceWebdavDsn)
+  const proxyTimeoutMs = normalizeProxyTimeout(input.proxyTimeoutMs, current.embyProxyTimeoutMs)
+
+  db.prepare(`
+    UPDATE accounts
+    SET
+      emby_password = @password,
+      emby_base_url = @baseUrl,
+      emby_api_key = @apiKey,
+      emby_source_webdav_dsn = @sourceWebdavDsn,
+      emby_proxy_timeout_ms = @proxyTimeoutMs,
+      updated_at = CURRENT_TIMESTAMP
+    WHERE qq_uin = @qqUin
+  `).run({
+    qqUin,
+    password,
+    baseUrl,
+    apiKey,
+    sourceWebdavDsn,
+    proxyTimeoutMs,
+  })
+
+  return getAccountByQQ(qqUin)
+}
+
 export function accountToQQLoginState(account: AccountRecord): QQLoginState {
   return {
     cookie: account.qqCookie,
@@ -443,6 +512,10 @@ export function summarizeAccount(account: AccountRecord) {
       hasPassword: Boolean(account.embyPassword),
       userId: account.embyUserId,
       hasAccessToken: Boolean(account.embyAccessToken),
+      baseUrl: account.embyBaseUrl,
+      hasApiKey: Boolean(account.embyApiKey),
+      hasSourceWebdavDsn: Boolean(account.embySourceWebdavDsn),
+      proxyTimeoutMs: account.embyProxyTimeoutMs,
     },
   }
 }
@@ -461,12 +534,37 @@ function rowToAccount(row: AccountRow): AccountRecord {
     embyUsername: row.emby_username,
     embyPassword: row.emby_password,
     embyAccessToken: row.emby_access_token ?? undefined,
+    embyBaseUrl: row.emby_base_url ?? undefined,
+    embyApiKey: row.emby_api_key ?? undefined,
+    embySourceWebdavDsn: row.emby_source_webdav_dsn ?? undefined,
+    embyProxyTimeoutMs: row.emby_proxy_timeout_ms ?? undefined,
     lastLoginAt: row.last_login_at ?? undefined,
     lastLoginIp: row.last_login_ip ?? undefined,
     lastActiveAt: row.last_active_at ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }
+}
+
+function normalizeOptionalSecret(value: string | null | undefined, current: string | undefined): string | null {
+  if (value === undefined) return current ?? null
+  const trimmed = value?.trim() ?? ''
+  if (!trimmed) return null
+  if (trimmed === '********') return current ?? null
+  return trimmed
+}
+
+function normalizeOptionalUrl(value: string | null | undefined, current: string | undefined): string | null {
+  if (value === undefined) return current ?? null
+  const trimmed = value?.trim() ?? ''
+  if (!trimmed) return null
+  return trimmed.replace(/\/+$/g, '')
+}
+
+function normalizeProxyTimeout(value: number | null | undefined, current: number | undefined): number | null {
+  if (value === undefined) return current ?? null
+  if (value === null) return null
+  return Number.isFinite(value) && value > 0 ? Math.trunc(value) : current ?? null
 }
 
 function accountStatsByQQ(): Map<string, { playCount: number; favoriteCount: number }> {

@@ -11,10 +11,7 @@ export interface EffectiveAppSettings {
     sourceScriptUrl?: string
   }
   emby: {
-    baseUrl?: string
-    apiKey?: string
     proxyTimeoutMs: number
-    sourceWebdavDsn?: string
   }
   qq: {
     enabled: boolean
@@ -68,10 +65,7 @@ export function getEffectiveSettings(): EffectiveAppSettings {
       sourceScriptUrl: appConfig.lxMusicSourceScript,
     },
     emby: {
-      baseUrl: appConfig.embyUpstreamUrl,
-      apiKey: appConfig.embyApiKey,
-      proxyTimeoutMs: appConfig.embyProxyTimeoutMs,
-      sourceWebdavDsn: appConfig.embySourceWebdavDsn,
+      proxyTimeoutMs: 30000,
     },
     qq: {
       enabled: booleanSetting('qq.enabled', true),

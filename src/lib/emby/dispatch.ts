@@ -3,13 +3,16 @@ import { proxyToUpstreamEmby } from './upstream-proxy'
 import { hasUpstreamEmbyConfigured } from './auth'
 import { withEmbyCors } from './cors'
 import { logCompletedRequest, logFailedRequest } from '@/lib/request-log'
+import { listAccounts, markAccountActive } from '@/lib/db/accounts'
+import { createLocalAccessToken, readEmbyAccessToken } from './tokens'
 
 export async function dispatchEmbyRequest(request: Request, embyPath: string): Promise<Response> {
   const startedAt = Date.now()
   try {
     const local = await handleLocalEmbyRequest(request, embyPath)
+    const account = accountForRequest(request)
     const response = withEmbyCors(local ?? (
-      hasUpstreamEmbyConfigured()
+      hasUpstreamEmbyConfigured(account)
         ? await proxyToUpstreamEmby(request, embyPath)
         : localOnlyNotFoundResponse(embyPath)
     ))
@@ -26,4 +29,12 @@ function localOnlyNotFoundResponse(embyPath: string): Response {
     message: 'XMusic local Emby gateway did not handle this path, and no upstream Emby server is configured.',
     path: embyPath,
   }, { status: 404 })
+}
+
+function accountForRequest(request: Request) {
+  const token = readEmbyAccessToken(request)
+  if (!token) return undefined
+  const account = listAccounts().find(account => token === createLocalAccessToken(account))
+  if (account) markAccountActive(account.qqUin)
+  return account
 }

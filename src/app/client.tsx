@@ -214,6 +214,12 @@ interface AccountEmbyConfig {
   username: string
   password: string
   hasPassword: boolean
+  baseUrl?: string
+  apiKey?: string
+  hasApiKey?: boolean
+  sourceWebdavDsn?: string
+  hasSourceWebdavDsn?: boolean
+  proxyTimeoutMs: number
 }
 
 interface ConnectionInfo {
@@ -302,6 +308,10 @@ export default function MusicClient() {
   const [browserOrigin, setBrowserOrigin] = useState('')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(initialSidebarCollapsed)
   const [embyPasswordDraft, setEmbyPasswordDraft] = useState('')
+  const [embyBaseUrlDraft, setEmbyBaseUrlDraft] = useState('')
+  const [embyApiKeyDraft, setEmbyApiKeyDraft] = useState('')
+  const [embyWebdavDraft, setEmbyWebdavDraft] = useState('')
+  const [embyProxyTimeoutDraft, setEmbyProxyTimeoutDraft] = useState('30000')
   const [configDraft, setConfigDraft] = useState<ConfigDraft>({
     qqEnabled: true,
     qqSyncFavorites: true,
@@ -349,6 +359,10 @@ export default function MusicClient() {
   const loadAccountEmbyConfig = () => run(s => setAccountEmbyConfig(s), async () => {
     const data = await fetchJson<AccountEmbyConfig>('/api/account/emby')
     setEmbyPasswordDraft(data.password)
+    setEmbyBaseUrlDraft(data.baseUrl ?? '')
+    setEmbyApiKeyDraft(data.hasApiKey ? '********' : data.apiKey ?? '')
+    setEmbyWebdavDraft(data.sourceWebdavDsn ?? '')
+    setEmbyProxyTimeoutDraft(String(data.proxyTimeoutMs ?? 30000))
     return data
   })
   const loadHealth = () => run(s => setHealth(s), async () => {
@@ -499,9 +513,19 @@ export default function MusicClient() {
       const data = await fetchJson<AccountEmbyConfig>('/api/account/emby', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ password }),
+        body: JSON.stringify({
+          password,
+          baseUrl: embyBaseUrlDraft,
+          apiKey: embyApiKeyDraft,
+          sourceWebdavDsn: embyWebdavDraft,
+          proxyTimeoutMs: Number(embyProxyTimeoutDraft) || 30000,
+        }),
       })
       setEmbyPasswordDraft(data.password)
+      setEmbyBaseUrlDraft(data.baseUrl ?? '')
+      setEmbyApiKeyDraft(data.hasApiKey ? '********' : data.apiKey ?? '')
+      setEmbyWebdavDraft(data.sourceWebdavDsn ?? '')
+      setEmbyProxyTimeoutDraft(String(data.proxyTimeoutMs ?? 30000))
       return data
     })
     setMessage('配置已保存')
@@ -644,16 +668,24 @@ export default function MusicClient() {
               <IconButton label="刷新" onClick={loadAdminConfig} disabled={adminConfig.loading}><RefreshCw size={16} /></IconButton>
             </div>
             <Status state={adminConfig} />
-            <ConfigPanel
-              draft={configDraft}
-              embyConfig={accountEmbyConfig}
-              connection={connectionInfo}
-              passwordDraft={embyPasswordDraft}
-              onChange={setConfigDraft}
-              onPasswordChange={setEmbyPasswordDraft}
-              onSave={saveAdminConfig}
-              loading={adminConfig.loading || accountEmbyConfig.loading}
-            />
+              <ConfigPanel
+                draft={configDraft}
+                embyConfig={accountEmbyConfig}
+                connection={connectionInfo}
+                passwordDraft={embyPasswordDraft}
+                embyBaseUrlDraft={embyBaseUrlDraft}
+                embyApiKeyDraft={embyApiKeyDraft}
+                embyWebdavDraft={embyWebdavDraft}
+                embyProxyTimeoutDraft={embyProxyTimeoutDraft}
+                onChange={setConfigDraft}
+                onPasswordChange={setEmbyPasswordDraft}
+                onEmbyBaseUrlChange={setEmbyBaseUrlDraft}
+                onEmbyApiKeyChange={setEmbyApiKeyDraft}
+                onEmbyWebdavChange={setEmbyWebdavDraft}
+                onEmbyProxyTimeoutChange={setEmbyProxyTimeoutDraft}
+                onSave={saveAdminConfig}
+                loading={adminConfig.loading || accountEmbyConfig.loading}
+              />
           </section>
         )}
 
@@ -931,8 +963,16 @@ function ConfigPanel({
   embyConfig,
   connection,
   passwordDraft,
+  embyBaseUrlDraft,
+  embyApiKeyDraft,
+  embyWebdavDraft,
+  embyProxyTimeoutDraft,
   onChange,
   onPasswordChange,
+  onEmbyBaseUrlChange,
+  onEmbyApiKeyChange,
+  onEmbyWebdavChange,
+  onEmbyProxyTimeoutChange,
   onSave,
   loading,
 }: {
@@ -940,8 +980,16 @@ function ConfigPanel({
   embyConfig: ApiState<AccountEmbyConfig>
   connection: ConnectionInfo
   passwordDraft: string
+  embyBaseUrlDraft: string
+  embyApiKeyDraft: string
+  embyWebdavDraft: string
+  embyProxyTimeoutDraft: string
   onChange: (value: ConfigDraft) => void
   onPasswordChange: (value: string) => void
+  onEmbyBaseUrlChange: (value: string) => void
+  onEmbyApiKeyChange: (value: string) => void
+  onEmbyWebdavChange: (value: string) => void
+  onEmbyProxyTimeoutChange: (value: string) => void
   onSave: () => void
   loading: boolean
 }) {
@@ -979,6 +1027,56 @@ function ConfigPanel({
           </div>
         </dl>
         <Status state={embyConfig} />
+      </section>
+      <section>
+        <h3>上游 Emby</h3>
+        <dl className="connection-list">
+          <div>
+            <dt>服务器地址</dt>
+            <dd>
+              <input
+                type="url"
+                value={embyBaseUrlDraft}
+                onChange={event => onEmbyBaseUrlChange(event.target.value)}
+                placeholder="https://emby.example.com:8096"
+              />
+            </dd>
+          </div>
+          <div>
+            <dt>API Key</dt>
+            <dd>
+              <input
+                type="password"
+                value={embyApiKeyDraft}
+                onChange={event => onEmbyApiKeyChange(event.target.value)}
+                placeholder="留空则不启用上游 Emby"
+              />
+            </dd>
+          </div>
+          <div>
+            <dt>WebDAV 存储</dt>
+            <dd>
+              <input
+                type="url"
+                value={embyWebdavDraft}
+                onChange={event => onEmbyWebdavChange(event.target.value)}
+                placeholder="https://user:password@example.com/dav/music"
+              />
+            </dd>
+          </div>
+          <div>
+            <dt>代理超时</dt>
+            <dd>
+              <input
+                type="number"
+                min="1000"
+                step="1000"
+                value={embyProxyTimeoutDraft}
+                onChange={event => onEmbyProxyTimeoutChange(event.target.value)}
+              />
+            </dd>
+          </div>
+        </dl>
       </section>
       <section>
         <h3>QQ 音乐</h3>

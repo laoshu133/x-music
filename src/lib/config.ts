@@ -11,10 +11,6 @@ const envSchema = z.object({
   DATABASE_URL: z.string().default('file:./data/app.sqlite'),
   MUSIC_DATA_DIR: z.string().default('./data'),
   AMPCAST_URL: z.string().url().default(defaultAmpcastUrl),
-  EMBY_UPSTREAM_URL: z.string().url().optional(),
-  EMBY_API_KEY: z.string().min(1).optional(),
-  EMBY_PROXY_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),
-  EMBY_SOURCE_WEBDAV_DSN: z.string().url().optional(),
   ADMIN_QQ_UINS: z.string().default(''),
 })
 
@@ -31,18 +27,6 @@ export const appConfig = {
   toolsDir: path.resolve(env.MUSIC_DATA_DIR, 'tools'),
   get lxMusicSourceScript() {
     return currentEnv().LX_MUSIC_SOURCE_SCRIPT
-  },
-  get embyUpstreamUrl() {
-    return currentEnv().EMBY_UPSTREAM_URL
-  },
-  get embyApiKey() {
-    return currentEnv().EMBY_API_KEY
-  },
-  get embyProxyTimeoutMs() {
-    return currentEnv().EMBY_PROXY_TIMEOUT_MS
-  },
-  get embySourceWebdavDsn() {
-    return currentEnv().EMBY_SOURCE_WEBDAV_DSN
   },
   get ampcastUrl() {
     return currentEnv().AMPCAST_URL

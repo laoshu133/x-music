@@ -1,6 +1,6 @@
-import { getEffectiveSettings } from '@/lib/db/settings'
 import { updateAccountEmbyAuth, type AccountRecord } from '@/lib/db/accounts'
 import { db } from '@/lib/db'
+import { embyConfigForAccount, hasAccountUpstreamEmby } from './config'
 
 const MUSIC_COLLECTION_TYPE = 'music'
 const MUSIC_LIBRARY_NAME = '音乐'
@@ -49,28 +49,25 @@ export function embyAuthorizationHeader(token?: string): string {
 }
 
 export async function getEmbyAccessToken(account?: AccountRecord): Promise<string | undefined> {
-  const settings = getEffectiveSettings()
   if (account?.embyAccessToken) return account.embyAccessToken
-  return settings.emby.apiKey
+  return embyConfigForAccount(account).apiKey
 }
 
-export function hasUpstreamEmbyConfigured(): boolean {
-  const settings = getEffectiveSettings()
-  return Boolean(settings.emby.baseUrl && settings.emby.apiKey)
+export function hasUpstreamEmbyConfigured(account?: AccountRecord): boolean {
+  return hasAccountUpstreamEmby(account)
 }
 
 export async function ensureUpstreamEmbyUserForAccount(account: AccountRecord): Promise<AccountRecord> {
-  const settings = getEffectiveSettings()
-  if (!settings.emby.baseUrl || !settings.emby.apiKey) return account
+  if (!hasUpstreamEmbyConfigured(account)) return account
 
-  const existingById = account.embyUserId ? await findUpstreamUserById(account.embyUserId).catch(() => undefined) : undefined
-  const existing = existingById ?? await findUpstreamUserByName(account.embyUsername)
-  const userId = existing?.Id ?? await createUpstreamUser(account.embyUsername)
+  const existingById = account.embyUserId ? await findUpstreamUserById(account, account.embyUserId).catch(() => undefined) : undefined
+  const existing = existingById ?? await findUpstreamUserByName(account, account.embyUsername)
+  const userId = existing?.Id ?? await createUpstreamUser(account, account.embyUsername)
   if (userId && existing?.Name && existing.Name !== account.embyUsername) {
-    await updateUpstreamUserName(userId, account.embyUsername).catch(() => undefined)
+    await updateUpstreamUserName(account, userId, account.embyUsername).catch(() => undefined)
   }
-  if (userId) await applyRestrictedUserPolicy(userId)
-  const accessToken = userId ? await authenticateUpstreamUser(account.embyUsername).catch(() => undefined) : undefined
+  if (userId) await applyRestrictedUserPolicy(account, userId)
+  const accessToken = userId ? await authenticateUpstreamUser(account, account.embyUsername).catch(() => undefined) : undefined
   updateAccountEmbyAuth({ qqUin: account.qqUin, embyUserId: userId, embyAccessToken: accessToken })
   return {
     ...account,
@@ -79,43 +76,43 @@ export async function ensureUpstreamEmbyUserForAccount(account: AccountRecord): 
   }
 }
 
-async function applyRestrictedUserPolicy(userId: string): Promise<void> {
-  const musicLibrary = await getUpstreamMusicLibraryMapping({ refresh: true })
+async function applyRestrictedUserPolicy(account: AccountRecord, userId: string): Promise<void> {
+  const musicLibrary = await getUpstreamMusicLibraryMapping(account, { refresh: true })
   if (!musicLibrary.policyIds.length) {
     throw new Error('Unable to find upstream Emby music library id for restricted user policy')
   }
-  await adminEmbyFetch(`/Users/${encodeURIComponent(userId)}/Policy`, {
+  await adminEmbyFetch(account, `/Users/${encodeURIComponent(userId)}/Policy`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(restrictedUserPolicy(musicLibrary.policyIds)),
   })
-  await verifyRestrictedUserPolicy(userId, musicLibrary.policyIds)
+  await verifyRestrictedUserPolicy(account, userId, musicLibrary.policyIds)
 }
 
-export async function getDefaultUpstreamMusicLibraryId(): Promise<string | undefined> {
-  return readCachedMusicLibraryMapping().parentIds[0]
+export async function getDefaultUpstreamMusicLibraryId(account?: AccountRecord): Promise<string | undefined> {
+  return readCachedMusicLibraryMapping(account).parentIds[0]
 }
 
-export async function getDefaultUpstreamMusicLibraryLocation(): Promise<string | undefined> {
-  const cached = await getUpstreamMusicLibraryMapping()
-  return cached.locations[0] ?? (await getUpstreamMusicLibraryMapping({ refresh: true })).locations[0]
+export async function getDefaultUpstreamMusicLibraryLocation(account?: AccountRecord): Promise<string | undefined> {
+  const cached = await getUpstreamMusicLibraryMapping(account)
+  return cached.locations[0] ?? (await getUpstreamMusicLibraryMapping(account, { refresh: true })).locations[0]
 }
 
-async function getUpstreamMusicLibraryMapping(options: { refresh?: boolean } = {}): Promise<UpstreamMusicLibraryMapping> {
+async function getUpstreamMusicLibraryMapping(account?: AccountRecord, options: { refresh?: boolean } = {}): Promise<UpstreamMusicLibraryMapping> {
   if (!options.refresh) {
-    const cached = readCachedMusicLibraryMapping()
+    const cached = readCachedMusicLibraryMapping(account)
     if (cached.policyIds.length || cached.parentIds.length) return cached
   }
 
-  const mapping = await discoverMusicLibraryMapping()
-  if (mapping.policyIds.length || mapping.parentIds.length) writeCachedMusicLibraryMapping(mapping)
+  const mapping = await discoverMusicLibraryMapping(account)
+  if (mapping.policyIds.length || mapping.parentIds.length) writeCachedMusicLibraryMapping(account, mapping)
   return mapping
 }
 
-async function discoverMusicLibraryMapping(): Promise<UpstreamMusicLibraryMapping> {
+async function discoverMusicLibraryMapping(account?: AccountRecord): Promise<UpstreamMusicLibraryMapping> {
   const candidates = [
-    ...await findMusicLibrariesFromVirtualFolders(),
-    ...await findMusicLibrariesFromCollectionFolders(),
+    ...await findMusicLibrariesFromVirtualFolders(account),
+    ...await findMusicLibrariesFromCollectionFolders(account),
   ]
   const musicLibraries = candidates.filter(isMusicLibrary)
   return {
@@ -125,9 +122,9 @@ async function discoverMusicLibraryMapping(): Promise<UpstreamMusicLibraryMappin
   }
 }
 
-function readCachedMusicLibraryMapping(): UpstreamMusicLibraryMapping {
-  const row = db.prepare('SELECT value_json FROM app_settings WHERE key = ?').get(UPSTREAM_MUSIC_LIBRARY_MAPPING_KEY) as { value_json: string } | undefined
-  const fallback = readLegacyCachedMusicLibraryMapping()
+function readCachedMusicLibraryMapping(account?: AccountRecord): UpstreamMusicLibraryMapping {
+  const row = db.prepare('SELECT value_json FROM app_settings WHERE key = ?').get(upstreamMusicLibraryMappingKey(account)) as { value_json: string } | undefined
+  const fallback = readLegacyCachedMusicLibraryMapping(account)
   if (!row) return fallback
   try {
     const value = JSON.parse(row.value_json) as unknown
@@ -142,7 +139,8 @@ function readCachedMusicLibraryMapping(): UpstreamMusicLibraryMapping {
   }
 }
 
-function readLegacyCachedMusicLibraryMapping(): UpstreamMusicLibraryMapping {
+function readLegacyCachedMusicLibraryMapping(account?: AccountRecord): UpstreamMusicLibraryMapping {
+  if (account) return { parentIds: [], policyIds: [], locations: [] }
   const row = db.prepare('SELECT value_json FROM app_settings WHERE key = ?').get(LEGACY_UPSTREAM_MUSIC_LIBRARY_IDS_KEY) as { value_json: string } | undefined
   if (!row) return { parentIds: [], policyIds: [], locations: [] }
   try {
@@ -153,24 +151,28 @@ function readLegacyCachedMusicLibraryMapping(): UpstreamMusicLibraryMapping {
   }
 }
 
-function writeCachedMusicLibraryMapping(mapping: UpstreamMusicLibraryMapping): void {
+function writeCachedMusicLibraryMapping(account: AccountRecord | undefined, mapping: UpstreamMusicLibraryMapping): void {
   db.prepare(`
     INSERT INTO app_settings (key, value_json, updated_at)
     VALUES (?, ?, CURRENT_TIMESTAMP)
     ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP
-  `).run(UPSTREAM_MUSIC_LIBRARY_MAPPING_KEY, JSON.stringify(mapping))
+  `).run(upstreamMusicLibraryMappingKey(account), JSON.stringify(mapping))
 }
 
-async function findMusicLibrariesFromVirtualFolders(): Promise<EmbyLibraryCandidate[]> {
+function upstreamMusicLibraryMappingKey(account?: AccountRecord): string {
+  return account ? `${UPSTREAM_MUSIC_LIBRARY_MAPPING_KEY}.${account.qqUin}` : UPSTREAM_MUSIC_LIBRARY_MAPPING_KEY
+}
+
+async function findMusicLibrariesFromVirtualFolders(account?: AccountRecord): Promise<EmbyLibraryCandidate[]> {
   const views = await adminEmbyFetch<
     EmbyLibraryCandidate[]
     | { Items?: EmbyLibraryCandidate[] }
-  >('/Library/VirtualFolders').catch(() => undefined)
+  >(account, '/Library/VirtualFolders').catch(() => undefined)
   return Array.isArray(views) ? views : views?.Items ?? []
 }
 
-async function findMusicLibrariesFromCollectionFolders(): Promise<EmbyLibraryCandidate[]> {
-  const data = await adminEmbyFetch<{ Items?: EmbyLibraryCandidate[] }>(`/Items?${new URLSearchParams({
+async function findMusicLibrariesFromCollectionFolders(account?: AccountRecord): Promise<EmbyLibraryCandidate[]> {
+  const data = await adminEmbyFetch<{ Items?: EmbyLibraryCandidate[] }>(account, `/Items?${new URLSearchParams({
     IncludeItemTypes: 'CollectionFolder',
     Recursive: 'false',
     Limit: '100',
@@ -256,19 +258,19 @@ function restrictedUserPolicy(enabledFolders: string[]) {
   }
 }
 
-async function findUpstreamUserByName(username: string): Promise<{ Id?: string; Name?: string } | undefined> {
-  const users = await adminEmbyFetch<Array<{ Id?: string; Name?: string }>>('/Users')
+async function findUpstreamUserByName(account: AccountRecord, username: string): Promise<{ Id?: string; Name?: string } | undefined> {
+  const users = await adminEmbyFetch<Array<{ Id?: string; Name?: string }>>(account, '/Users')
   return users.find(user => user.Name === username)
 }
 
-async function findUpstreamUserById(userId: string): Promise<{ Id?: string; Name?: string } | undefined> {
-  return adminEmbyFetch<{ Id?: string; Name?: string }>(`/Users/${encodeURIComponent(userId)}`)
+async function findUpstreamUserById(account: AccountRecord, userId: string): Promise<{ Id?: string; Name?: string } | undefined> {
+  return adminEmbyFetch<{ Id?: string; Name?: string }>(account, `/Users/${encodeURIComponent(userId)}`)
 }
 
-async function verifyRestrictedUserPolicy(userId: string, enabledFolders: string[]): Promise<void> {
+async function verifyRestrictedUserPolicy(account: AccountRecord, userId: string, enabledFolders: string[]): Promise<void> {
   let lastPolicy: EmbyUserPolicy | undefined
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    const user = await adminEmbyFetch<EmbyUserWithPolicy>(`/Users/${encodeURIComponent(userId)}`)
+    const user = await adminEmbyFetch<EmbyUserWithPolicy>(account, `/Users/${encodeURIComponent(userId)}`)
     lastPolicy = user.Policy
     if (isExpectedRestrictedPolicy(lastPolicy, enabledFolders)) return
     await new Promise(resolve => setTimeout(resolve, 100))
@@ -281,8 +283,8 @@ function isExpectedRestrictedPolicy(policy: EmbyUserPolicy | undefined, enabledF
   return policy?.EnableAllFolders === false && enabledFolders.some(id => actualFolders.has(id))
 }
 
-async function createUpstreamUser(username: string): Promise<string | undefined> {
-  const created = await adminEmbyFetch<{ Id?: string; Name?: string }>('/Users/New', {
+async function createUpstreamUser(account: AccountRecord, username: string): Promise<string | undefined> {
+  const created = await adminEmbyFetch<{ Id?: string; Name?: string }>(account, '/Users/New', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ Name: username }),
@@ -290,8 +292,8 @@ async function createUpstreamUser(username: string): Promise<string | undefined>
   return created.Id
 }
 
-async function updateUpstreamUserName(userId: string, username: string): Promise<void> {
-  await adminEmbyFetch(`/Users/${encodeURIComponent(userId)}`, {
+async function updateUpstreamUserName(account: AccountRecord, userId: string, username: string): Promise<void> {
+  await adminEmbyFetch(account, `/Users/${encodeURIComponent(userId)}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -301,8 +303,8 @@ async function updateUpstreamUserName(userId: string, username: string): Promise
   })
 }
 
-async function authenticateUpstreamUser(username: string): Promise<string | undefined> {
-  const result = await adminEmbyFetch<{ AccessToken?: string }>('/Users/AuthenticateByName', {
+async function authenticateUpstreamUser(account: AccountRecord, username: string): Promise<string | undefined> {
+  const result = await adminEmbyFetch<{ AccessToken?: string }>(account, '/Users/AuthenticateByName', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ Username: username, Pw: '' }),
@@ -310,25 +312,25 @@ async function authenticateUpstreamUser(username: string): Promise<string | unde
   return result.AccessToken
 }
 
-async function adminEmbyFetch<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
-  const settings = getEffectiveSettings()
-  if (!settings.emby.baseUrl || !settings.emby.apiKey) {
+async function adminEmbyFetch<T = unknown>(account: AccountRecord | undefined, path: string, init: RequestInit = {}): Promise<T> {
+  const settings = embyConfigForAccount(account)
+  if (!settings.baseUrl || !settings.apiKey) {
     throw new Error('Upstream Emby base URL and API key are required')
   }
 
-  const url = new URL(settings.emby.baseUrl)
+  const url = new URL(settings.baseUrl)
   applyPathAndSearch(url, path)
-  url.searchParams.set('api_key', settings.emby.apiKey)
+  url.searchParams.set('api_key', settings.apiKey)
 
   const headers = new Headers(init.headers)
-  headers.set('X-Emby-Token', settings.emby.apiKey)
-  headers.set('X-Emby-Authorization', embyAuthorizationHeader(settings.emby.apiKey))
+  headers.set('X-Emby-Token', settings.apiKey)
+  headers.set('X-Emby-Authorization', embyAuthorizationHeader(settings.apiKey))
 
   const response = await fetch(url, {
     ...init,
     headers,
     cache: 'no-store',
-    signal: AbortSignal.timeout(settings.emby.proxyTimeoutMs),
+    signal: AbortSignal.timeout(settings.proxyTimeoutMs),
   })
   const text = await response.text().catch(() => '')
   if (!response.ok) {

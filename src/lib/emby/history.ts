@@ -29,7 +29,7 @@ export async function pullEmbyPlayHistory(input: {
     userId: account.embyUserId,
     limit: input.limit ?? 200,
     sortBy: 'DatePlayed',
-  })
+  }, { account })
   const errors: Array<{ itemId?: string; songmid?: string; error: string }> = []
   let pulled = 0
   let skipped = 0
@@ -117,7 +117,7 @@ export async function pushLocalPlayHistoryToEmby(input: {
         userId: embyUserId,
         itemId: remoteItemId,
         datePlayed: event.playedAt,
-      })
+      }, { account: input.account })
       synced += 1
     } catch (error) {
       errors.push({ songmid: event.songmid, error: error instanceof Error ? error.message : String(error) })

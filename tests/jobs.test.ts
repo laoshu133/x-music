@@ -12,6 +12,27 @@ import { enqueueRefreshUmCryptoJob } from '@/lib/cache/um-crypto-job'
 import { claimNextJob, clearJobsByStatus, clearStaleRunningJobs, completeJob, createJob, failJob, getJob, requeueJob } from '@/lib/jobs'
 import { getJobSummary, listJobs } from '@/lib/jobs/status'
 import { processWorkerTick } from '@/worker/index'
+import { saveQQLoginCookie } from '@/lib/db/qq-session'
+
+const TEST_EMBY_QQ_UIN = '998001'
+const TEST_EMBY_WEBDAV_DSN = 'https://webdav-user:webdav-pass@webdav.example/dav/music'
+
+function configureTestAccountEmby(options: { webdav?: boolean } = {}): void {
+  saveQQLoginCookie(`uin=o${TEST_EMBY_QQ_UIN}; qm_keyst=test-key`)
+  db.prepare(`
+    UPDATE accounts
+    SET emby_base_url = @baseUrl,
+        emby_api_key = @apiKey,
+        emby_source_webdav_dsn = @sourceWebdavDsn,
+        emby_proxy_timeout_ms = 30000
+    WHERE qq_uin = @qqUin
+  `).run({
+    qqUin: TEST_EMBY_QQ_UIN,
+    baseUrl: 'http://127.0.0.1:8096',
+    apiKey: 'test-emby-api-key',
+    sourceWebdavDsn: options.webdav ? TEST_EMBY_WEBDAV_DSN : null,
+  })
+}
 
 test('job lifecycle claim complete and retry states', () => {
   db.prepare("DELETE FROM jobs WHERE type = 'tag_track_file'").run()
@@ -53,11 +74,11 @@ test('job status helpers list jobs and summarize states', () => {
 
   const queued = createJob({
     type: 'sync_emby_track',
-    payload: { source: 'tx', songmid: `JOB_${Date.now()}`, musicInfo: { source: 'tx', songmid: 'a', name: 'A', singer: 'B' } },
+    payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid: `JOB_${Date.now()}`, musicInfo: { source: 'tx', songmid: 'a', name: 'A', singer: 'B' } },
   })
   const failed = createJob({
     type: 'sync_emby_track',
-    payload: { source: 'tx', songmid: `JOB_FAIL_${Date.now()}`, musicInfo: { source: 'tx', songmid: 'c', name: 'C', singer: 'D' } },
+    payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid: `JOB_FAIL_${Date.now()}`, musicInfo: { source: 'tx', songmid: 'c', name: 'C', singer: 'D' } },
   })
   failJob(failed.id, 'no file')
 
@@ -77,17 +98,17 @@ test('stale running jobs are recovered until max attempts', () => {
   const retryable = createJob({
     type: 'sync_emby_track',
     status: 'running',
-    payload: { source: 'tx', songmid: `STALE_${Date.now()}`, musicInfo: { source: 'tx', songmid: 'a', name: 'A', singer: 'B' } },
+    payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid: `STALE_${Date.now()}`, musicInfo: { source: 'tx', songmid: 'a', name: 'A', singer: 'B' } },
   })
   const exhausted = createJob({
     type: 'sync_emby_track',
     status: 'running',
-    payload: { source: 'tx', songmid: `STALE_EXHAUSTED_${Date.now()}`, musicInfo: { source: 'tx', songmid: 'b', name: 'B', singer: 'C' } },
+    payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid: `STALE_EXHAUSTED_${Date.now()}`, musicInfo: { source: 'tx', songmid: 'b', name: 'B', singer: 'C' } },
   })
   const fresh = createJob({
     type: 'sync_emby_track',
     status: 'running',
-    payload: { source: 'tx', songmid: `FRESH_${Date.now()}`, musicInfo: { source: 'tx', songmid: 'c', name: 'C', singer: 'D' } },
+    payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid: `FRESH_${Date.now()}`, musicInfo: { source: 'tx', songmid: 'c', name: 'C', singer: 'D' } },
   })
   db.prepare("UPDATE jobs SET attempts = 1, updated_at = datetime('now', '-1 hour') WHERE id = ?").run(retryable.id)
   db.prepare("UPDATE jobs SET attempts = 3, updated_at = datetime('now', '-1 hour') WHERE id = ?").run(exhausted.id)
@@ -140,11 +161,13 @@ test('terminal jobs can be cleared by status', () => {
 test('emby sync job fails after max attempts when no cached file exists', async () => {
   const songmid = `SYNC_MISSING_${Date.now()}`
   db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track'").run()
+  configureTestAccountEmby()
 
   const created = createJob({
     type: 'sync_emby_track',
     payload: {
       source: 'tx',
+      qqUin: TEST_EMBY_QQ_UIN,
       songmid,
       musicInfo: { source: 'tx', songmid, name: 'Missing Sync', singer: 'Tester' },
     },
@@ -161,13 +184,12 @@ test('emby sync job fails after max attempts when no cached file exists', async 
 
 test('emby sync job waits for cached media before failing', async () => {
   const originalFetch = globalThis.fetch
-  const originalWebdavDsn = process.env.EMBY_SOURCE_WEBDAV_DSN
   const songmid = `SYNC_WAIT_CACHE_${Date.now()}`
   const rawPath = `/tmp/x-music-${songmid}.mp3`
 
   db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track'").run()
   writeFileSync(rawPath, 'fake audio')
-  delete process.env.EMBY_SOURCE_WEBDAV_DSN
+  configureTestAccountEmby()
   try {
     const musicInfo = {
       source: 'tx' as const,
@@ -179,7 +201,7 @@ test('emby sync job waits for cached media before failing', async () => {
     const track = ensureTrack(musicInfo)
     const created = createJob({
       type: 'sync_emby_track',
-      payload: { source: 'tx', songmid, musicInfo },
+      payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid, musicInfo },
     })
 
     globalThis.fetch = (async (url: string | URL | Request) => {
@@ -204,14 +226,12 @@ test('emby sync job waits for cached media before failing', async () => {
     assert.equal(getJob(created.id)?.status, 'completed')
   } finally {
     rmSync(rawPath, { force: true })
-    process.env.EMBY_SOURCE_WEBDAV_DSN = originalWebdavDsn
     globalThis.fetch = originalFetch
   }
 })
 
 test('emby sync job prefers highest ready quality over newer low quality cache', async () => {
   const originalFetch = globalThis.fetch
-  const originalWebdavDsn = process.env.EMBY_SOURCE_WEBDAV_DSN
   const songmid = `SYNC_BEST_QUALITY_${Date.now()}`
   const dir = path.join(appConfig.musicDir, 'Best Quality Artist', songmid)
   const flacPath = path.join(dir, 'Best Quality Artist - Best Quality Song.flac')
@@ -222,7 +242,7 @@ test('emby sync job prefers highest ready quality over newer low quality cache',
   mkdirSync(dir, { recursive: true })
   writeFileSync(flacPath, 'flac audio')
   writeFileSync(oggPath, 'ogg audio')
-  process.env.EMBY_SOURCE_WEBDAV_DSN = 'https://webdav-user:webdav-pass@webdav.example/dav/music'
+  configureTestAccountEmby({ webdav: true })
   try {
     const musicInfo = { source: 'tx' as const, songmid, name: 'Best Quality Song', singer: 'Best Quality Artist' }
     const track = ensureTrack(musicInfo)
@@ -230,7 +250,7 @@ test('emby sync job prefers highest ready quality over newer low quality cache',
     upsertTrackFileStatus(track.id, '128k', 'ready', { finalPath: oggPath, sizeBytes: 3_000_000 })
     const created = createJob({
       type: 'sync_emby_track',
-      payload: { source: 'tx', songmid, musicInfo },
+      payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid, musicInfo },
     })
 
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
@@ -283,14 +303,12 @@ test('emby sync job prefers highest ready quality over newer low quality cache',
     assert.equal(flacRow?.finalPath, null)
   } finally {
     rmSync(path.join(appConfig.musicDir, 'Best Quality Artist'), { recursive: true, force: true })
-    process.env.EMBY_SOURCE_WEBDAV_DSN = originalWebdavDsn
     globalThis.fetch = originalFetch
   }
 })
 
 test('emby sync job marks stale missing highest quality without falling back to lower quality', async () => {
   const originalFetch = globalThis.fetch
-  const originalWebdavDsn = process.env.EMBY_SOURCE_WEBDAV_DSN
   const songmid = `SYNC_STALE_CACHE_${Date.now()}`
   const missingFlacPath = path.join(appConfig.musicDir, 'missing', `${songmid}.flac`)
   const oggPath = path.join(appConfig.musicDir, 'Tester', 'Unknown Album', `Tester - ${songmid}.ogg`)
@@ -298,7 +316,7 @@ test('emby sync job marks stale missing highest quality without falling back to 
   db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track'").run()
   mkdirSync(path.dirname(oggPath), { recursive: true })
   writeFileSync(oggPath, 'ogg audio')
-  delete process.env.EMBY_SOURCE_WEBDAV_DSN
+  configureTestAccountEmby()
   try {
     const musicInfo = {
       source: 'tx' as const,
@@ -312,7 +330,7 @@ test('emby sync job marks stale missing highest quality without falling back to 
     upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath: oggPath, sizeBytes: 5_000_000 })
     const created = createJob({
       type: 'sync_emby_track',
-      payload: { source: 'tx', songmid, musicInfo },
+      payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid, musicInfo },
     })
 
     globalThis.fetch = (async () => Response.json({ error: 'should not scan lower quality' }, { status: 500 })) as typeof fetch
@@ -330,14 +348,12 @@ test('emby sync job marks stale missing highest quality without falling back to 
     assert.match(flacRow.error ?? '', /missing or not playable/)
   } finally {
     rmSync(oggPath, { force: true })
-    process.env.EMBY_SOURCE_WEBDAV_DSN = originalWebdavDsn
     globalThis.fetch = originalFetch
   }
 })
 
 test('emby sync job does not sync low quality when highest quality is missing', async () => {
   const originalFetch = globalThis.fetch
-  const originalWebdavDsn = process.env.EMBY_SOURCE_WEBDAV_DSN
   const songmid = `SYNC_MASTER_ONLY_${Date.now()}`
   const lowPath = path.join(appConfig.musicDir, 'Tester', 'Unknown Album', `Tester - ${songmid}.mp3`)
   const requests: string[] = []
@@ -345,7 +361,7 @@ test('emby sync job does not sync low quality when highest quality is missing', 
   db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track'").run()
   mkdirSync(path.dirname(lowPath), { recursive: true })
   writeFileSync(lowPath, 'mp3 audio')
-  delete process.env.EMBY_SOURCE_WEBDAV_DSN
+  configureTestAccountEmby()
   try {
     const musicInfo = {
       source: 'tx' as const,
@@ -358,7 +374,7 @@ test('emby sync job does not sync low quality when highest quality is missing', 
     upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath: lowPath, sizeBytes: 5_000_000 })
     const created = createJob({
       type: 'sync_emby_track',
-      payload: { source: 'tx', songmid, musicInfo },
+      payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid, musicInfo },
     })
 
     globalThis.fetch = (async (url: string | URL | Request) => {
@@ -377,7 +393,6 @@ test('emby sync job does not sync low quality when highest quality is missing', 
     assert.deepEqual(requests, [])
   } finally {
     rmSync(lowPath, { force: true })
-    process.env.EMBY_SOURCE_WEBDAV_DSN = originalWebdavDsn
     globalThis.fetch = originalFetch
   }
 })
@@ -520,19 +535,18 @@ async function createUmCryptoPackage(input: {
 
 test('emby sync job does not complete when scan cannot find item', async () => {
   const originalFetch = globalThis.fetch
-  const originalWebdavDsn = process.env.EMBY_SOURCE_WEBDAV_DSN
   const songmid = `SYNC_NOT_FOUND_${Date.now()}`
   const rawPath = `/tmp/x-music-${songmid}.mp3`
   db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track'").run()
   writeFileSync(rawPath, 'fake audio')
-  delete process.env.EMBY_SOURCE_WEBDAV_DSN
+  configureTestAccountEmby()
   try {
     const musicInfo = { source: 'tx' as const, songmid, name: 'Not Found Sync', singer: 'Tester' }
     const track = ensureTrack(musicInfo)
     upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath: rawPath, rawPath })
     const created = createJob({
       type: 'sync_emby_track',
-      payload: { source: 'tx', songmid, musicInfo },
+      payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid, musicInfo },
     })
 
     globalThis.fetch = (async (url: string | URL | Request) => {
@@ -551,26 +565,24 @@ test('emby sync job does not complete when scan cannot find item', async () => {
     assert.match(job?.error ?? '', /item was not found/)
   } finally {
     rmSync(rawPath, { force: true })
-    process.env.EMBY_SOURCE_WEBDAV_DSN = originalWebdavDsn
     globalThis.fetch = originalFetch
   }
 })
 
 test('emby sync job ignores non-matching Emby search fallback item', async () => {
   const originalFetch = globalThis.fetch
-  const originalWebdavDsn = process.env.EMBY_SOURCE_WEBDAV_DSN
   const songmid = `SYNC_MISMATCH_${Date.now()}`
   const rawPath = `/tmp/x-music-${songmid}.mp3`
   db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track'").run()
   writeFileSync(rawPath, 'fake audio')
-  delete process.env.EMBY_SOURCE_WEBDAV_DSN
+  configureTestAccountEmby()
   try {
     const musicInfo = { source: 'tx' as const, songmid, name: 'Expected Sync Song', singer: 'Expected Artist' }
     const track = ensureTrack(musicInfo)
     upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath: rawPath, rawPath })
     const created = createJob({
       type: 'sync_emby_track',
-      payload: { source: 'tx', songmid, musicInfo },
+      payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid, musicInfo },
     })
 
     globalThis.fetch = (async (url: string | URL | Request) => {
@@ -591,28 +603,26 @@ test('emby sync job ignores non-matching Emby search fallback item', async () =>
     assert.match(job?.error ?? '', /item was not found/)
   } finally {
     rmSync(rawPath, { force: true })
-    process.env.EMBY_SOURCE_WEBDAV_DSN = originalWebdavDsn
     globalThis.fetch = originalFetch
   }
 })
 
 test('emby sync job fails unsupported audio containers without scanning Emby', async () => {
   const originalFetch = globalThis.fetch
-  const originalWebdavDsn = process.env.EMBY_SOURCE_WEBDAV_DSN
   const songmid = `SYNC_UNSUPPORTED_${Date.now()}`
   const rawPath = `/tmp/x-music-${songmid}.mgg`
   const requests: string[] = []
 
   db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track'").run()
   writeFileSync(rawPath, 'fake encrypted audio')
-  delete process.env.EMBY_SOURCE_WEBDAV_DSN
+  configureTestAccountEmby()
   try {
     const musicInfo = { source: 'tx' as const, songmid, name: 'Unsupported Sync', singer: 'Tester' }
     const track = ensureTrack(musicInfo)
     upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath: rawPath, rawPath })
     const created = createJob({
       type: 'sync_emby_track',
-      payload: { source: 'tx', songmid, musicInfo },
+      payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid, musicInfo },
     })
 
     globalThis.fetch = (async (url: string | URL | Request) => {
@@ -627,14 +637,12 @@ test('emby sync job fails unsupported audio containers without scanning Emby', a
     assert.deepEqual(requests, [])
   } finally {
     rmSync(rawPath, { force: true })
-    process.env.EMBY_SOURCE_WEBDAV_DSN = originalWebdavDsn
     globalThis.fetch = originalFetch
   }
 })
 
 test('emby sync job does not create Emby playlists from virtual playlist ids', async () => {
   const originalFetch = globalThis.fetch
-  const originalWebdavDsn = process.env.EMBY_SOURCE_WEBDAV_DSN
   const songmid = `SYNC_VIRTUAL_PLAYLIST_${Date.now()}`
   const rawPath = `/tmp/x-music-${songmid}.mp3`
   const requests: Array<{ method: string; pathname: string; search: string }> = []
@@ -642,14 +650,14 @@ test('emby sync job does not create Emby playlists from virtual playlist ids', a
 
   db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track'").run()
   writeFileSync(rawPath, 'fake audio')
-  delete process.env.EMBY_SOURCE_WEBDAV_DSN
+  configureTestAccountEmby()
   try {
     const musicInfo = { source: 'tx' as const, songmid, name: 'Virtual Playlist Sync', singer: 'Tester' }
     const track = ensureTrack(musicInfo)
     upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath: rawPath, rawPath })
     const created = createJob({
       type: 'sync_emby_track',
-      payload: { source: 'tx', songmid, playlistId, musicInfo },
+      payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid, playlistId, musicInfo },
     })
 
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
@@ -672,28 +680,26 @@ test('emby sync job does not create Emby playlists from virtual playlist ids', a
     assert.ok(!requests.some(request => request.search.includes('QQ+mix_')))
   } finally {
     rmSync(rawPath, { force: true })
-    process.env.EMBY_SOURCE_WEBDAV_DSN = originalWebdavDsn
     globalThis.fetch = originalFetch
   }
 })
 
 test('emby sync job waits for asynchronous Emby scan results', async () => {
   const originalFetch = globalThis.fetch
-  const originalWebdavDsn = process.env.EMBY_SOURCE_WEBDAV_DSN
   const songmid = `SYNC_WAIT_FOUND_${Date.now()}`
   const rawPath = `/tmp/x-music-${songmid}.mp3`
   let searchCount = 0
 
   db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track'").run()
   writeFileSync(rawPath, 'fake audio')
-  delete process.env.EMBY_SOURCE_WEBDAV_DSN
+  configureTestAccountEmby()
   try {
     const musicInfo = { source: 'tx' as const, songmid, name: 'Delayed Scan Sync', singer: 'Tester' }
     const track = ensureTrack(musicInfo)
     upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath: rawPath, rawPath })
     const created = createJob({
       type: 'sync_emby_track',
-      payload: { source: 'tx', songmid, musicInfo },
+      payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid, musicInfo },
     })
 
     globalThis.fetch = (async (url: string | URL | Request) => {
@@ -720,14 +726,12 @@ test('emby sync job waits for asynchronous Emby scan results', async () => {
     assert.equal(getJob(created.id)?.status, 'completed')
   } finally {
     rmSync(rawPath, { force: true })
-    process.env.EMBY_SOURCE_WEBDAV_DSN = originalWebdavDsn
     globalThis.fetch = originalFetch
   }
 })
 
 test('emby sync job uploads ready media through WebDAV before scanning Emby', async () => {
   const originalFetch = globalThis.fetch
-  const originalWebdavDsn = process.env.EMBY_SOURCE_WEBDAV_DSN
   const songmid = `SYNC_WEBDAV_${Date.now()}`
   const relativeDir = path.join('WebDAV Artist', 'WebDAV Album')
   const finalPath = path.join(appConfig.musicDir, relativeDir, 'WebDAV Artist - WebDAV Song.flac')
@@ -741,7 +745,7 @@ test('emby sync job uploads ready media through WebDAV before scanning Emby', as
   writeFileSync(finalPath, 'fake audio')
   writeFileSync(lyricsPath, '[00:00.00]WebDAV Song')
   writeFileSync(coverPath, 'fake cover')
-  process.env.EMBY_SOURCE_WEBDAV_DSN = 'https://webdav-user:webdav-pass@webdav.example/dav/music'
+  configureTestAccountEmby({ webdav: true })
 
   try {
     const musicInfo = { source: 'tx' as const, songmid, name: 'WebDAV Song', singer: 'WebDAV Artist' }
@@ -754,7 +758,7 @@ test('emby sync job uploads ready media through WebDAV before scanning Emby', as
     `).run(lyricsPath, coverPath, trackFile.id)
     const created = createJob({
       type: 'sync_emby_track',
-      payload: { source: 'tx', songmid, musicInfo },
+      payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid, musicInfo },
     })
 
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
@@ -853,14 +857,12 @@ test('emby sync job uploads ready media through WebDAV before scanning Emby', as
     assert.equal(row.error, 'Synced to Emby source and removed from local cache')
   } finally {
     rmSync(path.join(appConfig.musicDir, 'WebDAV Artist'), { recursive: true, force: true })
-    process.env.EMBY_SOURCE_WEBDAV_DSN = originalWebdavDsn
     globalThis.fetch = originalFetch
   }
 })
 
 test('emby sync job requires path match after WebDAV upload', async () => {
   const originalFetch = globalThis.fetch
-  const originalWebdavDsn = process.env.EMBY_SOURCE_WEBDAV_DSN
   const songmid = `SYNC_WEBDAV_PATH_ONLY_${Date.now()}`
   const relativeDir = path.join('WebDAV Artist', 'WebDAV Album')
   const finalPath = path.join(appConfig.musicDir, relativeDir, `WebDAV Artist - ${songmid}.flac`)
@@ -868,7 +870,7 @@ test('emby sync job requires path match after WebDAV upload', async () => {
   db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track'").run()
   mkdirSync(path.dirname(finalPath), { recursive: true })
   writeFileSync(finalPath, 'fake audio')
-  process.env.EMBY_SOURCE_WEBDAV_DSN = 'https://webdav-user:webdav-pass@webdav.example/dav/music'
+  configureTestAccountEmby({ webdav: true })
 
   try {
     const musicInfo = { source: 'tx' as const, songmid, name: 'Existing Low Quality Name', singer: 'WebDAV Artist' }
@@ -876,7 +878,7 @@ test('emby sync job requires path match after WebDAV upload', async () => {
     upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath })
     const created = createJob({
       type: 'sync_emby_track',
-      payload: { source: 'tx', songmid, musicInfo },
+      payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid, musicInfo },
     })
 
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
@@ -921,14 +923,12 @@ test('emby sync job requires path match after WebDAV upload', async () => {
     assert.match(job?.error ?? '', /item was not found/)
   } finally {
     rmSync(path.join(appConfig.musicDir, 'WebDAV Artist'), { recursive: true, force: true })
-    process.env.EMBY_SOURCE_WEBDAV_DSN = originalWebdavDsn
     globalThis.fetch = originalFetch
   }
 })
 
 test('emby sync job waits for library final path before WebDAV upload', async () => {
   const originalFetch = globalThis.fetch
-  const originalWebdavDsn = process.env.EMBY_SOURCE_WEBDAV_DSN
   const songmid = `SYNC_WAIT_LIBRARY_${Date.now()}`
   const inboxPath = path.join(appConfig.inboxDir, `${songmid}.mp3`)
   const webdavRequests: string[] = []
@@ -936,14 +936,14 @@ test('emby sync job waits for library final path before WebDAV upload', async ()
   db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track'").run()
   mkdirSync(appConfig.inboxDir, { recursive: true })
   writeFileSync(inboxPath, 'fake audio')
-  process.env.EMBY_SOURCE_WEBDAV_DSN = 'https://webdav-user:webdav-pass@webdav.example/dav/music'
+  configureTestAccountEmby({ webdav: true })
   try {
     const musicInfo = { source: 'tx' as const, songmid, name: 'Library Wait Sync', singer: 'Tester' }
     const track = ensureTrack(musicInfo)
     upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath: inboxPath, rawPath: inboxPath })
     const created = createJob({
       type: 'sync_emby_track',
-      payload: { source: 'tx', songmid, musicInfo },
+      payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid, musicInfo },
     })
 
     globalThis.fetch = (async (url: string | URL | Request) => {
@@ -961,19 +961,17 @@ test('emby sync job waits for library final path before WebDAV upload', async ()
     assert.deepEqual(webdavRequests, [])
   } finally {
     rmSync(inboxPath, { force: true })
-    process.env.EMBY_SOURCE_WEBDAV_DSN = originalWebdavDsn
     globalThis.fetch = originalFetch
   }
 })
 
 test('emby sync preflight rejects cached raw and pathless ready rows under WebDAV sync', async () => {
-  const originalWebdavDsn = process.env.EMBY_SOURCE_WEBDAV_DSN
   const songmid = `SYNC_PREFLIGHT_${Date.now()}`
   const inboxPath = path.join(appConfig.inboxDir, `${songmid}.mp3`)
 
   mkdirSync(appConfig.inboxDir, { recursive: true })
   writeFileSync(inboxPath, 'fake audio')
-  process.env.EMBY_SOURCE_WEBDAV_DSN = 'https://webdav-user:webdav-pass@webdav.example/dav/music'
+  configureTestAccountEmby({ webdav: true })
   try {
     const musicInfo = {
       source: 'tx' as const,
@@ -986,16 +984,14 @@ test('emby sync preflight rejects cached raw and pathless ready rows under WebDA
     upsertTrackFileStatus(track.id, '320k', 'cached_raw', { rawPath: inboxPath })
     upsertTrackFileStatus(track.id, 'flac', 'ready')
 
-    assert.equal(hasEmbySyncableCachedMedia({ source: 'tx', songmid, musicInfo }), false)
+    assert.equal(hasEmbySyncableCachedMedia({ source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid, musicInfo }), false)
   } finally {
     rmSync(inboxPath, { force: true })
     db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run(songmid)
-    process.env.EMBY_SOURCE_WEBDAV_DSN = originalWebdavDsn
   }
 })
 
 test('emby sync preflight waits for unfinished preferred quality before WebDAV sync', async () => {
-  const originalWebdavDsn = process.env.EMBY_SOURCE_WEBDAV_DSN
   const songmid = `SYNC_PREFLIGHT_WAIT_${Date.now()}`
   const inboxPath = path.join(appConfig.inboxDir, `${songmid}.flac`)
   const readyDir = path.join(appConfig.musicDir, 'Preflight Wait Artist', songmid)
@@ -1005,7 +1001,7 @@ test('emby sync preflight waits for unfinished preferred quality before WebDAV s
   mkdirSync(readyDir, { recursive: true })
   writeFileSync(inboxPath, 'fake flac')
   writeFileSync(readyPath, 'fake mp3')
-  process.env.EMBY_SOURCE_WEBDAV_DSN = 'https://webdav-user:webdav-pass@webdav.example/dav/music'
+  configureTestAccountEmby({ webdav: true })
   try {
     const musicInfo = {
       source: 'tx' as const,
@@ -1018,24 +1014,22 @@ test('emby sync preflight waits for unfinished preferred quality before WebDAV s
     upsertTrackFileStatus(track.id, 'flac', 'cached_raw', { rawPath: inboxPath })
     upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath: readyPath })
 
-    assert.equal(hasEmbySyncableCachedMedia({ source: 'tx', songmid, musicInfo }), false)
+    assert.equal(hasEmbySyncableCachedMedia({ source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid, musicInfo }), false)
   } finally {
     rmSync(inboxPath, { force: true })
     rmSync(path.join(appConfig.musicDir, 'Preflight Wait Artist'), { recursive: true, force: true })
     db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run(songmid)
-    process.env.EMBY_SOURCE_WEBDAV_DSN = originalWebdavDsn
   }
 })
 
 test('emby sync preflight does not fall back from declared pathless preferred quality under WebDAV sync', async () => {
-  const originalWebdavDsn = process.env.EMBY_SOURCE_WEBDAV_DSN
   const songmid = `SYNC_PREFLIGHT_FALLBACK_${Date.now()}`
   const readyDir = path.join(appConfig.musicDir, 'Preflight Fallback Artist', songmid)
   const readyPath = path.join(readyDir, 'Preflight Fallback Artist - Preflight Fallback Song.mp3')
 
   mkdirSync(readyDir, { recursive: true })
   writeFileSync(readyPath, 'fake mp3')
-  process.env.EMBY_SOURCE_WEBDAV_DSN = 'https://webdav-user:webdav-pass@webdav.example/dav/music'
+  configureTestAccountEmby({ webdav: true })
   try {
     const musicInfo = {
       source: 'tx' as const,
@@ -1048,24 +1042,22 @@ test('emby sync preflight does not fall back from declared pathless preferred qu
     upsertTrackFileStatus(track.id, 'flac', 'ready')
     upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath: readyPath })
 
-    assert.equal(hasEmbySyncableCachedMedia({ source: 'tx', songmid, musicInfo }), false)
+    assert.equal(hasEmbySyncableCachedMedia({ source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid, musicInfo }), false)
   } finally {
     rmSync(path.join(appConfig.musicDir, 'Preflight Fallback Artist'), { recursive: true, force: true })
     db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run(songmid)
-    process.env.EMBY_SOURCE_WEBDAV_DSN = originalWebdavDsn
   }
 })
 
 test('emby sync job does not apply favorite state', async () => {
   const originalFetch = globalThis.fetch
-  const originalWebdavDsn = process.env.EMBY_SOURCE_WEBDAV_DSN
   const songmid = `SYNC_FAVORITE_${Date.now()}`
   const rawPath = `/tmp/x-music-${songmid}.mp3`
   const requests: Array<{ method: string; pathname: string }> = []
 
   db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track'").run()
   writeFileSync(rawPath, 'fake audio')
-  delete process.env.EMBY_SOURCE_WEBDAV_DSN
+  configureTestAccountEmby()
   try {
     const musicInfo = { source: 'tx' as const, songmid, name: 'Favorite Sync Song', singer: 'Favorite Artist' }
     const track = ensureTrack(musicInfo)
@@ -1074,6 +1066,7 @@ test('emby sync job does not apply favorite state', async () => {
       type: 'sync_emby_track',
       payload: {
         source: 'tx',
+        qqUin: TEST_EMBY_QQ_UIN,
         songmid,
         musicInfo,
       },
@@ -1095,7 +1088,6 @@ test('emby sync job does not apply favorite state', async () => {
     assert.ok(!requests.some(request => request.pathname.includes('/FavoriteItems/')))
   } finally {
     rmSync(rawPath, { force: true })
-    process.env.EMBY_SOURCE_WEBDAV_DSN = originalWebdavDsn
     globalThis.fetch = originalFetch
   }
 })

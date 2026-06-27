@@ -70,22 +70,25 @@ docker compose -f docker-compose.emby.yml up --build
 ```
 
 This file includes `web`, `worker`, `ampcast`, and `emby`, and sets XMusic's
-upstream Emby URL to the internal Compose service:
+bundled Emby service on the same Docker network. Log in to XMusic, open the
+account Emby config, then set each user's upstream Emby URL to the internal
+Compose service:
 
-```env
-EMBY_UPSTREAM_URL=http://emby:8096
+```text
+http://emby:8096
 ```
 
-For an external Emby server, `EMBY_UPSTREAM_URL` must be reachable from the
-XMusic container. Use `host.docker.internal` for a host-machine Emby service
-where supported, or a LAN/reverse-proxy address for another machine.
+For an external Emby server, the URL saved in the user's account config must be
+reachable from the XMusic container. Use `host.docker.internal` for a
+host-machine Emby service where supported, or a LAN/reverse-proxy address for
+another machine.
 
 The bundled Emby service stores configuration in the `emby-config` volume and
 mounts XMusic's shared data volume read-only at `/app/data`. In Emby, add
 `/app/data/music` as the music library path so XMusic sync jobs can match the
 final organized file paths. If you already run Emby elsewhere, keep using the
-default `docker-compose.yml` and point `EMBY_UPSTREAM_URL` at that external
-server instead.
+default `docker-compose.yml` and save that external server URL in each user's
+account Emby config instead.
 
 All services share `./data`:
 
@@ -120,6 +123,10 @@ After QQ login, use the account information shown in the UI:
 - Username: `QQ${QQ_UID}`
 - Password: generated on first login, editable in the account Emby config
 
+Each user can also configure their own upstream Emby server URL, API key,
+WebDAV storage DSN, and proxy timeout in the same account Emby config. These
+values are stored per account, not in `.env`.
+
 The exposed virtual music library uses `x-music-music`.
 
 ## Environment
@@ -130,16 +137,12 @@ Required:
 
 Optional:
 
-- `EMBY_UPSTREAM_URL`: upstream Emby server used for fallback proxying, account binding, library lookup, scan, and sync. If omitted, XMusic runs as a local QQ Music Emby-compatible gateway.
-- `EMBY_API_KEY`: upstream Emby API key for server-side admin/fallback requests. Required only when `EMBY_UPSTREAM_URL` is configured for upstream features.
 - `DATABASE_URL`: SQLite database URL, default `file:./data/app.sqlite`.
 - `MUSIC_DATA_DIR`: shared music data root, default `./data`.
 - `PORT`: production/server port, default deployment value `8098`; local `npm run dev` uses `3004`.
 - `AMPCAST_PORT`: optional host port for the bundled ampcast container in Docker Compose, default `8000`.
 - `AMPCAST_URL`: optional ampcast upstream URL for XMusic's same-origin `/@player` proxy, default `http://ampcast:8000/`. Local npm development can use `http://127.0.0.1:8000/`.
-- `EMBY_PROXY_TIMEOUT_MS`: upstream Emby proxy timeout, default `30000`.
 - `X_MUSIC_REQUEST_LOGS`: request logging to stdout for Docker/Dokploy logs. `auto` enables logs in production and leaves local `next dev` to Next's built-in request output; set `true` to force-enable locally or `false` to reduce production log volume. URLs are logged with sensitive token-like query values redacted.
-- `EMBY_SOURCE_WEBDAV_DSN`: optional WebDAV destination for syncing finalized music files to the upstream Emby music library, for example `https://user:password@example.com/dav/music`. The DSN path should map to the same directory Emby reports for its music library, such as `/volume1/music`; XMusic preserves the relative `MUSIC_DATA_DIR/music` layout when uploading.
 - `ADMIN_QQ_UINS`: QQ UIN allowlist for admin-only pages such as user management and jobs. Accepts comma, semicolon, or whitespace separated values.
 - `WORKER_POLL_INTERVAL_MS`: idle worker polling interval, default `5000`.
 - `WORKER_MAX_ATTEMPTS`: max job attempts before failure, default `3`.
@@ -156,7 +159,7 @@ Optional:
 - The worker handles queued jobs using SQLite-backed job rows.
 - QQ Music private APIs are used conservatively and must be treated as unstable.
 - LX source scripts are loaded server-side. The browser never receives the script URL or key.
-- The upstream Emby API key is an optional service credential. Player-facing passwords and access tokens are maintained locally by XMusic.
+- Upstream Emby URL, API key, WebDAV DSN, and proxy timeout are per-account settings managed from the UI. Player-facing passwords and access tokens are maintained locally by XMusic.
 - QQ login state is authoritative. When the stored QQ authorization expires, account-dependent XMusic and Emby-compatible endpoints return `401` with `QQ_AUTH_EXPIRED` until QQ authorization is completed again.
 - Generated QQ upstream Emby users are intentionally restricted to the music library only when upstream Emby is configured.
 

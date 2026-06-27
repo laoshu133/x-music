@@ -2,7 +2,7 @@ import { db } from '@/lib/db'
 import { isPlayableAudioFileName, isPlayableAudioPath, markMissingTrackFile } from '@/lib/cache/store'
 import { deleteCachedResourcesForTrack } from '@/lib/cache/resources'
 import { appConfig } from '@/lib/config'
-import { getEffectiveSettings } from '@/lib/db/settings'
+import { getAccountByQQ, type AccountRecord } from '@/lib/db/accounts'
 import path from 'node:path'
 import { rmdir, rm } from 'node:fs/promises'
 import { upsertRemoteMapping } from '@/lib/db/remote-mappings'
@@ -23,6 +23,7 @@ import type { SyncEmbyTrackJobPayload } from './sync'
 import type { MusicQuality } from '@/lib/types'
 import { syncMediaFilesToEmbyWebdav } from './webdav'
 import { qqLegacyLyricsUrl, qqPlayLyricInfoCacheBody, qqPlayLyricInfoCacheUrl } from '@/lib/qq'
+import { hasAccountUpstreamEmby } from './config'
 
 export interface EmbySyncJobOptions {
   maxAttempts?: number
@@ -70,10 +71,15 @@ export async function processOneEmbySyncJob(options: number | EmbySyncJobOptions
   if (!job) return false
 
   try {
+    const account = job.payload.qqUin ? getAccountByQQ(job.payload.qqUin) : undefined
+    if (!hasAccountUpstreamEmby(account)) {
+      failJob(job.id, 'User Emby server is not configured')
+      return true
+    }
     const row = await waitForCachedMedia(job.payload, {
       timeoutMs: cacheWaitMs,
       pollIntervalMs: cachePollIntervalMs,
-      requireLibraryFinalPath: shouldRequireLibraryFinalPath(),
+      requireLibraryFinalPath: shouldRequireLibraryFinalPath(job.payload),
     })
     if (row?.unsupportedPath) {
       failJob(job.id, `Cached file format is not syncable to Emby: ${row.unsupportedPath}`)
@@ -93,17 +99,19 @@ export async function processOneEmbySyncJob(options: number | EmbySyncJobOptions
           finalPath: row.finalPath,
           lyricsPath: row.lyricsPath,
           coverPath: row.coverPath,
+          account,
         })
       : undefined
     const scanPath = syncedMedia
-      ? joinEmbyPath(await getDefaultUpstreamMusicLibraryLocation(), syncedMedia.embyPath)
+      ? joinEmbyPath(await getDefaultUpstreamMusicLibraryLocation(account), syncedMedia.embyPath)
       : mediaPath
-    await notifyEmbyMediaUpdated(scanPath).catch(() => refreshEmbyLibrary())
+    await notifyEmbyMediaUpdated(scanPath, { account }).catch(() => refreshEmbyLibrary(account))
     const embyItemId = await waitForEmbyAudio(job.payload.musicInfo, {
       path: scanPath,
       timeoutMs: scanWaitMs,
       pollIntervalMs: scanPollIntervalMs,
       requirePathMatch: Boolean(syncedMedia),
+      account,
     })
     if (!embyItemId) {
       const message = `Emby scan triggered but item was not found for ${job.payload.musicInfo.name} at ${scanPath}`
@@ -127,7 +135,7 @@ export async function processOneEmbySyncJob(options: number | EmbySyncJobOptions
       await createOrUpdateEmbyPlaylist({
         name: playlistName,
         itemIds: [embyItemId],
-      }).catch((error: unknown) => {
+      }, { account }).catch((error: unknown) => {
         console.warn(`failed to update Emby playlist ${job.payload.playlistId}`, error)
       })
     }
@@ -182,17 +190,18 @@ async function waitForCachedMedia(
   }
 }
 
-function shouldRequireLibraryFinalPath(): boolean {
-  return Boolean(getEffectiveSettings().emby.sourceWebdavDsn)
+function shouldRequireLibraryFinalPath(payload?: Pick<SyncEmbyTrackJobPayload, 'qqUin'>): boolean {
+  const account = payload?.qqUin ? getAccountByQQ(payload.qqUin) : undefined
+  return Boolean(account?.embySourceWebdavDsn)
 }
 
-export function hasEmbySyncableCachedMedia(input: Pick<SyncEmbyTrackJobPayload, 'source' | 'songmid' | 'musicInfo'>): boolean {
+export function hasEmbySyncableCachedMedia(input: Pick<SyncEmbyTrackJobPayload, 'source' | 'songmid' | 'musicInfo'> & Pick<Partial<SyncEmbyTrackJobPayload>, 'qqUin'>): boolean {
   const payload = input as SyncEmbyTrackJobPayload
   const row = getBestCachedMediaForSync(payload, syncQualityFallbacks(payload), {
-    requireLibraryFinalPath: shouldRequireLibraryFinalPath(),
+    requireLibraryFinalPath: shouldRequireLibraryFinalPath(payload),
   })
   return Boolean(row && isSyncableCachedMedia(row, {
-    requireLibraryFinalPath: shouldRequireLibraryFinalPath(),
+    requireLibraryFinalPath: shouldRequireLibraryFinalPath(payload),
   }))
 }
 
@@ -370,14 +379,14 @@ function normalizeRelativeMusicPath(value: string): string {
 
 async function waitForEmbyAudio(
   musicInfo: SyncEmbyTrackJobPayload['musicInfo'],
-  options: { path?: string; timeoutMs: number; pollIntervalMs: number; requirePathMatch?: boolean },
+  options: { path?: string; timeoutMs: number; pollIntervalMs: number; requirePathMatch?: boolean; account?: AccountRecord },
 ): Promise<string | undefined> {
   const deadline = Date.now() + Math.max(0, options.timeoutMs)
   for (;;) {
-    const embyItemIdByPath = options.path ? await searchEmbyAudioByPath(options.path) : undefined
+    const embyItemIdByPath = options.path ? await searchEmbyAudioByPath(options.path, { account: options.account }).catch(() => undefined) : undefined
     if (embyItemIdByPath) return embyItemIdByPath
     if (!options.requirePathMatch) {
-      const embyItemId = await searchEmbyAudioByName(musicInfo)
+      const embyItemId = await searchEmbyAudioByName(musicInfo, { account: options.account }).catch(() => undefined)
       if (embyItemId) return embyItemId
     }
     if (Date.now() >= deadline) return undefined

@@ -1,6 +1,5 @@
 import '../src/lib/config'
 import { db } from '../src/lib/db'
-import { getEffectiveSettings } from '../src/lib/db/settings'
 import { embyAuthorizationHeader } from '../src/lib/emby/auth'
 
 interface EmbyItem {
@@ -112,8 +111,8 @@ Defaults to dry-run and only considers items known to be managed by XMusic:
   - paths under configured Emby music library locations
 
 When --apply is used, deletion defaults to WebDAV so it does not depend on
-the Emby service process having filesystem delete permission. Set
-EMBY_SOURCE_WEBDAV_DSN to the WebDAV root for the Emby music library.
+the Emby service process having filesystem delete permission. Configure the
+account's Emby WebDAV storage in the XMusic UI first.
 
 Options:
   --apply            Delete lower-quality duplicates from Emby
@@ -121,7 +120,7 @@ Options:
   --limit=N          Process only the first N duplicate groups
   --delete-via=MODE  Delete through webdav (default) or emby
   --emby-root=PATH   Emby library root path when it is not cached, e.g. /volume2/music2
-  --qq-uin=UIN       With --delete-via=emby, use this account's Emby token
+  --qq-uin=UIN       Use this account's upstream Emby and WebDAV configuration
   --token=TOKEN      With --delete-via=emby, use this Emby user token`)
 }
 
@@ -244,7 +243,7 @@ async function deleteEmbyItemFilesViaWebdav(items: EmbyItem[]): Promise<void> {
 }
 
 async function filterExistingWebdavItems(items: EmbyItem[]): Promise<EmbyItem[]> {
-  if (!getEffectiveSettings().emby.sourceWebdavDsn) return items
+  if (!scriptEmbyConfig().sourceWebdavDsn) return items
 
   const existing: EmbyItem[] = []
   const stale: EmbyItem[] = []
@@ -305,13 +304,13 @@ async function embyFetch<T = unknown>(
   init: RequestInit = {},
   options: { token?: string } = {},
 ): Promise<T> {
-  const settings = getEffectiveSettings()
-  if (!settings.emby.baseUrl || !settings.emby.apiKey) {
-    throw new Error('Emby base URL and API key must be configured.')
+  const config = scriptEmbyConfig()
+  if (!config.baseUrl || !config.apiKey) {
+    throw new Error('Account upstream Emby base URL and API key must be configured in XMusic.')
   }
-  const token = options.token ?? settings.emby.apiKey
+  const token = options.token ?? config.apiKey
 
-  const url = new URL(settings.emby.baseUrl)
+  const url = new URL(config.baseUrl)
   const [pathname, search = ''] = path.split('?')
   url.pathname = `${url.pathname.replace(/\/+$/, '')}/${(pathname ?? '').replace(/^\/+/, '')}`
   url.search = search ? `?${search}` : ''
@@ -325,7 +324,7 @@ async function embyFetch<T = unknown>(
     ...init,
     headers,
     cache: 'no-store',
-    signal: AbortSignal.timeout(settings.emby.proxyTimeoutMs),
+    signal: AbortSignal.timeout(config.proxyTimeoutMs),
   })
   const text = await response.text().catch(() => '')
   if (!response.ok) throw new Error(`Emby request failed ${response.status}: ${text.slice(0, 300)}`)
@@ -368,6 +367,68 @@ function readDeleteAuthToken(): string {
   throw new Error('No saved upstream Emby access token found. Re-login any XMusic account, or pass --qq-uin=UIN / --token=TOKEN when using --apply.')
 }
 
+function scriptEmbyConfig(): ScriptEmbyConfig {
+  cachedScriptEmbyConfig ??= readScriptEmbyConfig()
+  return cachedScriptEmbyConfig
+}
+
+function readScriptEmbyConfig(): ScriptEmbyConfig {
+  const row = qqUinArg?.trim()
+    ? db.prepare(`
+      SELECT
+        qq_uin AS qqUin,
+        emby_base_url AS baseUrl,
+        emby_api_key AS apiKey,
+        emby_source_webdav_dsn AS sourceWebdavDsn,
+        emby_proxy_timeout_ms AS proxyTimeoutMs
+      FROM accounts
+      WHERE qq_uin = ?
+      LIMIT 1
+    `).get(qqUinArg.trim()) as AccountEmbyConfigRow | undefined
+    : db.prepare(`
+      SELECT
+        qq_uin AS qqUin,
+        emby_base_url AS baseUrl,
+        emby_api_key AS apiKey,
+        emby_source_webdav_dsn AS sourceWebdavDsn,
+        emby_proxy_timeout_ms AS proxyTimeoutMs
+      FROM accounts
+      WHERE emby_base_url IS NOT NULL AND emby_base_url != ''
+        AND emby_api_key IS NOT NULL AND emby_api_key != ''
+      ORDER BY updated_at DESC
+      LIMIT 1
+    `).get() as AccountEmbyConfigRow | undefined
+
+  if (!row?.baseUrl?.trim() || !row.apiKey?.trim()) {
+    const suffix = qqUinArg?.trim() ? ` for QQ account ${qqUinArg.trim()}` : ''
+    throw new Error(`No account upstream Emby configuration found${suffix}. Configure it in the XMusic account Emby settings.`)
+  }
+  console.log(`Using upstream Emby configuration from XMusic account ${row.qqUin}.`)
+  return {
+    baseUrl: row.baseUrl.trim().replace(/\/+$/g, ''),
+    apiKey: row.apiKey.trim(),
+    sourceWebdavDsn: row.sourceWebdavDsn?.trim() || undefined,
+    proxyTimeoutMs: row.proxyTimeoutMs && row.proxyTimeoutMs > 0 ? row.proxyTimeoutMs : 30000,
+  }
+}
+
+interface ScriptEmbyConfig {
+  baseUrl: string
+  apiKey: string
+  sourceWebdavDsn?: string
+  proxyTimeoutMs: number
+}
+
+interface AccountEmbyConfigRow {
+  qqUin: string
+  baseUrl: string | null
+  apiKey: string | null
+  sourceWebdavDsn: string | null
+  proxyTimeoutMs: number | null
+}
+
+let cachedScriptEmbyConfig: ScriptEmbyConfig | undefined
+
 interface AccountTokenRow {
   qqUin: string
   embyUsername: string
@@ -386,8 +447,8 @@ function webdavConfig(): WebdavConfig {
 }
 
 function readWebdavConfig(): WebdavConfig {
-  const dsn = getEffectiveSettings().emby.sourceWebdavDsn
-  if (!dsn) throw new Error('EMBY_SOURCE_WEBDAV_DSN must be configured to delete duplicate files through WebDAV.')
+  const dsn = scriptEmbyConfig().sourceWebdavDsn
+  if (!dsn) throw new Error('Account Emby WebDAV storage must be configured in XMusic to delete duplicate files through WebDAV.')
   const baseUrl = new URL(dsn)
   const username = decodeURIComponent(baseUrl.username)
   const password = decodeURIComponent(baseUrl.password)
@@ -407,7 +468,7 @@ async function webdavFetch(config: WebdavConfig, relativePath: string, init: Req
     ...init,
     headers,
     cache: 'no-store',
-    signal: AbortSignal.timeout(getEffectiveSettings().emby.proxyTimeoutMs),
+    signal: AbortSignal.timeout(scriptEmbyConfig().proxyTimeoutMs),
   })
 }
 

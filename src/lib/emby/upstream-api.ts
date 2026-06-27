@@ -1,6 +1,7 @@
-import { getEffectiveSettings } from '@/lib/db/settings'
+import type { AccountRecord } from '@/lib/db/accounts'
 import type { MusicInfo } from '@/lib/types'
 import { embyAuthorizationHeader, getEmbyAccessToken } from './auth'
+import { embyConfigForAccount } from './config'
 
 export type EmbyAudioUserDataItem = {
   Id?: string
@@ -21,27 +22,27 @@ export type EmbyAudioUserDataItem = {
   MediaSources?: Array<{ Path?: string }>
 }
 
-export async function refreshEmbyLibrary(): Promise<unknown> {
-  return embyFetch('/Library/Refresh', { method: 'POST' })
+export async function refreshEmbyLibrary(account?: AccountRecord): Promise<unknown> {
+  return embyFetch('/Library/Refresh', { method: 'POST' }, { account })
 }
 
-export async function fetchEmbyJson<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
-  return embyFetch<T>(path, init)
+export async function fetchEmbyJson<T = unknown>(path: string, init: RequestInit = {}, options: EmbyFetchOptions = {}): Promise<T> {
+  return embyFetch<T>(path, init, options)
 }
 
-export async function fetchEmbyText(path: string, init: RequestInit = {}): Promise<string> {
-  return embyFetchText(path, init)
+export async function fetchEmbyText(path: string, init: RequestInit = {}, options: EmbyFetchOptions = {}): Promise<string> {
+  return embyFetchText(path, init, options)
 }
 
-export async function notifyEmbyMediaUpdated(path?: string): Promise<unknown> {
+export async function notifyEmbyMediaUpdated(path?: string, options: EmbyFetchOptions = {}): Promise<unknown> {
   return embyFetch('/Library/Media/Updated', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(path ? { Updates: [{ Path: path, UpdateType: 'Created' }] } : {}),
-  }).catch(() => refreshEmbyLibrary())
+  }, options).catch(() => refreshEmbyLibrary(options.account))
 }
 
-export async function searchEmbyAudioByName(song: MusicInfo): Promise<string | undefined> {
+export async function searchEmbyAudioByName(song: MusicInfo, options: EmbyFetchOptions = {}): Promise<string | undefined> {
   const data = await embyFetch<{
     Items?: Array<{ Id?: string; Name?: string; Artists?: string[]; Album?: string }>
   }>(`/Items?${new URLSearchParams({
@@ -49,7 +50,7 @@ export async function searchEmbyAudioByName(song: MusicInfo): Promise<string | u
     Recursive: 'true',
     SearchTerm: song.name,
     Limit: '10',
-  })}`)
+  })}`, {}, options)
 
   const normalizedArtist = normalize(song.singer)
   const match = data.Items?.find(item => {
@@ -60,7 +61,7 @@ export async function searchEmbyAudioByName(song: MusicInfo): Promise<string | u
   return match?.Id
 }
 
-export async function searchEmbyAudioByPath(path: string): Promise<string | undefined> {
+export async function searchEmbyAudioByPath(path: string, options: EmbyFetchOptions = {}): Promise<string | undefined> {
   const data = await embyFetch<{
     Items?: Array<{ Id?: string; Path?: string; MediaSources?: Array<{ Path?: string }> }>
   }>(`/Items?${new URLSearchParams({
@@ -69,7 +70,7 @@ export async function searchEmbyAudioByPath(path: string): Promise<string | unde
     Fields: 'Path,MediaSources',
     Path: path,
     Limit: '10',
-  })}`)
+  })}`, {}, options)
 
   const normalizedPath = normalizePath(path)
   const match = data.Items?.find(item => {
@@ -147,7 +148,7 @@ function embyItemInfoPath(itemId: string, userId?: string): string {
     : `/Items/${encodedItemId}`
 }
 
-export async function searchEmbyPlaylistByName(name: string): Promise<string | undefined> {
+export async function searchEmbyPlaylistByName(name: string, options: EmbyFetchOptions = {}): Promise<string | undefined> {
   const data = await embyFetch<{
     Items?: Array<{ Id?: string; Name?: string }>
   }>(`/Items?${new URLSearchParams({
@@ -155,36 +156,36 @@ export async function searchEmbyPlaylistByName(name: string): Promise<string | u
     Recursive: 'true',
     SearchTerm: name,
     Limit: '10',
-  })}`)
+  })}`, {}, options)
   return data.Items?.find(item => normalize(item.Name) === normalize(name))?.Id
 }
 
 export async function createOrUpdateEmbyPlaylist(input: {
   name: string
   itemIds: string[]
-}): Promise<unknown> {
+}, options: EmbyFetchOptions = {}): Promise<unknown> {
   if (!input.itemIds.length) return undefined
   const existing = await embyFetch<{ Items?: Array<{ Id?: string; Name?: string }> }>(`/Items?${new URLSearchParams({
     IncludeItemTypes: 'Playlist',
     Recursive: 'true',
     SearchTerm: input.name,
     Limit: '10',
-  })}`).catch(() => undefined)
+  })}`, {}, options).catch(() => undefined)
   const playlist = existing?.Items?.find(item => item.Name === input.name)
   if (playlist?.Id) {
     return embyFetch(`/Playlists/${encodeURIComponent(playlist.Id)}/Items?${new URLSearchParams({ Ids: input.itemIds.join(',') })}`, {
       method: 'POST',
-    })
+    }, options)
   }
 
   return embyFetch(`/Playlists?${new URLSearchParams({
     Name: input.name,
     Ids: input.itemIds.join(','),
     MediaType: 'Audio',
-  })}`, { method: 'POST' })
+  })}`, { method: 'POST' }, options)
 }
 
-export async function deleteEmbyItems(ids: string[], options: { token?: string } = {}): Promise<void> {
+export async function deleteEmbyItems(ids: string[], options: EmbyFetchOptions = {}): Promise<void> {
   if (!ids.length) return
   await embyFetch(`/Items/Delete?${new URLSearchParams({ Ids: ids.join(',') })}`, { method: 'POST' }, options)
 }
@@ -193,17 +194,17 @@ export async function setEmbyFavorite(input: {
   userId: string
   itemId: string
   favorite: boolean
-}): Promise<unknown> {
+}, options: EmbyFetchOptions = {}): Promise<unknown> {
   return embyFetch(`/Users/${encodeURIComponent(input.userId)}/FavoriteItems/${encodeURIComponent(input.itemId)}`, {
     method: input.favorite ? 'POST' : 'DELETE',
-  })
+  }, options)
 }
 
 export async function fetchEmbyFavoriteAudioItems(input: {
   userId: string
   limit?: number
   startIndex?: number
-}): Promise<{ Items?: EmbyAudioUserDataItem[]; TotalRecordCount?: number }> {
+}, options: EmbyFetchOptions = {}): Promise<{ Items?: EmbyAudioUserDataItem[]; TotalRecordCount?: number }> {
   return embyFetch(`/Users/${encodeURIComponent(input.userId)}/Items?${new URLSearchParams({
     IncludeItemTypes: 'Audio',
     Recursive: 'true',
@@ -214,7 +215,7 @@ export async function fetchEmbyFavoriteAudioItems(input: {
     EnableUserData: 'true',
     Limit: String(input.limit ?? 500),
     StartIndex: String(input.startIndex ?? 0),
-  })}`)
+  })}`, {}, options)
 }
 
 export async function fetchEmbyPlayedAudioItems(input: {
@@ -222,7 +223,7 @@ export async function fetchEmbyPlayedAudioItems(input: {
   limit?: number
   startIndex?: number
   sortBy?: 'DatePlayed' | 'PlayCount,DatePlayed'
-}): Promise<{ Items?: EmbyAudioUserDataItem[]; TotalRecordCount?: number }> {
+}, options: EmbyFetchOptions = {}): Promise<{ Items?: EmbyAudioUserDataItem[]; TotalRecordCount?: number }> {
   return embyFetch(`/Users/${encodeURIComponent(input.userId)}/Items?${new URLSearchParams({
     IncludeItemTypes: 'Audio',
     Recursive: 'true',
@@ -233,33 +234,38 @@ export async function fetchEmbyPlayedAudioItems(input: {
     EnableUserData: 'true',
     Limit: String(input.limit ?? 200),
     StartIndex: String(input.startIndex ?? 0),
-  })}`)
+  })}`, {}, options)
 }
 
 export async function markEmbyPlayed(input: {
   userId: string
   itemId: string
   datePlayed?: string
-}): Promise<unknown> {
+}, options: EmbyFetchOptions = {}): Promise<unknown> {
   const search = new URLSearchParams()
   if (input.datePlayed) search.set('DatePlayed', input.datePlayed)
   const suffix = search.toString() ? `?${search.toString()}` : ''
   return embyFetch(`/Users/${encodeURIComponent(input.userId)}/PlayedItems/${encodeURIComponent(input.itemId)}${suffix}`, {
     method: 'POST',
-  })
+  }, options)
 }
 
-async function embyFetch<T = unknown>(path: string, init: RequestInit = {}, options: { token?: string } = {}): Promise<T> {
+interface EmbyFetchOptions {
+  account?: AccountRecord
+  token?: string
+}
+
+async function embyFetch<T = unknown>(path: string, init: RequestInit = {}, options: EmbyFetchOptions = {}): Promise<T> {
   const text = await embyFetchText(path, init, options)
   if (!text) return undefined as T
   return JSON.parse(text) as T
 }
 
-async function embyFetchText(path: string, init: RequestInit = {}, options: { token?: string } = {}): Promise<string> {
-  const settings = getEffectiveSettings()
-  if (!settings.emby.baseUrl) throw new Error('Upstream Emby is not configured')
-  let token = options.token ?? await getEmbyAccessToken()
-  const url = new URL(settings.emby.baseUrl)
+async function embyFetchText(path: string, init: RequestInit = {}, options: EmbyFetchOptions = {}): Promise<string> {
+  const settings = embyConfigForAccount(options.account)
+  if (!settings.baseUrl) throw new Error('Upstream Emby is not configured')
+  let token = options.token ?? await getEmbyAccessToken(options.account)
+  const url = new URL(settings.baseUrl)
   applyPathAndSearch(url, path)
   if (token && !url.searchParams.has('api_key')) url.searchParams.set('api_key', token)
 
@@ -271,7 +277,7 @@ async function embyFetchText(path: string, init: RequestInit = {}, options: { to
     ...init,
     headers,
     cache: 'no-store',
-    signal: AbortSignal.timeout(settings.emby.proxyTimeoutMs),
+    signal: AbortSignal.timeout(settings.proxyTimeoutMs),
   })
   const text = await response.text().catch(() => '')
   if (!response.ok) {

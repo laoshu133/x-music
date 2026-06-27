@@ -1,7 +1,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { appConfig } from '@/lib/config'
-import { getEffectiveSettings } from '@/lib/db/settings'
+import type { AccountRecord } from '@/lib/db/accounts'
+import { embyConfigForAccount } from './config'
 
 export interface WebdavSyncedMedia {
   embyPath: string
@@ -17,8 +18,10 @@ export async function syncMediaFilesToEmbyWebdav(input: {
   finalPath: string
   lyricsPath?: string
   coverPath?: string
+  account?: AccountRecord
 }): Promise<WebdavSyncedMedia | undefined> {
-  const dsn = getEffectiveSettings().emby.sourceWebdavDsn
+  const settings = embyConfigForAccount(input.account)
+  const dsn = settings.sourceWebdavDsn
   if (!dsn) return undefined
 
   const relativeFinalPath = relativeMusicPath(input.finalPath)
@@ -34,8 +37,8 @@ export async function syncMediaFilesToEmbyWebdav(input: {
 
   for (const filePath of files) {
     const relativePath = relativeMusicPath(filePath)
-    await ensureRemoteDirectories(config, path.dirname(relativePath), createdDirectories)
-    await putFile(config, relativePath, filePath)
+    await ensureRemoteDirectories(config, path.dirname(relativePath), createdDirectories, settings.proxyTimeoutMs)
+    await putFile(config, relativePath, filePath, settings.proxyTimeoutMs)
     uploadedPaths.push(relativePath)
   }
 
@@ -65,7 +68,7 @@ function parseWebdavDsn(dsn: string): WebdavConfig {
   }
 }
 
-async function ensureRemoteDirectories(config: WebdavConfig, relativeDir: string, createdDirectories: Set<string>): Promise<void> {
+async function ensureRemoteDirectories(config: WebdavConfig, relativeDir: string, createdDirectories: Set<string>, timeoutMs: number): Promise<void> {
   if (!relativeDir || relativeDir === '.') return
 
   const parts = toPosixPath(relativeDir).split('/').filter(Boolean)
@@ -75,7 +78,7 @@ async function ensureRemoteDirectories(config: WebdavConfig, relativeDir: string
     if (createdDirectories.has(current)) continue
     const response = await webdavFetch(config, current, {
       method: 'MKCOL',
-    })
+    }, timeoutMs)
     if (!response.ok && response.status !== 405) {
       throw new Error(`WebDAV MKCOL ${current} failed with ${response.status}: ${(await response.text().catch(() => '')).slice(0, 300)}`)
     }
@@ -83,7 +86,7 @@ async function ensureRemoteDirectories(config: WebdavConfig, relativeDir: string
   }
 }
 
-async function putFile(config: WebdavConfig, relativePath: string, filePath: string): Promise<void> {
+async function putFile(config: WebdavConfig, relativePath: string, filePath: string, timeoutMs: number): Promise<void> {
   const stat = await fs.promises.stat(filePath)
   const response = await webdavFetch(config, relativePath, {
     method: 'PUT',
@@ -93,13 +96,13 @@ async function putFile(config: WebdavConfig, relativePath: string, filePath: str
     },
     body: fs.createReadStream(filePath) as unknown as BodyInit,
     duplex: 'half',
-  } as RequestInit)
+  } as RequestInit, timeoutMs)
   if (!response.ok) {
     throw new Error(`WebDAV PUT ${relativePath} failed with ${response.status}: ${(await response.text().catch(() => '')).slice(0, 300)}`)
   }
 }
 
-async function webdavFetch(config: WebdavConfig, relativePath: string, init: RequestInit): Promise<Response> {
+async function webdavFetch(config: WebdavConfig, relativePath: string, init: RequestInit, timeoutMs: number): Promise<Response> {
   const url = webdavUrl(config.baseUrl, relativePath)
   const headers = new Headers(init.headers)
   if (config.authHeader && !headers.has('authorization')) headers.set('authorization', config.authHeader)
@@ -107,7 +110,7 @@ async function webdavFetch(config: WebdavConfig, relativePath: string, init: Req
     ...init,
     headers,
     cache: 'no-store',
-    signal: AbortSignal.timeout(getEffectiveSettings().emby.proxyTimeoutMs),
+    signal: AbortSignal.timeout(timeoutMs),
   })
 }
 
