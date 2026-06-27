@@ -3,7 +3,6 @@ import { embyCorsPreflight } from '@/lib/emby/cors'
 import { isReservedManagementPath, normalizeEmbyPath } from '@/lib/emby/paths'
 import { getCurrentAccount } from '@/lib/session'
 import { ampcastAutoConnectConfig, ampcastAutoInitHtml, playerPathFromEmbyPath, proxyToAmpcast } from '@/lib/ampcast/proxy'
-import { ensureUpstreamEmbyUserForAccount } from '@/lib/emby/auth'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -119,9 +118,8 @@ async function ampcastAutoInitResponse(request: Request): Promise<Response> {
     })
   }
 
-  const ampcastAccount = await ensureUpstreamEmbyUserForAccount(account).catch(() => account)
   const origin = new URL(request.url).origin
-  return new Response(ampcastAutoInitHtml(ampcastAutoConnectConfig(ampcastAccount, origin)), {
+  return new Response(ampcastAutoInitHtml(ampcastAutoConnectConfig(account, origin)), {
     headers: {
       'content-type': 'text/html; charset=utf-8',
       'cache-control': 'no-store',

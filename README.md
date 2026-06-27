@@ -1,6 +1,6 @@
 # XMusic
 
-XMusic (code: `x-music`) is a private QQ Music to Emby gateway. It lets Emby-compatible players, especially ampcast, browse and play a merged music library backed by an upstream Emby server plus QQ Music virtual content.
+XMusic (code: `x-music`) is a private QQ Music to Emby-compatible gateway. It lets Emby-compatible players, especially ampcast, browse and play QQ Music virtual content, with optional upstream Emby merge and sync.
 
 The app is for personal/private deployment. It is not designed as a public multi-user music service.
 
@@ -8,10 +8,10 @@ The app is for personal/private deployment. It is not designed as a public multi
 
 - QQ Music account access with QR-code login or pasted y.qq.com Cookie. Each QQ account gets a local Emby gateway account using the normalized username `QQ${QQ_UID}`.
 - Emby-compatible music gateway for ampcast and other clients. XMusic exposes authentication, user views, a virtual music library, merged songs/albums/playlists/genres, favorites, most-played and recently-played lists, artwork routes, lyrics/subtitle routes, and QQ virtual audio playback from the service root.
-- Merged upstream Emby and QQ Music library views. Real Emby music items are proxied from the configured upstream server, while QQ playlists, albums, recommendations, top lists, favorites, and play history are expanded into virtual Emby-compatible items.
-- Private local playback cache. First playback streams from the resolved QQ source while teeing audio into local storage; later playback can reuse ready or partially playable cached files with HTTP Range support.
-- Metadata and library organization pipeline. Background workers handle tagging, lyric and cover collection, file organization, Emby-friendly sidecar generation, duplicate cleanup, and optional upstream Emby sync.
-- Restricted upstream Emby account binding. Generated upstream users are limited to the music library, with channel access, remote control, and shared device control disabled.
+- Optional merged upstream Emby and QQ Music library views. Real Emby music items are proxied from the configured upstream server, while QQ playlists, albums, recommendations, top lists, favorites, and play history are expanded into virtual Emby-compatible items. Without upstream Emby, the local gateway still supports player login, browsing, and QQ virtual playback.
+- Private local playback cache and archive pipeline. Non-encrypted QQ/LX audio URLs are returned to clients with a 302 redirect. Encrypted QQ audio is cached locally and decrypted as a stream. Playback completion and favorite actions enqueue archive jobs that transfer songs, lyrics, and covers into the local library.
+- Metadata and library organization pipeline. Background workers handle archive downloads, tagging, lyric and cover collection, file organization, Emby-friendly sidecar generation, duplicate cleanup, and optional upstream Emby/WebDAV sync.
+- Optional restricted upstream Emby account binding. When upstream Emby is configured, generated upstream users are limited to the music library, with channel access, remote control, and shared device control disabled.
 - SQLite-backed persistence for accounts, tracks, cached files, jobs, play events, favorites, virtual items, remote mappings, and runtime settings.
 - Management UI and APIs for login, connection information, runtime configuration, user administration, job status, health checks, and cache/job visibility.
 
@@ -127,11 +127,11 @@ The exposed virtual music library uses `x-music-music`.
 Required:
 
 - `LX_MUSIC_SOURCE_SCRIPT`: LX Music custom source script URL for playback URL resolution.
-- `EMBY_UPSTREAM_URL`: upstream Emby server used for fallback proxying, account binding, library lookup, and sync.
-- `EMBY_API_KEY`: upstream Emby API key for server-side admin/fallback requests.
 
 Optional:
 
+- `EMBY_UPSTREAM_URL`: upstream Emby server used for fallback proxying, account binding, library lookup, scan, and sync. If omitted, XMusic runs as a local QQ Music Emby-compatible gateway.
+- `EMBY_API_KEY`: upstream Emby API key for server-side admin/fallback requests. Required only when `EMBY_UPSTREAM_URL` is configured for upstream features.
 - `DATABASE_URL`: SQLite database URL, default `file:./data/app.sqlite`.
 - `MUSIC_DATA_DIR`: shared music data root, default `./data`.
 - `PORT`: production/server port, default deployment value `8098`; local `npm run dev` uses `3004`.
@@ -156,12 +156,12 @@ Optional:
 - The worker handles queued jobs using SQLite-backed job rows.
 - QQ Music private APIs are used conservatively and must be treated as unstable.
 - LX source scripts are loaded server-side. The browser never receives the script URL or key.
-- The upstream Emby API key is a service credential. Player-facing passwords are maintained locally by XMusic.
-- Generated QQ upstream Emby users are intentionally restricted to the music library only.
+- The upstream Emby API key is an optional service credential. Player-facing passwords and access tokens are maintained locally by XMusic.
+- QQ login state is authoritative. When the stored QQ authorization expires, account-dependent XMusic and Emby-compatible endpoints return `401` with `QQ_AUTH_EXPIRED` until QQ authorization is completed again.
+- Generated QQ upstream Emby users are intentionally restricted to the music library only when upstream Emby is configured.
 
 ## Current Risks
 
-- QQ private APIs still need live-account validation for every account-dependent endpoint.
 - Real end-to-end playback and cache reuse depend on a working `LX_MUSIC_SOURCE_SCRIPT`.
-- Emby scan/sync jobs require the upstream Emby server to see the same final music path layout.
+- Emby scan/sync jobs require optional upstream Emby or WebDAV configuration and the upstream server to see the same final music path layout.
 - Existing ampcast sessions may keep using legacy IDs until the client refreshes its library view.

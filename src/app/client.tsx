@@ -222,6 +222,19 @@ interface ConnectionInfo {
   password: string
 }
 
+class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+    readonly actionable?: string,
+    readonly payload?: unknown,
+  ) {
+    super(message)
+    this.name = 'ApiError'
+  }
+}
+
 const playerRecommendations = [
   { name: 'ampcast', platform: 'Web / Desktop', href: 'https://ampcast.app/' },
   { name: '箭头音乐', platform: 'iOS / Android', href: 'https://cn.amcfy.com/' },
@@ -233,10 +246,17 @@ const fetchJson = async <T,>(url: string, init?: RequestInit): Promise<T> => {
   const response = await fetch(url, init)
   const body = await response.json().catch(() => undefined) as unknown
   if (!response.ok) {
-    const message = body && typeof body === 'object' && 'error' in body
+    const record = body && typeof body === 'object' ? body as Record<string, unknown> : undefined
+    const message = record && 'error' in record
       ? String((body as { error: unknown }).error)
       : `Request failed: ${response.status}`
-    throw new Error(message)
+    throw new ApiError(
+      message,
+      response.status,
+      typeof record?.code === 'string' ? record.code : undefined,
+      typeof record?.actionable === 'string' ? record.actionable : undefined,
+      record?.payload,
+    )
   }
   return body as T
 }
@@ -305,7 +325,27 @@ export default function MusicClient() {
     }
   }
 
-  const loadAccount = () => run(s => setAccount(s), () => fetchJson<AccountState>('/api/account'))
+  const loadAccount = async () => {
+    setAccount({ loading: true, error: '', data: null })
+    try {
+      setAccount({ loading: false, error: '', data: await fetchJson<AccountState>('/api/account') })
+    } catch (error) {
+      if (error instanceof ApiError && error.code === 'QQ_AUTH_EXPIRED') {
+        const actionable = error.actionable ?? '重新完成 QQ 授权登录后再继续使用 XMusic。'
+        setMessage(actionable)
+        setAccount({
+          loading: false,
+          error: '',
+          data: {
+            loggedIn: false,
+            actionable,
+          },
+        })
+        return
+      }
+      setAccount({ loading: false, error: error instanceof Error ? error.message : String(error), data: null })
+    }
+  }
   const loadAccountEmbyConfig = () => run(s => setAccountEmbyConfig(s), async () => {
     const data = await fetchJson<AccountEmbyConfig>('/api/account/emby')
     setEmbyPasswordDraft(data.password)

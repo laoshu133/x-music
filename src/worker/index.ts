@@ -1,6 +1,7 @@
 import { appConfig } from '@/lib/config'
 import { db } from '@/lib/db'
 import { cleanupResourceCache } from '@/lib/cache/resources'
+import { processOneArchiveTrackJob } from '@/lib/archive/track'
 import { enqueueRefreshUmCryptoJob, processOneRefreshUmCryptoJob } from '@/lib/cache/um-crypto-job'
 import {
   createJob,
@@ -159,6 +160,7 @@ async function processCleanupResourceCacheJob(): Promise<boolean> {
 
 interface WorkerTickProcessors {
   processTagJob?: () => Promise<boolean>
+  processArchiveTrackJob?: () => Promise<boolean>
   processEmbySyncJob?: () => Promise<boolean>
   processCleanupResourceCacheJob?: () => Promise<boolean>
   processRefreshUmCryptoJob?: () => Promise<boolean>
@@ -170,12 +172,13 @@ export async function processWorkerTick(processors: WorkerTickProcessors = {}): 
   const processedRefreshUmCryptoJob = await (
     processors.processRefreshUmCryptoJob ?? (() => processOneRefreshUmCryptoJob(maxAttempts))
   )()
+  const processedArchiveTrackJob = await (processors.processArchiveTrackJob ?? (() => processOneArchiveTrackJob(maxAttempts)))()
   const processedTagJob = await (processors.processTagJob ?? processTagJob)()
   const processedEmbySyncJob = await (processors.processEmbySyncJob ?? processEmbySyncJob)()
   const processedCleanupResourceCacheJob = await (
     processors.processCleanupResourceCacheJob ?? processCleanupResourceCacheJob
   )()
-  return processedRefreshUmCryptoJob || processedTagJob || processedEmbySyncJob || processedCleanupResourceCacheJob
+  return processedRefreshUmCryptoJob || processedArchiveTrackJob || processedTagJob || processedEmbySyncJob || processedCleanupResourceCacheJob
 }
 
 async function main(): Promise<void> {

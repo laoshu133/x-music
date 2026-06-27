@@ -11,8 +11,8 @@ export interface EffectiveAppSettings {
     sourceScriptUrl?: string
   }
   emby: {
-    baseUrl: string
-    apiKey: string
+    baseUrl?: string
+    apiKey?: string
     proxyTimeoutMs: number
     sourceWebdavDsn?: string
   }

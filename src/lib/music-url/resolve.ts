@@ -201,8 +201,11 @@ export const isMusicUrlUnavailableMessage = (value: string): boolean => {
   const normalized = value.toLowerCase()
   return value.includes('ERR无版权')
     || value.includes('无版权')
+    || value.includes('未获取到URL')
+    || value.includes('未获取到 URL')
     || normalized.includes('no copyright')
     || normalized.includes('copyright unavailable')
+    || normalized.includes('did not return a url')
 }
 
 function musicUrlUnavailableReason(body: string): { reason: string; payload?: unknown } | undefined {

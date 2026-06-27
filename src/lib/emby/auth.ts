@@ -54,6 +54,11 @@ export async function getEmbyAccessToken(account?: AccountRecord): Promise<strin
   return settings.emby.apiKey
 }
 
+export function hasUpstreamEmbyConfigured(): boolean {
+  const settings = getEffectiveSettings()
+  return Boolean(settings.emby.baseUrl && settings.emby.apiKey)
+}
+
 export async function ensureUpstreamEmbyUserForAccount(account: AccountRecord): Promise<AccountRecord> {
   const settings = getEffectiveSettings()
   if (!settings.emby.baseUrl || !settings.emby.apiKey) return account

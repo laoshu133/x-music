@@ -1,14 +1,22 @@
 import { cookies } from 'next/headers'
 import { getAccountByQQ, markAccountActive, type AccountRecord } from '@/lib/db/accounts'
+import { requireActiveQQAccount, QQAuthExpiredError } from '@/lib/qq/auth-state'
 
 const sessionCookieName = 'x_music_account'
 
-export async function getCurrentAccount(): Promise<AccountRecord | undefined> {
+export async function getCurrentAccount(options: { verifyQQ?: boolean } = {}): Promise<AccountRecord | undefined> {
   const store = await cookies()
   const qqUin = store.get(sessionCookieName)?.value
   if (!qqUin) return undefined
   markAccountActive(qqUin)
-  return getAccountByQQ(qqUin)
+  const account = getAccountByQQ(qqUin)
+  if (!account || options.verifyQQ === false) return account
+  try {
+    return await requireActiveQQAccount(account)
+  } catch (error) {
+    if (error instanceof QQAuthExpiredError) await clearCurrentAccount()
+    throw error
+  }
 }
 
 export async function setCurrentAccount(qqUin: string): Promise<void> {

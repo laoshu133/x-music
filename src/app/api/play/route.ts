@@ -2,7 +2,7 @@ import { ensureTrack, getPlayableTrackFile, insertPlayEvent, upsertTrackFileStat
 import { createUpstreamTeeResponse, streamLocalFile } from '@/lib/cache/stream'
 import { encryptedQQAudioRequiresKeyMessage, isEncryptedQQAudioFileName, isEncryptedQQAudioRequiresKeyError } from '@/lib/cache/decrypt'
 import { ensureEmbyMasterCachedBestEffort } from '@/lib/emby/master'
-import { MusicUrlConfigError, MusicUrlResolveError, parseRequestedQuality, qualityFallbacks, resolveMusicUrl, resolveMusicUrlWithFallback } from '@/lib/music-url/resolve'
+import { isMusicUrlUnavailableMessage, MusicUrlConfigError, MusicUrlResolveError, parseRequestedQuality, qualityFallbacks, resolveMusicUrl, resolveMusicUrlWithFallback } from '@/lib/music-url/resolve'
 import { isHighestAvailableQuality } from '@/lib/quality'
 import { getQQLoginState, syncQQPlayHistoryBestEffort } from '@/lib/qq'
 import { logCompletedRequest, logFailedRequest, markRequestSource } from '@/lib/request-log'
@@ -104,7 +104,7 @@ const handlePlayRequest = async (request: Request, input: PlayRequest): Promise<
     upsertTrackFileStatus(track.id, preferredQuality, 'failed', {
       error: message,
     })
-    return jsonError(message, 502)
+    return jsonError(message, isUnplayableResolveError(error) ? 451 : 502)
   }
 }
 
@@ -132,6 +132,14 @@ const resolvePlayableUpstreamResponse = async (
         upsertTrackFileStatus(track.id, quality, 'failed', { error: message })
         continue
       }
+      if (!isEncryptedQQAudioFileName(resolved.url)) {
+        return {
+          url: resolved.url,
+          quality: resolved.quality,
+          response: redirectToAudioUrl(resolved.url),
+          completion: Promise.resolve(),
+        }
+      }
       const { response, completion } = await createUpstreamTeeResponse(
         resolved.url,
         track,
@@ -156,6 +164,17 @@ const resolvePlayableUpstreamResponse = async (
   }
 
   throw new MusicUrlResolveError('Unable to resolve a playable music URL', attempts)
+}
+
+function redirectToAudioUrl(url: string): Response {
+  return new Response(null, {
+    status: 302,
+    headers: {
+      location: url,
+      'cache-control': 'no-store',
+      'x-x-music-stream-mode': 'redirect',
+    },
+  })
 }
 
 const isPlaybackStartRequest = (request: Request): boolean => {
@@ -207,6 +226,11 @@ const playbackErrorMessage = (error: unknown): string => {
   }
 
   return error instanceof Error ? error.message : 'Unable to play track'
+}
+
+function isUnplayableResolveError(error: unknown): boolean {
+  if (!(error instanceof MusicUrlResolveError)) return false
+  return error.attempts.length > 0 && error.attempts.every(attempt => isMusicUrlUnavailableMessage(attempt.error))
 }
 
 const parseMusicInfo = (input: PlayRequest): MusicInfo | undefined => {

@@ -23,6 +23,7 @@ import { ensureTrack, insertPlayEvent, upsertTrackFileStatus } from '@/lib/cache
 import type { MusicInfo } from '@/lib/types'
 import { syncMappedEmbyFavoriteBestEffort } from '@/lib/emby/favorites'
 import { logCompletedRequest, logFailedRequest, logServiceEvent, requestLoggingEnabled, safeRequestPath } from '@/lib/request-log'
+import { QQAuthExpiredError, requireActiveQQAccount } from '@/lib/qq/auth-state'
 
 function markAccountUpstreamBound(qqUin: string, embyUserId = `emby-user-${qqUin}`, embyAccessToken?: string): void {
   db.prepare('UPDATE accounts SET emby_user_id = ?, emby_access_token = COALESCE(?, emby_access_token) WHERE qq_uin = ?').run(embyUserId, embyAccessToken ?? null, qqUin)
@@ -262,6 +263,30 @@ test('QQ login creates a per-account Emby gateway account', () => {
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('123456')
     clearQQLoginCookie()
+  }
+})
+
+test('QQ playlist rejection expires the bound account auth state', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999905')
+    saveQQLoginCookie('uin=o999905; qm_keyst=test-key')
+    const account = getAccountByQQ('999905')
+    assert.ok(account)
+
+    globalThis.fetch = (async () => Response.json({ code: -1000, message: '请登录' })) as typeof fetch
+
+    await assert.rejects(
+      () => requireActiveQQAccount(account, { force: true }),
+      QQAuthExpiredError,
+    )
+    const updated = getAccountByQQ('999905')
+    assert.equal(updated?.qqAuthState, 'expired')
+    assert.equal(updated?.qqAuthError, 'QQ user playlists request was rejected')
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999905')
+    clearQQLoginCookie()
+    globalThis.fetch = originalFetch
   }
 })
 
@@ -559,7 +584,9 @@ test('ampcast auto-init credentials pass startup validation requests', async () 
 
 test('ampcast proxy forwards to configured upstream and rewrites embedded assets', async () => {
   const originalFetch = globalThis.fetch
+  const originalAmpcastUrl = process.env.AMPCAST_URL
   try {
+    delete process.env.AMPCAST_URL
     let forwardedUrl = ''
     globalThis.fetch = (async (url: string | URL | Request) => {
       forwardedUrl = url.toString()
@@ -586,12 +613,16 @@ test('ampcast proxy forwards to configured upstream and rewrites embedded assets
     assert.match(text, /action="\/@player\/login"/)
   } finally {
     globalThis.fetch = originalFetch
+    if (originalAmpcastUrl === undefined) delete process.env.AMPCAST_URL
+    else process.env.AMPCAST_URL = originalAmpcastUrl
   }
 })
 
 test('ampcast proxy returns friendly unavailable page when upstream fails', async () => {
   const originalFetch = globalThis.fetch
+  const originalAmpcastUrl = process.env.AMPCAST_URL
   try {
+    delete process.env.AMPCAST_URL
     globalThis.fetch = (async () => {
       throw new TypeError('connect failed')
     }) as typeof fetch
@@ -608,12 +639,16 @@ test('ampcast proxy returns friendly unavailable page when upstream fails', asyn
     assert.match(body, /http:\/\/ampcast:8000\//)
   } finally {
     globalThis.fetch = originalFetch
+    if (originalAmpcastUrl === undefined) delete process.env.AMPCAST_URL
+    else process.env.AMPCAST_URL = originalAmpcastUrl
   }
 })
 
 test('ampcast proxy maps root versioned assets to the configured upstream', async () => {
   const originalFetch = globalThis.fetch
+  const originalAmpcastUrl = process.env.AMPCAST_URL
   try {
+    delete process.env.AMPCAST_URL
     let forwardedUrl = ''
     globalThis.fetch = (async (url: string | URL | Request) => {
       forwardedUrl = url.toString()
@@ -629,6 +664,8 @@ test('ampcast proxy maps root versioned assets to the configured upstream', asyn
     assert.equal(await response.text(), 'console.log("media")')
   } finally {
     globalThis.fetch = originalFetch
+    if (originalAmpcastUrl === undefined) delete process.env.AMPCAST_URL
+    else process.env.AMPCAST_URL = originalAmpcastUrl
   }
 })
 
@@ -778,6 +815,53 @@ test('local emby authenticate by name succeeds and rejects bad credentials', asy
   }
 })
 
+test('local emby authenticate by name works without upstream Emby configuration', async () => {
+  const previousUrl = process.env.EMBY_UPSTREAM_URL
+  const previousKey = process.env.EMBY_API_KEY
+  try {
+    delete process.env.EMBY_UPSTREAM_URL
+    delete process.env.EMBY_API_KEY
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999901')
+    saveQQLoginCookie('uin=o999901; qm_keyst=test-key')
+    const account = getAccountByQQ('999901')
+    assert.ok(account)
+
+    const response = await handleLocalEmbyRequest(new Request('http://local/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), '/Users/AuthenticateByName')
+    assert.equal(response?.status, 200)
+    const payload = await response!.json()
+    assert.equal(payload.User.Name, account.embyUsername)
+    assert.equal(typeof payload.AccessToken, 'string')
+  } finally {
+    if (previousUrl === undefined) delete process.env.EMBY_UPSTREAM_URL
+    else process.env.EMBY_UPSTREAM_URL = previousUrl
+    if (previousKey === undefined) delete process.env.EMBY_API_KEY
+    else process.env.EMBY_API_KEY = previousKey
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999901')
+    clearQQLoginCookie()
+  }
+})
+
+test('local emby dispatch returns local-only 404 without upstream Emby configuration', async () => {
+  const previousUrl = process.env.EMBY_UPSTREAM_URL
+  const previousKey = process.env.EMBY_API_KEY
+  try {
+    delete process.env.EMBY_UPSTREAM_URL
+    delete process.env.EMBY_API_KEY
+    const response = await dispatchEmbyRequest(new Request('http://local/Unknown/Path'), '/Unknown/Path')
+    assert.equal(response.status, 404)
+    const payload = await response.json()
+    assert.equal(payload.message, 'XMusic local Emby gateway did not handle this path, and no upstream Emby server is configured.')
+  } finally {
+    if (previousUrl === undefined) delete process.env.EMBY_UPSTREAM_URL
+    else process.env.EMBY_UPSTREAM_URL = previousUrl
+    if (previousKey === undefined) delete process.env.EMBY_API_KEY
+    else process.env.EMBY_API_KEY = previousKey
+  }
+})
+
 test('local emby authenticate accepts mobile-compatible casing and form credentials', async () => {
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999025')
@@ -850,6 +934,39 @@ test('narjo users current returns the authenticated local user', async () => {
   }
 })
 
+test('local emby authorized requests fail when QQ auth is expired', async () => {
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999904')
+    saveQQLoginCookie('uin=o999904; qm_keyst=test-key')
+    const account = getAccountByQQ('999904')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+
+    db.prepare(`
+      UPDATE accounts
+      SET qq_auth_state = 'expired',
+          qq_auth_error = 'expired test'
+      WHERE qq_uin = ?
+    `).run('999904')
+
+    const response = await handleLocalEmbyRequest(new Request('http://local/emby/Users/Current', {
+      headers: { 'X-Emby-Token': authPayload.AccessToken },
+    }), stripOptionalEmbyPrefix('/emby/Users/Current'))
+    assert.equal(response?.status, 401)
+    const payload = await response!.json()
+    assert.equal(payload.code, 'QQ_AUTH_EXPIRED')
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999904')
+    clearQQLoginCookie()
+  }
+})
+
 test('account emby password can be manually changed', () => {
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999026')
@@ -866,7 +983,7 @@ test('account emby password can be manually changed', () => {
   }
 })
 
-test('local emby authenticate reports upstream binding failures', async () => {
+test('local emby authenticate ignores upstream binding failures', async () => {
   const originalFetch = globalThis.fetch
   const originalConsoleError = console.error
   try {
@@ -882,11 +999,10 @@ test('local emby authenticate reports upstream binding failures', async () => {
       method: 'POST',
       body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
     }), '/Users/AuthenticateByName')
-    assert.equal(response?.status, 502)
-    assert.deepEqual(await response!.json(), {
-      error: 'Upstream Emby account binding failed',
-      actionable: 'Check EMBY_UPSTREAM_URL, EMBY_API_KEY, and whether a music library exists in upstream Emby.',
-    })
+    assert.equal(response?.status, 200)
+    const payload = await response!.json()
+    assert.equal(payload.User.Name, account.embyUsername)
+    assert.equal(typeof payload.AccessToken, 'string')
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999023')
     clearQQLoginCookie()
@@ -4645,8 +4761,8 @@ test('local emby virtual audio GET fetches QQ metadata when cache is missing', a
       }),
       stripOptionalEmbyPrefix(`/emby/Audio/${encodeURIComponent(songId)}/universal`),
     )
-    assert.equal(response.status, 200)
-    assert.equal(await response.text(), 'audio-from-cdn')
+    assert.equal(response.status, 302)
+    assert.equal(response.headers.get('location'), 'https://cdn.example/audio.mp3')
     assert.deepEqual(qqDetailRequests, [songmid])
     assert.deepEqual(requestedQualities, ['320k'])
     const cached = db.prepare('SELECT value_json FROM app_settings WHERE key = ?').get(`virtual.song.${songmid}`) as { value_json: string } | undefined
@@ -4794,8 +4910,8 @@ test('narjo mp3 audio request falls back to higher quality when mp3 URL fails', 
       }),
       stripOptionalEmbyPrefix(`/Audio/${encodeURIComponent(songId)}/universal.mp3`),
     )
-    assert.equal(response.status, 200)
-    assert.equal(await response.text(), 'audio-/audio-flac.flac')
+    assert.equal(response.status, 302)
+    assert.equal(response.headers.get('location'), 'https://cdn.example/audio-flac.flac')
     assert.deepEqual(requestedQualities, ['320k', 'flac'])
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999118')
@@ -4852,8 +4968,7 @@ test('local emby virtual audio GET returns playable errors as 502 JSON', async (
 
     globalThis.fetch = (async (url: string | URL | Request) => {
       const requestUrl = new URL(String(url))
-      if (requestUrl.hostname === 'script.example') return Response.json({ url: 'https://cdn.example/audio.mp3' })
-      if (requestUrl.hostname === 'cdn.example') return new Response('missing', { status: 404 })
+      if (requestUrl.hostname === 'script.example') return Response.json({ error: 'upstream unavailable' }, { status: 502 })
       return Response.json({ Items: [], TotalRecordCount: 0 })
     }) as typeof fetch
 
@@ -4865,7 +4980,7 @@ test('local emby virtual audio GET returns playable errors as 502 JSON', async (
     )
     assert.equal(response.status, 502)
     const payload = await response.json()
-    assert.match(payload.error, /upstream returned 404/)
+    assert.match(payload.error, /music-url API returned 502/)
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999025')
     clearQQLoginCookie()
@@ -5019,8 +5134,8 @@ test('musiver virtual audio stream prefers mp3 quality requested by client', asy
       }),
       stripOptionalEmbyPrefix(`/Audio/${encodeURIComponent(songId)}/stream`),
     )
-    assert.equal(response.status, 200)
-    assert.equal(await response.text(), 'audio-bytes')
+    assert.equal(response.status, 302)
+    assert.equal(response.headers.get('location'), 'https://cdn.example/audio.mp3')
     assert.deepEqual(requestedQualities, ['128k'])
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999032')
@@ -5109,8 +5224,8 @@ test('ampcast virtual audio refreshes flac instead of serving lower local fallba
       }),
       stripOptionalEmbyPrefix(`/emby/Audio/${encodeURIComponent(songId)}/universal`),
     )
-    assert.equal(response.status, 200)
-    assert.equal(await response.text(), 'flac-bytes')
+    assert.equal(response.status, 302)
+    assert.equal(response.headers.get('location'), 'https://cdn.example/audio.flac')
     assert.deepEqual(requestedQualities, ['flac'])
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999047')
@@ -5218,6 +5333,118 @@ test('ampcast virtual audio proxies local mapped Emby item before LX fallback', 
     } else {
       process.env.LX_MUSIC_SOURCE_SCRIPT = originalLxMusicSourceScript
     }
+  }
+})
+
+test('virtual favorite add enqueues track archive job', async () => {
+  const originalFetch = globalThis.fetch
+  const songmid = `archive-favorite-${Date.now()}`
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999902')
+    db.prepare("DELETE FROM jobs WHERE type = 'archive_track' AND json_extract(payload_json, '$.songmid') = ?").run(songmid)
+    saveQQLoginCookie('uin=o999902; euin=encrypted999902; qm_keyst=test-key')
+    const account = getAccountByQQ('999902')
+    assert.ok(account)
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const song: MusicInfo = {
+      source: 'tx',
+      songmid,
+      name: 'Archive Favorite Song',
+      singer: 'Archive Artist',
+      raw: { songId: 123456, songType: 0 },
+    }
+    db.prepare(`
+      INSERT INTO app_settings (key, value_json, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP
+    `).run(`virtual.song.${songmid}`, JSON.stringify({ song }))
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'u.y.qq.com') return Response.json({ code: 0, req: { code: 0, data: { result: 0 } } })
+      return Response.json({ Items: [], TotalRecordCount: 0 })
+    }) as typeof fetch
+
+    const virtualId = encodeVirtualId({ kind: 'qq-song', songmid })
+    const response = await dispatchEmbyRequest(
+      new Request(`http://local/Users/${authPayload.User.Id}/FavoriteItems/${encodeURIComponent(virtualId)}`, {
+        method: 'POST',
+        headers: { 'X-Emby-Token': authPayload.AccessToken },
+      }),
+      `/Users/${authPayload.User.Id}/FavoriteItems/${encodeURIComponent(virtualId)}`,
+    )
+    assert.equal(response.status, 200)
+    const job = db.prepare(`
+      SELECT payload_json AS payloadJson
+      FROM jobs
+      WHERE type = 'archive_track'
+        AND json_extract(payload_json, '$.songmid') = ?
+      LIMIT 1
+    `).get(songmid) as { payloadJson: string } | undefined
+    assert.equal(JSON.parse(job?.payloadJson ?? '{}').reason, 'favorite')
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999902')
+    db.prepare("DELETE FROM app_settings WHERE key = ?").run(`virtual.song.${songmid}`)
+    db.prepare("DELETE FROM jobs WHERE type = 'archive_track' AND json_extract(payload_json, '$.songmid') = ?").run(songmid)
+    clearQQLoginCookie()
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('virtual playback stopped report enqueues track archive job', async () => {
+  const songmid = `archive-stopped-${Date.now()}`
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999903')
+    db.prepare("DELETE FROM jobs WHERE type = 'archive_track' AND json_extract(payload_json, '$.songmid') = ?").run(songmid)
+    saveQQLoginCookie('uin=o999903; qm_keyst=test-key')
+    const account = getAccountByQQ('999903')
+    assert.ok(account)
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const song: MusicInfo = {
+      source: 'tx',
+      songmid,
+      name: 'Archive Stopped Song',
+      singer: 'Archive Artist',
+      types: [{ type: '320k', size: '1 MB' }],
+    }
+    db.prepare(`
+      INSERT INTO app_settings (key, value_json, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP
+    `).run(`virtual.song.${songmid}`, JSON.stringify({ song }))
+    const virtualId = encodeVirtualId({ kind: 'qq-song', songmid })
+
+    const response = await dispatchEmbyRequest(
+      new Request(`http://local/Sessions/Playing/Stopped?api_key=${authPayload.AccessToken}`, {
+        method: 'POST',
+        body: JSON.stringify({ ItemId: virtualId }),
+      }),
+      '/Sessions/Playing/Stopped',
+    )
+    assert.equal(response.status, 204)
+    const job = db.prepare(`
+      SELECT payload_json AS payloadJson
+      FROM jobs
+      WHERE type = 'archive_track'
+        AND json_extract(payload_json, '$.songmid') = ?
+      LIMIT 1
+    `).get(songmid) as { payloadJson: string } | undefined
+    assert.equal(JSON.parse(job?.payloadJson ?? '{}').reason, 'playback_completed')
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999903')
+    db.prepare("DELETE FROM app_settings WHERE key = ?").run(`virtual.song.${songmid}`)
+    db.prepare("DELETE FROM jobs WHERE type = 'archive_track' AND json_extract(payload_json, '$.songmid') = ?").run(songmid)
+    db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run(songmid)
+    clearQQLoginCookie()
   }
 })
 
@@ -5568,8 +5795,8 @@ test('local emby virtual audio keeps low quality playback cache out of Emby unti
       }),
       stripOptionalEmbyPrefix(`/Audio/${encodeURIComponent(songId)}/stream`),
     )
-    assert.equal(response.status, 200)
-    assert.equal(await response.text(), 'audio-/audio-320k.mp3')
+    assert.equal(response.status, 302)
+    assert.equal(response.headers.get('location'), 'https://cdn.example/audio-320k.mp3')
 
     const immediateSyncJobs = db.prepare(`
       SELECT COUNT(*) AS count
@@ -5579,21 +5806,7 @@ test('local emby virtual audio keeps low quality playback cache out of Emby unti
     `).get(songmid) as { count: number }
     assert.equal(immediateSyncJobs.count, 0)
 
-    await new Promise(resolve => setTimeout(resolve, 25))
     assert.equal(requestedQualities[0], '320k')
-    assert.ok(requestedQualities.includes('flac'))
-
-    const rows = db.prepare(`
-      SELECT tf.quality, tf.status, tf.final_path AS finalPath, tf.raw_path AS rawPath
-      FROM track_files tf
-      INNER JOIN tracks t ON t.id = tf.track_id
-      WHERE t.source = 'tx' AND t.songmid = ?
-      ORDER BY tf.quality
-    `).all(songmid) as Array<{ quality: string; status: string; finalPath?: string | null; rawPath?: string | null }>
-    const low = rows.find(row => row.quality === '320k')
-    assert.equal(low?.status, 'cached_raw')
-    assert.equal(low?.finalPath, null)
-    assert.ok(low?.rawPath?.includes('/inbox/'))
 
     const syncJobs = db.prepare(`
       SELECT COUNT(*) AS count
@@ -5601,7 +5814,7 @@ test('local emby virtual audio keeps low quality playback cache out of Emby unti
       WHERE type = 'sync_emby_track'
         AND json_extract(payload_json, '$.songmid') = ?
     `).get(songmid) as { count: number }
-    assert.equal(syncJobs.count, 1)
+    assert.equal(syncJobs.count, 0)
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999050')
     clearQQLoginCookie()
@@ -5678,19 +5891,9 @@ test('local emby virtual audio syncs best available fallback quality when reques
       }),
       stripOptionalEmbyPrefix(`/emby/Audio/${encodeURIComponent(songId)}/universal`),
     )
-    assert.equal(response.status, 200)
-    assert.equal(await response.text(), 'audio-320k')
-    assert.deepEqual(requestedQualities, ['flac', '320k', 'flac'])
-
-    await waitFor(() => {
-      const row = db.prepare(`
-        SELECT tf.status
-        FROM track_files tf
-        INNER JOIN tracks t ON t.id = tf.track_id
-        WHERE t.source = 'tx' AND t.songmid = ? AND tf.quality = '320k'
-      `).get(songmid) as { status?: string } | undefined
-      return row?.status === 'tagging' || row?.status === 'ready'
-    })
+    assert.equal(response.status, 302)
+    assert.equal(response.headers.get('location'), 'https://cdn.example/audio-320k.mp3')
+    assert.deepEqual(requestedQualities.slice(0, 2), ['flac', '320k'])
 
     const rows = db.prepare(`
       SELECT tf.quality, tf.status, tf.final_path AS finalPath, tf.raw_path AS rawPath, tf.error
@@ -5703,9 +5906,9 @@ test('local emby virtual audio syncs best available fallback quality when reques
     const fallback = rows.find(row => row.quality === '320k')
     assert.equal(flac?.status, 'failed')
     assert.match(flac?.error ?? '', /404/)
-    assert.ok(fallback?.status === 'tagging' || fallback?.status === 'ready')
-    assert.ok(fallback?.finalPath?.includes('/inbox/') || fallback?.finalPath?.includes('/music/'))
-    assert.ok(fallback?.rawPath?.includes('/inbox/'))
+    assert.equal(fallback?.status, 'resolving_url')
+    assert.equal(fallback?.finalPath ?? null, null)
+    assert.equal(fallback?.rawPath ?? null, null)
 
     const tagOrSyncJobs = db.prepare(`
       SELECT COUNT(*) AS count
@@ -5713,7 +5916,7 @@ test('local emby virtual audio syncs best available fallback quality when reques
       WHERE type IN ('tag_track_file', 'sync_emby_track')
         AND json_extract(payload_json, '$.songmid') = ?
     `).get(songmid) as { count: number }
-    assert.ok(tagOrSyncJobs.count >= 1 || fallback?.status === 'ready')
+    assert.equal(tagOrSyncJobs.count, 0)
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999051')
     clearQQLoginCookie()

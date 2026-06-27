@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { getQQRecommendations, qqMusicErrorResponse } from '@/lib/qq'
+import { getQQDailyRecommendations, getQQRecommendations, qqMusicErrorResponse } from '@/lib/qq'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -14,8 +14,12 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url)
   const limit = getPositiveInt(searchParams.get('limit'), 30, 100)
   const cookie = request.headers.get('x-qq-music-cookie') ?? undefined
+  const type = searchParams.get('type')?.toLowerCase()
 
   try {
+    if (type === 'daily') {
+      return NextResponse.json(await getQQDailyRecommendations({ limit }))
+    }
     return NextResponse.json(await getQQRecommendations({ cookie, limit }))
   } catch (error) {
     return qqMusicErrorResponse(error)

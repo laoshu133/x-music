@@ -12,6 +12,9 @@ export interface AccountRecord {
   qqCookie: string
   encryptedUin?: string
   qqmusicKey?: string
+  qqAuthState: 'active' | 'expired'
+  qqAuthCheckedAt?: string
+  qqAuthError?: string
   embyUserId?: string
   embyUsername: string
   embyPassword: string
@@ -49,6 +52,9 @@ interface AccountRow {
   qq_cookie: string
   encrypted_uin: string | null
   qqmusic_key: string | null
+  qq_auth_state: string | null
+  qq_auth_checked_at: string | null
+  qq_auth_error: string | null
   emby_user_id: string | null
   emby_username: string
   emby_password: string
@@ -116,6 +122,9 @@ export function upsertAccountFromQQCookie(cookieText: string, options: { loginIp
       qq_cookie,
       encrypted_uin,
       qqmusic_key,
+      qq_auth_state,
+      qq_auth_checked_at,
+      qq_auth_error,
       emby_user_id,
       emby_username,
       emby_password,
@@ -131,6 +140,9 @@ export function upsertAccountFromQQCookie(cookieText: string, options: { loginIp
       @qqCookie,
       @encryptedUin,
       @qqmusicKey,
+      'active',
+      CURRENT_TIMESTAMP,
+      NULL,
       @embyUserId,
       @embyUsername,
       @embyPassword,
@@ -145,6 +157,9 @@ export function upsertAccountFromQQCookie(cookieText: string, options: { loginIp
       qq_nickname = COALESCE(excluded.qq_nickname, accounts.qq_nickname),
       encrypted_uin = excluded.encrypted_uin,
       qqmusic_key = excluded.qqmusic_key,
+      qq_auth_state = 'active',
+      qq_auth_checked_at = CURRENT_TIMESTAMP,
+      qq_auth_error = NULL,
       emby_username = excluded.emby_username,
       emby_password = excluded.emby_password,
       last_login_at = CURRENT_TIMESTAMP,
@@ -306,6 +321,33 @@ export function markAccountActive(qqUin: string): void {
   `).run(qqUin)
 }
 
+export function markAccountQQAuthChecked(qqUin: string): void {
+  db.prepare(`
+    UPDATE accounts
+    SET
+      qq_auth_state = 'active',
+      qq_auth_checked_at = CURRENT_TIMESTAMP,
+      qq_auth_error = NULL,
+      updated_at = CURRENT_TIMESTAMP
+    WHERE qq_uin = ?
+  `).run(qqUin)
+}
+
+export function markAccountQQAuthExpired(qqUin: string, error?: string): void {
+  db.prepare(`
+    UPDATE accounts
+    SET
+      qq_auth_state = 'expired',
+      qq_auth_checked_at = CURRENT_TIMESTAMP,
+      qq_auth_error = @error,
+      updated_at = CURRENT_TIMESTAMP
+    WHERE qq_uin = @qqUin
+  `).run({
+    qqUin,
+    error: error ?? null,
+  })
+}
+
 export function markAccountLogin(qqUin: string, loginIp?: string): void {
   db.prepare(`
     UPDATE accounts
@@ -412,6 +454,9 @@ function rowToAccount(row: AccountRow): AccountRecord {
     qqCookie: row.qq_cookie,
     encryptedUin: row.encrypted_uin ?? undefined,
     qqmusicKey: row.qqmusic_key ?? undefined,
+    qqAuthState: row.qq_auth_state === 'expired' ? 'expired' : 'active',
+    qqAuthCheckedAt: row.qq_auth_checked_at ?? undefined,
+    qqAuthError: row.qq_auth_error ?? undefined,
     embyUserId: row.emby_user_id ?? undefined,
     embyUsername: row.emby_username,
     embyPassword: row.emby_password,

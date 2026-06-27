@@ -17,6 +17,7 @@ interface TeeResult {
 
 interface UpstreamTeeOptions {
   librarySync?: boolean
+  client?: boolean
 }
 
 interface EncryptedTeeResult {
@@ -82,6 +83,7 @@ export const createUpstreamTeeResponse = async (
 
   const encryptedUpstream = isEncryptedQQAudioFileName(upstreamUrl)
   const range = request.headers.get('range')
+  const shouldStreamToClient = options.client !== false
   if (range && !encryptedUpstream) upstreamHeaders.set('range', range)
 
   const upstream = await fetch(upstreamUrl, {
@@ -106,6 +108,7 @@ export const createUpstreamTeeResponse = async (
       track,
       quality,
       librarySync: options.librarySync ?? true,
+      client: shouldStreamToClient,
     })
     return createEncryptedUpstreamResponse({
       upstreamBody: upstream.body,
@@ -113,6 +116,7 @@ export const createUpstreamTeeResponse = async (
       quality,
       ekey,
       librarySync: options.librarySync ?? true,
+      client: shouldStreamToClient,
     })
   }
   if (!isPlayableAudioFileName(extension)) {
@@ -137,6 +141,7 @@ export const createUpstreamTeeResponse = async (
     track,
     quality,
     librarySync: options.librarySync ?? true,
+    client: shouldStreamToClient,
   })
   const headers = buildProxyHeaders(upstream.headers, shouldCache, upstreamUrl)
   return {
@@ -154,12 +159,14 @@ async function createEncryptedUpstreamResponse({
   quality,
   ekey,
   librarySync,
+  client,
 }: {
   upstreamBody: ReadableStream<Uint8Array>
   track: TrackRecord
   quality: MusicQuality
   ekey: string
   librarySync: boolean
+  client: boolean
 }): Promise<TeeResult> {
   const cacheKey = `${track.source}-${safeFilePart(track.songmid)}-${quality}-${Date.now()}`
   const partPath = path.join(appConfig.stagingDir, `${cacheKey}.part`)
@@ -176,6 +183,7 @@ async function createEncryptedUpstreamResponse({
     quality,
     decryptor,
     librarySync,
+    client,
   })
   return {
     response: new Response(body, {
@@ -196,12 +204,14 @@ async function createPossiblyPlainEncryptedUpstreamResponse({
   track,
   quality,
   librarySync,
+  client,
 }: {
   upstreamBody: ReadableStream<Uint8Array>
   fallbackExtension: string
   track: TrackRecord
   quality: MusicQuality
   librarySync: boolean
+  client: boolean
 }): Promise<TeeResult> {
   const cacheKey = `${track.source}-${safeFilePart(track.songmid)}-${quality}-${Date.now()}`
   const partPath = path.join(appConfig.stagingDir, `${cacheKey}.part`)
@@ -222,6 +232,7 @@ async function createPossiblyPlainEncryptedUpstreamResponse({
     track,
     quality,
     librarySync,
+    client,
   })
 
   return {
@@ -247,6 +258,7 @@ const teeUpstreamToClientAndCache = ({
   track,
   quality,
   librarySync,
+  client,
 }: {
   upstreamBody?: ReadableStream<Uint8Array>
   reader?: ReadableStreamDefaultReader<Uint8Array>
@@ -257,6 +269,7 @@ const teeUpstreamToClientAndCache = ({
   track: TrackRecord
   quality: MusicQuality
   librarySync: boolean
+  client: boolean
 }): { body: ReadableStream<Uint8Array>; completion: Promise<void> } => {
   const reader = providedReader ?? upstreamBody?.getReader()
   if (!reader) throw new Error('upstream reader was not provided')
@@ -320,7 +333,7 @@ const teeUpstreamToClientAndCache = ({
             if (!writeStream.write(buffer)) await waitForWritableDrain(writeStream)
           }
 
-          if (!clientCancelled) {
+          if (client && !clientCancelled) {
             controller.enqueue(value)
           }
         }
@@ -336,7 +349,7 @@ const teeUpstreamToClientAndCache = ({
             if (!writeStream.write(buffer)) await waitForWritableDrain(writeStream)
           }
 
-          if (!clientCancelled) {
+          if (client && !clientCancelled) {
             controller.enqueue(value)
           }
         }
@@ -370,6 +383,7 @@ const teeEncryptedUpstreamToClientAndCache = ({
   quality,
   decryptor,
   librarySync,
+  client,
 }: {
   upstreamBody: ReadableStream<Uint8Array>
   partPath: string
@@ -378,6 +392,7 @@ const teeEncryptedUpstreamToClientAndCache = ({
   quality: MusicQuality
   decryptor: { decrypt(buffer: Uint8Array, offset: number): void }
   librarySync: boolean
+  client: boolean
 }): EncryptedTeeResult => {
   const reader = upstreamBody.getReader()
   const hash = crypto.createHash('sha256')
@@ -440,7 +455,7 @@ const teeEncryptedUpstreamToClientAndCache = ({
   const body = new ReadableStream<Uint8Array>({
     async start(controller) {
       const flushQueuedChunks = () => {
-        if (clientCancelled) return
+        if (!client || clientCancelled) return
         for (const chunk of queuedChunks.splice(0)) {
           controller.enqueue(chunk)
         }
@@ -473,7 +488,7 @@ const teeEncryptedUpstreamToClientAndCache = ({
 
           if (!finalized) {
             queuedChunks.push(buffer)
-          } else if (!clientCancelled) {
+          } else if (client && !clientCancelled) {
             controller.enqueue(buffer)
           }
         }

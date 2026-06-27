@@ -43,8 +43,10 @@ import { deleteEmbyItems, fetchEmbyJson, fetchEmbyText, searchEmbyAudioByName, s
 import { proxyToUpstreamEmby } from './upstream-proxy'
 import { ensureEmbyMasterCachedBestEffort } from './master'
 import { getAccountByEmbyUsername, getAccountByEmbyUserId, getAccountByQQ, listAccounts, markAccountActive, markAccountLogin, type AccountRecord } from '@/lib/db/accounts'
-import { ensureUpstreamEmbyUserForAccount, getDefaultUpstreamMusicLibraryId } from './auth'
+import { getDefaultUpstreamMusicLibraryId, hasUpstreamEmbyConfigured } from './auth'
+import { QQAuthExpiredError, qqAuthExpiredResponse, requireActiveQQAccount } from '@/lib/qq/auth-state'
 import { syncMappedEmbyFavoriteBestEffort } from './favorites'
+import { enqueueTrackArchive } from '@/lib/archive/track'
 import {
   extractFavoriteItemId,
   extractImageItemId,
@@ -127,6 +129,7 @@ type MatchedLocalRoute = {
 }
 
 const favoriteTotalCache = new Map<string, number>()
+const authorizedAccountByRequest = new WeakMap<Request, AccountRecord>()
 
 const LOCAL_ROUTES: LocalRoute[] = [
   {
@@ -275,7 +278,14 @@ export async function handleLocalEmbyRequest(request: Request, embyPath: string)
   const matched = matchLocalRoute({ request, embyPath })
   if (!matched) return undefined
   const { route, context } = matched
-  if (route.authorize && !isAuthorizedLocalRequest(request)) return unauthorizedResponse()
+  if (route.authorize) {
+    const account = await authorizeLocalRequest(request).catch((error: unknown) => {
+      if (error instanceof QQAuthExpiredError) return error
+      throw error
+    })
+    if (account instanceof QQAuthExpiredError) return qqAuthExpiredResponse(account)
+    if (!account) return unauthorizedResponse()
+  }
   return route.handle(context)
 }
 
@@ -293,25 +303,9 @@ async function handleAuthenticateByName(request: Request): Promise<Response> {
     return Response.json({ error: 'Invalid username or password' }, { status: 401 })
   }
 
-  if (account.embyUserId && process.env.NODE_ENV === 'test') {
-    const accessToken = createLocalAccessToken(account)
-    markAccountLogin(account.qqUin, readRequestIp(request))
-    return localAuthenticateResponse(account, accessToken)
-  }
-
-  const upstreamAccount = await ensureUpstreamEmbyUserForAccount(account).catch((error: unknown) => {
-    console.error(`Upstream Emby account binding failed for ${account.embyUsername}: ${error instanceof Error ? error.message : String(error)}`)
-    return undefined
-  })
-  if (!upstreamAccount) {
-    return Response.json({
-      error: 'Upstream Emby account binding failed',
-      actionable: 'Check EMBY_UPSTREAM_URL, EMBY_API_KEY, and whether a music library exists in upstream Emby.',
-    }, { status: 502 })
-  }
-  const accessToken = createLocalAccessToken(upstreamAccount)
-  markAccountLogin(upstreamAccount.qqUin, readRequestIp(request))
-  return localAuthenticateResponse(upstreamAccount, accessToken)
+  const accessToken = createLocalAccessToken(account)
+  markAccountLogin(account.qqUin, readRequestIp(request))
+  return localAuthenticateResponse(account, accessToken)
 }
 
 async function readAuthenticateCredentials(request: Request): Promise<{ username: string; password: string }> {
@@ -371,12 +365,21 @@ function localAuthenticateResponse(account: AccountRecord, accessToken: string):
   })
 }
 
-function authorizedLocalAccount(request: Request): AccountRecord | undefined {
+async function authorizeLocalRequest(request: Request): Promise<AccountRecord | undefined> {
+  const cached = authorizedAccountByRequest.get(request)
+  if (cached) return cached
   const token = readClientAccessToken(request)
   if (!token) return undefined
   const account = listAccounts().find(account => token === createLocalAccessToken(account))
-  if (account) markAccountActive(account.qqUin)
-  return account
+  if (!account) return undefined
+  markAccountActive(account.qqUin)
+  const verified = await requireActiveQQAccount(account)
+  if (verified) authorizedAccountByRequest.set(request, verified)
+  return verified
+}
+
+function authorizedLocalAccount(request: Request): AccountRecord | undefined {
+  return authorizedAccountByRequest.get(request)
 }
 
 function subsonicAccountForRequest(request: Request): AccountRecord | undefined {
@@ -387,8 +390,8 @@ function subsonicAccountForRequest(request: Request): AccountRecord | undefined 
   return account
 }
 
-function isAuthorizedLocalRequest(request: Request): boolean {
-  return Boolean(authorizedLocalAccount(request))
+async function isAuthorizedLocalRequest(request: Request): Promise<boolean> {
+  return Boolean(await authorizeLocalRequest(request))
 }
 
 function unauthorizedResponse(): Response {
@@ -489,6 +492,7 @@ async function handleFavoriteItemMutationRequest(request: Request, itemId: strin
 
   const account = authorizedLocalAccount(request)
   setLocalFavorite(loaded.song, favorite, account?.qqUin)
+  if (favorite) enqueueArchiveForSong(loaded.song, 'favorite', decoded.playlistId ?? loaded.playlistId)
 
   try {
     await setQQFavoriteSong({
@@ -635,7 +639,7 @@ async function handleImageRequest(request: Request, embyPath: string): Promise<R
   const decoded = decodeClientVirtualId(itemId)
   if (!decoded) {
     const songmid = localSongmidForExternalItemId(itemId) ?? (looksLikeQQSongMid(itemId) ? itemId : undefined)
-    if (!songmid) return proxyToUpstreamEmby(request, embyPath)
+    if (!songmid) return hasUpstreamEmbyConfigured() ? proxyToUpstreamEmby(request, embyPath) : emptyImageResponse()
     const localCover = await readCachedTrackCover({ source: 'tx', songmid })
     if (localCover) return markRequestSource(localCover, 'local')
     const stored = await loadOrFetchVirtualSong(songmid)
@@ -918,6 +922,7 @@ async function handlePlaybackReportRequest(request: Request, embyPath: string): 
     const quality = playableQuality ?? '320k'
     const track = ensureTrack(stored.song)
     insertPlayEvent(track.id, quality, authorizedLocalAccount(request)?.qqUin)
+    enqueueArchiveForSong(stored.song, 'playback_completed', decoded.playlistId ?? stored.playlistId)
     if (hasSyncableEmbyMedia(stored.song)) {
       enqueueEmbyTrackSync({
         source: stored.song.source,
@@ -929,6 +934,20 @@ async function handlePlaybackReportRequest(request: Request, embyPath: string): 
   }
 
   return new Response(null, { status: 204 })
+}
+
+function enqueueArchiveForSong(
+  musicInfo: MusicInfo,
+  reason: 'playback_completed' | 'favorite',
+  playlistId?: string,
+): void {
+  enqueueTrackArchive({
+    source: musicInfo.source,
+    songmid: musicInfo.songmid,
+    musicInfo,
+    reason,
+    playlistId,
+  })
 }
 
 async function handleItemRequest(request: Request, embyPath: string): Promise<Response | undefined> {
@@ -1006,7 +1025,7 @@ async function handleSimilarItemsRequest(request: Request, embyPath: string): Pr
 }
 
 async function handleLyricsRequest(request: Request, embyPath: string): Promise<Response | undefined> {
-  if (!isAuthorizedLocalRequest(request) && !subsonicAccountForRequest(request)) return unauthorizedResponse()
+  if (!await isAuthorizedLocalRequest(request) && !subsonicAccountForRequest(request)) return unauthorizedResponse()
   const itemId = extractNestedItemId(embyPath, 'Lyrics')
   const mapped = itemId ? mappingForExternalTrackItemId(itemId) : undefined
   if (mapped) {
@@ -1052,7 +1071,7 @@ async function handleLyricsRequest(request: Request, embyPath: string): Promise<
 }
 
 async function handleSubsonicGetSongRequest(request: Request): Promise<Response> {
-  if (!isAuthorizedLocalRequest(request) && !subsonicAccountForRequest(request)) return subsonicResponse(request, { error: { code: 40, message: 'Unauthorized' } }, 401)
+  if (!await isAuthorizedLocalRequest(request) && !subsonicAccountForRequest(request)) return subsonicResponse(request, { error: { code: 40, message: 'Unauthorized' } }, 401)
   const url = new URL(request.url)
   const rawId = url.searchParams.get('id') ?? ''
   const decoded = await resolveSongVirtualId(rawId)
@@ -1065,7 +1084,7 @@ async function handleSubsonicGetSongRequest(request: Request): Promise<Response>
 }
 
 async function handleSubsonicLyricsRequest(request: Request): Promise<Response> {
-  if (!isAuthorizedLocalRequest(request) && !subsonicAccountForRequest(request)) return subsonicResponse(request, { error: { code: 40, message: 'Unauthorized' } }, 401)
+  if (!await isAuthorizedLocalRequest(request) && !subsonicAccountForRequest(request)) return subsonicResponse(request, { error: { code: 40, message: 'Unauthorized' } }, 401)
   const url = new URL(request.url)
   const rawId = url.searchParams.get('id') ?? ''
   const decoded = await resolveSongVirtualId(rawId)
@@ -1174,7 +1193,7 @@ async function handlePlaylistItemsRequest(request: Request, embyPath: string): P
       ?? (playlist ? await searchEmbyPlaylistByName(playlist.name).catch(() => undefined) : undefined)
     if (mapped) {
       upsertRemoteMapping({ localType: 'playlist', localKey: `qq:${decoded.id}`, remote: 'emby', remoteId: mapped, raw: playlist })
-      return proxyToUpstreamEmby(request, `/Playlists/${encodeURIComponent(mapped)}/Items`)
+      if (hasUpstreamEmbyConfigured()) return proxyToUpstreamEmby(request, `/Playlists/${encodeURIComponent(mapped)}/Items`)
     }
   }
 
@@ -1442,6 +1461,14 @@ async function resolvePlayableUpstreamResponse(
         }, 'error')
         continue
       }
+      if (!isEncryptedQQAudioFileName(resolved.url)) {
+        return {
+          url: resolved.url,
+          quality: resolved.quality,
+          response: redirectToAudioUrl(resolved.url),
+          completion: Promise.resolve(),
+        }
+      }
       const { response, completion } = await createUpstreamTeeResponse(
         resolved.url,
         track,
@@ -1476,6 +1503,17 @@ async function resolvePlayableUpstreamResponse(
   }
 
   throw new MusicUrlResolveError('Unable to resolve a playable music URL', attempts)
+}
+
+function redirectToAudioUrl(url: string): Response {
+  return new Response(null, {
+    status: 302,
+    headers: {
+      location: url,
+      'cache-control': 'no-store',
+      'x-x-music-stream-mode': 'redirect',
+    },
+  })
 }
 
 function shouldSyncResolvedQualityToEmby(

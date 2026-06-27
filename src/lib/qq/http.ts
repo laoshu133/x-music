@@ -21,9 +21,12 @@ export class QQMusicError extends Error {
 
 export function qqMusicErrorResponse(error: unknown): Response {
   if (error instanceof QQMusicError) {
+    const payload = error.payload && typeof error.payload === 'object' ? error.payload as Record<string, unknown> : undefined
     return Response.json(
       {
         error: error.message,
+        code: payload?.code,
+        actionable: payload?.actionable,
         payload: error.payload,
       },
       { status: error.status ?? 502 },
