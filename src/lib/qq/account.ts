@@ -35,6 +35,21 @@ export function parseQQCookieText(cookieText: string): Map<string, string> {
   return cookies
 }
 
+export function serializeQQCookies(cookies: Map<string, string>): string {
+  return Array.from(cookies.entries())
+    .filter(([, value]) => value)
+    .map(([key, value]) => `${key}=${value}`)
+    .join('; ')
+}
+
+export function replaceQQCookieValues(cookieText: string, values: Record<string, string | undefined>): string {
+  const cookies = parseQQCookieText(sanitizeCookieText(cookieText))
+  for (const [key, value] of Object.entries(values)) {
+    if (value) cookies.set(key, value)
+  }
+  return serializeQQCookies(cookies)
+}
+
 function normalizeUin(raw?: string) {
   if (!raw) return undefined
   const match = raw.match(/\d+/)

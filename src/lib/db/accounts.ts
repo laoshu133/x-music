@@ -407,6 +407,30 @@ export function updateAccountQQNickname(qqUin: string, nickname: string): Accoun
   return getAccountByQQ(qqUin)
 }
 
+export function updateAccountQQCookie(cookieText: string): AccountRecord | undefined {
+  const state = buildQQLoginState(cookieText, 'stored')
+  db.prepare(`
+    UPDATE accounts
+    SET
+      qq_cookie = @qqCookie,
+      encrypted_uin = @encryptedUin,
+      qqmusic_key = @qqmusicKey,
+      qq_auth_state = 'active',
+      qq_auth_checked_at = CURRENT_TIMESTAMP,
+      qq_auth_error = NULL,
+      last_active_at = CURRENT_TIMESTAMP,
+      updated_at = CURRENT_TIMESTAMP
+    WHERE qq_uin = @qqUin
+  `).run({
+    qqUin: state.uin,
+    qqCookie: state.cookie,
+    encryptedUin: state.encryptedUin ?? null,
+    qqmusicKey: state.qqmusicKey ?? null,
+  })
+
+  return getAccountByQQ(state.uin)
+}
+
 export function updateAccountEmbyAuth(input: {
   qqUin: string
   embyUserId?: string

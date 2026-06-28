@@ -26,6 +26,7 @@ import {
   Trash2,
   Settings,
   Sparkles,
+  Smartphone,
   Workflow,
   UsersRound,
   UserRound,
@@ -61,6 +62,16 @@ interface AccountState {
     userId?: string
     hasAccessToken?: boolean
   }
+}
+
+interface AccountRefreshResult {
+  refreshed: boolean
+  uin: string
+  changed: boolean
+  refreshedAt: string
+  hasQQMusicKey: boolean
+  persisted: boolean
+  account?: AccountState
 }
 
 interface LoginQrState {
@@ -348,6 +359,7 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
   const [view, setView] = useState<View>(routeView)
   const [cookieText, setCookieText] = useState('')
   const [account, setAccount] = useState<ApiState<AccountState>>({ loading: false, error: '', data: initialAccount })
+  const [accountRefresh, setAccountRefresh] = useState<ApiState<AccountRefreshResult>>(emptyState)
   const [loginQr, setLoginQr] = useState<ApiState<LoginQrState>>(emptyState)
   const [loginQrPhase, setLoginQrPhase] = useState<LoginQrPhase>('idle')
   const [avatar, setAvatar] = useState<ApiState<UserAvatarResult>>(emptyState)
@@ -531,6 +543,23 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
       await fetchJson<{ loggedIn: false }>('/api/account', { method: 'DELETE' })
       return { loggedIn: false }
     })
+  }
+
+  const refreshQQAuthorization = async () => {
+    setMessage('')
+    setAccountRefresh({ loading: true, error: '', data: accountRefresh.data })
+    try {
+      const result = await fetchJson<AccountRefreshResult>('/api/account/refresh', { method: 'POST' })
+      setAccountRefresh({ loading: false, error: '', data: result })
+      if (result.account) setAccount({ loading: false, error: '', data: result.account })
+      setMessage(result.changed ? 'QQ 音乐授权已刷新' : 'QQ 音乐授权已校验，当前 key 仍可用')
+    } catch (error) {
+      setAccountRefresh({
+        loading: false,
+        error: error instanceof Error ? error.message : String(error),
+        data: accountRefresh.data,
+      })
+    }
   }
 
   const openView = (next: View) => {
@@ -728,7 +757,14 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
         {view === 'home' && (
           <section className="workspace">
             <Status state={adminConfig} />
-            <HomePanel connection={connectionInfo} playerPath={EMBEDDED_PLAYER_AUTO_INIT_PATH} ampcastOfficialUrl={ampcastOfficialUrl} onOpenConfig={() => openView('config')} />
+            <HomePanel
+              connection={connectionInfo}
+              playerPath={EMBEDDED_PLAYER_AUTO_INIT_PATH}
+              ampcastOfficialUrl={ampcastOfficialUrl}
+              accountRefresh={accountRefresh}
+              onOpenConfig={() => openView('config')}
+              onRefreshQQAuthorization={refreshQQAuthorization}
+            />
           </section>
         )}
 
@@ -849,7 +885,7 @@ function LoginPage({
   onRequestLoginQr: () => void
   message: string
 }) {
-  const [loginMethod, setLoginMethod] = useState<'qr' | 'cookie'>('qr')
+  const [loginMethod, setLoginMethod] = useState<'qr' | 'mobile' | 'cookie'>('qr')
   const qrDisabled = loginQrPhase === 'expired' || loginQrPhase === 'error'
   const qrStatusText = loginQrPhase === 'checking'
     ? '检查中'
@@ -885,6 +921,15 @@ function LoginPage({
           扫码登录
         </button>
         <button
+          className={loginMethod === 'mobile' ? 'active' : ''}
+          role="tab"
+          aria-selected={loginMethod === 'mobile'}
+          onClick={() => setLoginMethod('mobile')}
+        >
+          <Smartphone size={16} />
+          手机授权
+        </button>
+        <button
           className={loginMethod === 'cookie' ? 'active' : ''}
           role="tab"
           aria-selected={loginMethod === 'cookie'}
@@ -917,6 +962,15 @@ function LoginPage({
               <button onClick={onRequestLoginQr} disabled={loginQr.loading}><LogIn size={16} />获取登录二维码</button>
             )}
             <Status state={loginQr} />
+          </section>
+        ) : loginMethod === 'mobile' ? (
+          <section role="tabpanel">
+            <h2>手机授权 Demo</h2>
+            <p className="qr-hint">手机打开此页时可直接进入 QQ 授权验证页，回调页会显示是否拿到 code。</p>
+            <a className="primary-link" href="/auth/mobile-demo" target="_blank" rel="noreferrer">
+              <ExternalLink size={16} />
+              打开 Demo
+            </a>
           </section>
         ) : (
           <section role="tabpanel">
@@ -979,12 +1033,16 @@ function HomePanel({
   connection,
   playerPath,
   ampcastOfficialUrl,
+  accountRefresh,
   onOpenConfig,
+  onRefreshQQAuthorization,
 }: {
   connection: ConnectionInfo
   playerPath: string
   ampcastOfficialUrl: string
+  accountRefresh: ApiState<AccountRefreshResult>
   onOpenConfig: () => void
+  onRefreshQQAuthorization: () => void
 }) {
   return (
     <div className="home-layout">
@@ -1012,6 +1070,23 @@ function HomePanel({
           <InfoCard icon={UserRound} title="播放器帐号" value={connection.username || '-'} copyValue={connection.username} />
           <InfoCard icon={KeyRound} title="密码" value={maskedSecret(connection.password)} copyValue={connection.password} />
         </div>
+      </section>
+      <section className="connect-panel">
+        <div className="section-head">
+          <h3>QQ 授权</h3>
+          <button className="secondary-button compact-button" onClick={onRefreshQQAuthorization} disabled={accountRefresh.loading}>
+            <RefreshCw className={accountRefresh.loading ? 'spin' : undefined} size={15} />
+            刷新
+          </button>
+        </div>
+        <div className="status-table">
+          <div>
+            <span>最近刷新</span>
+            <strong>{accountRefresh.data?.refreshedAt ? formatDateTime(accountRefresh.data.refreshedAt) : '-'}</strong>
+            <small>{accountRefresh.data ? accountRefresh.data.changed ? '已更新 QQ Music key' : 'Key 可继续使用' : '用于延长 QQ 音乐登录态'}</small>
+          </div>
+        </div>
+        <Status state={accountRefresh} />
       </section>
       <section className="connect-panel">
         <div className="section-head">

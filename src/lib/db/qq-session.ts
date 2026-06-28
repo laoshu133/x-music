@@ -55,6 +55,26 @@ export function saveQQLoginCookie(cookieText: string, options: { loginIp?: strin
   }
 }
 
+export function updateStoredQQLoginCookie(cookieText: string): QQLoginState {
+  const state = buildQQLoginState(cookieText, 'stored')
+  db.prepare(`
+    INSERT INTO qq_session (id, cookie, uin, encrypted_uin, qqmusic_key, updated_at)
+    VALUES (1, @cookie, @uin, @encryptedUin, @qqmusicKey, CURRENT_TIMESTAMP)
+    ON CONFLICT(id) DO UPDATE SET
+      cookie = excluded.cookie,
+      uin = excluded.uin,
+      encrypted_uin = excluded.encrypted_uin,
+      qqmusic_key = excluded.qqmusic_key,
+      updated_at = CURRENT_TIMESTAMP
+  `).run({
+    cookie: state.cookie,
+    uin: state.uin,
+    encryptedUin: state.encryptedUin ?? null,
+    qqmusicKey: state.qqmusicKey ?? null,
+  })
+  return state
+}
+
 export function clearQQLoginCookie(): void {
   db.prepare('DELETE FROM qq_session WHERE id = 1').run()
 }

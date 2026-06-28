@@ -134,6 +134,55 @@ function buildLoginSession(cookie: string): QQLoginSession {
   }
 }
 
+export async function exchangeQQMusicLoginCode(input: {
+  code: string
+  cookie?: string
+  gTk?: number
+}): Promise<QQLoginSession> {
+  const code = input.code.trim()
+  if (!code) throw new QQMusicError('QQ authorization code is required', 400)
+
+  const musicLoginPayload = {
+    comm: {
+      g_tk: input.gTk ?? 5381,
+      platform: 'yqq',
+      ct: 24,
+      cv: 0,
+    },
+    req: {
+      module: 'QQConnectLogin.LoginServer',
+      method: 'QQLogin',
+      param: { code },
+    },
+  }
+
+  const musicLoginResponse = await fetchWithTimeout('https://u.y.qq.com/cgi-bin/musicu.fcg', {
+    method: 'POST',
+    body: JSON.stringify(musicLoginPayload),
+    headers: {
+      'content-type': 'application/x-www-form-urlencoded',
+      ...(input.cookie ? { cookie: input.cookie } : {}),
+    },
+  })
+  const cookieMap = new Map<string, string>()
+  setCookies(cookieMap, musicLoginResponse.headers.get('set-cookie'))
+  if (input.cookie) {
+    for (const item of input.cookie.split(';').map(part => part.trim()).filter(Boolean)) {
+      const [name] = item.split('=')
+      if (name && !cookieMap.has(name)) cookieMap.set(name, item)
+    }
+  }
+
+  const session = buildLoginSession(Array.from(cookieMap.values()).join('; '))
+  if (!session.uin || !(session.cookieObject.qm_keyst || session.cookieObject.qqmusic_key)) {
+    throw new QQMusicError('QQ Music code exchange did not return a complete login session', 502, {
+      hasUin: Boolean(session.uin),
+      hasQQMusicKey: Boolean(session.cookieObject.qm_keyst || session.cookieObject.qqmusic_key),
+    })
+  }
+  return session
+}
+
 function extractAuthorizeUrl(body: string): string | undefined {
   return body.match(/'((?:https?):\/\/[^']+)'/)?.[1]
 }
@@ -301,34 +350,16 @@ export async function checkQQLoginQr(input: {
     const code = location.match(/[?&]code=([^&]+)/)?.[1]
     if (!code) throw new QQMusicError('QQ authorization redirect did not include code', 502)
 
-    const musicLoginPayload = {
-      comm: {
-        g_tk: gtk,
-        platform: 'yqq',
-        ct: 24,
-        cv: 0,
-      },
-      req: {
-        module: 'QQConnectLogin.LoginServer',
-        method: 'QQLogin',
-        param: { code },
-      },
-    }
-
-    const musicLoginResponse = await fetchWithTimeout('https://u.y.qq.com/cgi-bin/musicu.fcg', {
-      method: 'POST',
-      body: JSON.stringify(musicLoginPayload),
-      headers: {
-        'content-type': 'application/x-www-form-urlencoded',
-        cookie: allCookies(),
-      },
+    const session = await exchangeQQMusicLoginCode({
+      code,
+      cookie: allCookies(),
+      gTk: gtk,
     })
-    setCookies(cookieMap, musicLoginResponse.headers.get('set-cookie'))
 
     return {
       isOk: true,
       message: '登录成功',
-      session: buildLoginSession(allCookies()),
+      session,
     }
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') {
