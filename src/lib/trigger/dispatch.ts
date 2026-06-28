@@ -2,6 +2,7 @@ import { tasks } from '@trigger.dev/sdk/v3'
 import type { JobRow, JobType } from '@/lib/jobs'
 import type {
   archiveTrackTask,
+  cleanupTrackCacheTask,
   cleanupResourceCacheTask,
   refreshUmCryptoTask,
   syncEmbyTrackTask,
@@ -11,6 +12,7 @@ import type {
 export const triggerTaskIds = {
   archiveTrack: 'xmusic.archive-track',
   cleanupResourceCache: 'xmusic.cleanup-resource-cache',
+  cleanupTrackCache: 'xmusic.cleanup-track-cache',
   refreshUmCrypto: 'xmusic.refresh-um-crypto',
   syncEmbyTrack: 'xmusic.sync-emby-track',
   tagTrackFile: 'xmusic.tag-track-file',
@@ -38,6 +40,9 @@ export async function dispatchJob(job: Pick<JobRow, 'id' | 'type'>): Promise<voi
       return
     case 'cleanup_resource_cache':
       await tasks.trigger<typeof cleanupResourceCacheTask>(triggerTaskIds.cleanupResourceCache, payload, options)
+      return
+    case 'cleanup_track_cache':
+      await tasks.trigger<typeof cleanupTrackCacheTask>(triggerTaskIds.cleanupTrackCache, payload, options)
       return
     case 'refresh_um_crypto':
       await tasks.trigger<typeof refreshUmCryptoTask>(triggerTaskIds.refreshUmCrypto, payload, options)

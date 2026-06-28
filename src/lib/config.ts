@@ -11,6 +11,10 @@ const envSchema = z.object({
   LX_MUSIC_ID_LOOKUP_ENABLED: z.string().optional(),
   DATABASE_URL: z.string().default('file:./data/app.sqlite'),
   MUSIC_DATA_DIR: z.string().default('./data'),
+  TRACK_CACHE_STAGING_TTL_HOURS: z.string().default('6'),
+  TRACK_CACHE_INBOX_TTL_DAYS: z.string().default('7'),
+  TRACK_CACHE_FAILED_TTL_DAYS: z.string().default('7'),
+  TRACK_CACHE_MAX_BYTES: z.string().default(String(20 * 1024 * 1024 * 1024)),
   AMPCAST_URL: z.string().url().default(defaultAmpcastUrl),
   ADMIN_QQ_UINS: z.string().default(''),
 })
@@ -38,6 +42,18 @@ export const appConfig = {
   get adminQQUins() {
     return parseAdminQQUins(currentEnv().ADMIN_QQ_UINS)
   },
+  get trackCacheStagingTtlHours() {
+    return parseNonNegativeNumber(currentEnv().TRACK_CACHE_STAGING_TTL_HOURS, 6)
+  },
+  get trackCacheInboxTtlDays() {
+    return parseNonNegativeNumber(currentEnv().TRACK_CACHE_INBOX_TTL_DAYS, 7)
+  },
+  get trackCacheFailedTtlDays() {
+    return parseNonNegativeNumber(currentEnv().TRACK_CACHE_FAILED_TTL_DAYS, 7)
+  },
+  get trackCacheMaxBytes() {
+    return parseNonNegativeNumber(currentEnv().TRACK_CACHE_MAX_BYTES, 20 * 1024 * 1024 * 1024)
+  },
 } as const
 
 function parseAdminQQUins(value: string): string[] {
@@ -45,6 +61,11 @@ function parseAdminQQUins(value: string): string[] {
     .split(/[,\s;]+/)
     .map(item => item.trim().replace(/^o/i, ''))
     .filter(Boolean)
+}
+
+function parseNonNegativeNumber(value: string | undefined, fallback: number): number {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback
 }
 
 function loadDotEnv(): void {

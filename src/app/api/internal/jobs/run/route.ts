@@ -34,5 +34,6 @@ function isJobType(value: unknown): value is JobType {
     || value === 'tag_track_file'
     || value === 'sync_emby_track'
     || value === 'cleanup_resource_cache'
+    || value === 'cleanup_track_cache'
     || value === 'refresh_um_crypto'
 }

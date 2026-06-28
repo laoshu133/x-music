@@ -202,6 +202,7 @@ async function processClaimedEmbySyncJob(
       await deleteLocalSyncedMedia({
         source: job.payload.source,
         songmid: job.payload.songmid,
+        embyPath: syncedMedia.embyPath,
         uploadedPaths: syncedMedia.uploadedPaths,
       }).catch(() => undefined)
       recordWebdavSyncEvent({
@@ -418,9 +419,10 @@ function getCachedMedia(payload: SyncEmbyTrackJobPayload, qualities: MusicQualit
 async function deleteLocalSyncedMedia(input: {
   source: string
   songmid: string
+  embyPath: string
   uploadedPaths: string[]
 }): Promise<void> {
-  if (!input.uploadedPaths.length) return
+  const syncedPaths = input.uploadedPaths.length ? input.uploadedPaths : [input.embyPath]
 
   const rows = db.prepare(`
     SELECT
@@ -440,7 +442,7 @@ async function deleteLocalSyncedMedia(input: {
     coverPath?: string | null
   }>
 
-  const uploaded = new Set(input.uploadedPaths.map(uploadedPath => normalizeRelativeMusicPath(uploadedPath)))
+  const uploaded = new Set(syncedPaths.map(uploadedPath => normalizeRelativeMusicPath(uploadedPath)))
   for (const row of rows) {
     const columns = {
       raw_path: row.rawPath ?? undefined,
@@ -449,9 +451,12 @@ async function deleteLocalSyncedMedia(input: {
       cover_path: row.coverPath ?? undefined,
     }
     const deletedColumns: string[] = []
+    const rowSyncedByAudio = Boolean(row.finalPath
+      && uploaded.has(normalizeRelativeMusicPath(path.relative(appConfig.musicDir, row.finalPath))))
     for (const [column, filePath] of Object.entries(columns)) {
       if (!filePath) continue
-      if (!uploaded.has(normalizeRelativeMusicPath(path.relative(appConfig.musicDir, filePath)))) continue
+      const relativePath = normalizeRelativeMusicPath(path.relative(appConfig.musicDir, filePath))
+      if (!uploaded.has(relativePath) && !(rowSyncedByAudio && (column === 'lyrics_path' || column === 'cover_path'))) continue
       await rm(filePath, { force: true }).catch(() => undefined)
       await pruneEmptyMusicDirectories(path.dirname(filePath)).catch(() => undefined)
       deletedColumns.push(column)

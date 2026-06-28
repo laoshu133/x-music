@@ -169,7 +169,7 @@ const count = (tableName: string): number => {
   return row.count
 }
 
-const observedJobTypes = ['archive_track', 'sync_emby_track', 'tag_track_file'] as const
+const observedJobTypes = ['archive_track', 'sync_emby_track', 'tag_track_file', 'cleanup_track_cache'] as const
 
 const getAudioCacheStatus = () => {
   const rows = db.prepare(`

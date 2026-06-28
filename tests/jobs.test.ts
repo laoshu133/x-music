@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, utimesSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import path from 'node:path'
@@ -10,6 +10,7 @@ import { ensureTrack, upsertTrackFileStatus } from '@/lib/cache/store'
 import { hasEmbySyncableCachedMedia, processOneEmbySyncJob } from '@/lib/emby/sync-worker'
 import { processOneArchiveTrackJob } from '@/lib/archive/track'
 import { enqueueRefreshUmCryptoJob } from '@/lib/cache/um-crypto-job'
+import { cleanupTrackCache } from '@/lib/cache/track-cache-cleanup'
 import { getRemoteMapping, getRemoteMappingByRemote, upsertRemoteMapping } from '@/lib/db/remote-mappings'
 import { claimNextJob, clearJobsByStatus, clearStaleRunningJobs, completeJob, createJob, failJob, getJob, requeueJob } from '@/lib/jobs'
 import { getJobSummary, listJobs } from '@/lib/jobs/status'
@@ -450,10 +451,14 @@ test('worker tick gives emby sync a turn when tag processing did work', async ()
       calls.push('cleanup')
       return false
     },
+    async processCleanupTrackCacheJob() {
+      calls.push('track-cleanup')
+      return false
+    },
   })
 
   assert.equal(didWork, true)
-  assert.deepEqual(calls, ['tag', 'emby', 'cleanup'])
+  assert.deepEqual(calls, ['tag', 'emby', 'cleanup', 'track-cleanup'])
 })
 
 test('worker tick processes queued UM crypto refresh jobs', async () => {
@@ -476,10 +481,124 @@ test('worker tick processes queued UM crypto refresh jobs', async () => {
       calls.push('cleanup')
       return false
     },
+    async processCleanupTrackCacheJob() {
+      calls.push('track-cleanup')
+      return false
+    },
   })
 
   assert.equal(didWork, true)
-  assert.deepEqual(calls, ['um', 'tag', 'emby', 'cleanup'])
+  assert.deepEqual(calls, ['um', 'tag', 'emby', 'cleanup', 'track-cleanup'])
+})
+
+test('track cache cleanup removes stale staging and inbox files', async () => {
+  const oldStagingPath = path.join(appConfig.stagingDir, `old-${Date.now()}.part`)
+  const recentStagingPath = path.join(appConfig.stagingDir, `recent-${Date.now()}.part`)
+  const oldInboxPath = path.join(appConfig.inboxDir, `old-${Date.now()}.mp3`)
+  mkdirSync(appConfig.stagingDir, { recursive: true })
+  mkdirSync(appConfig.inboxDir, { recursive: true })
+  writeFileSync(oldStagingPath, 'old-staging')
+  writeFileSync(recentStagingPath, 'recent-staging')
+  writeFileSync(oldInboxPath, 'old-inbox')
+  const now = new Date()
+  const oldTime = now.getTime() - 10 * 24 * 60 * 60 * 1000
+  utimesSync(oldStagingPath, oldTime / 1000, oldTime / 1000)
+  utimesSync(oldInboxPath, oldTime / 1000, oldTime / 1000)
+
+  try {
+    const result = await cleanupTrackCache({
+      now,
+      stagingTtlHours: 6,
+      inboxTtlDays: 7,
+      failedTtlDays: 7,
+      maxBytes: 0,
+    })
+    assert.equal(existsSync(oldStagingPath), false)
+    assert.equal(existsSync(oldInboxPath), false)
+    assert.equal(existsSync(recentStagingPath), true)
+    assert.equal(result.byReason.stale_staging.count, 1)
+    assert.equal(result.byReason.stale_inbox.count, 1)
+  } finally {
+    rmSync(oldStagingPath, { force: true })
+    rmSync(recentStagingPath, { force: true })
+    rmSync(oldInboxPath, { force: true })
+  }
+})
+
+test('track cache cleanup removes old failed track files and clears database paths', async () => {
+  const songmid = `TRACK_CLEANUP_FAILED_${Date.now()}`
+  const failedPath = path.join(appConfig.musicDir, 'Cleanup Failed Artist', `${songmid}.mp3`)
+  mkdirSync(path.dirname(failedPath), { recursive: true })
+  writeFileSync(failedPath, 'failed-audio')
+  const track = ensureTrack({ source: 'tx', songmid, name: 'Failed Cleanup', singer: 'Cleanup Failed Artist' })
+  const trackFile = upsertTrackFileStatus(track.id, '320k', 'failed', {
+    finalPath: failedPath,
+    error: 'old failure',
+  })
+  db.prepare("UPDATE track_files SET updated_at = datetime('now', '-10 days') WHERE id = ?").run(trackFile.id)
+
+  try {
+    const result = await cleanupTrackCache({
+      failedTtlDays: 7,
+      stagingTtlHours: 999,
+      inboxTtlDays: 999,
+      maxBytes: 0,
+    })
+    assert.equal(existsSync(failedPath), false)
+    assert.equal(result.byReason.failed_track_file.count, 1)
+    const row = db.prepare('SELECT status, final_path AS finalPath FROM track_files WHERE id = ?').get(trackFile.id) as {
+      status: string
+      finalPath?: string | null
+    }
+    assert.equal(row.status, 'missing')
+    assert.equal(row.finalPath, null)
+  } finally {
+    rmSync(path.join(appConfig.musicDir, 'Cleanup Failed Artist'), { recursive: true, force: true })
+    db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run(songmid)
+  }
+})
+
+test('track cache cleanup prunes oldest ready media when cache exceeds size limit', async () => {
+  const oldSongmid = `TRACK_CLEANUP_OLD_${Date.now()}`
+  const newSongmid = `TRACK_CLEANUP_NEW_${Date.now()}`
+  const oldPath = path.join(appConfig.musicDir, 'Cleanup Limit Artist', `${oldSongmid}.mp3`)
+  const newPath = path.join(appConfig.musicDir, 'Cleanup Limit Artist', `${newSongmid}.mp3`)
+  mkdirSync(path.dirname(oldPath), { recursive: true })
+  writeFileSync(oldPath, 'old-ready-audio')
+  writeFileSync(newPath, 'new-ready-audio')
+  const oldTrack = ensureTrack({ source: 'tx', songmid: oldSongmid, name: 'Old Ready', singer: 'Cleanup Limit Artist' })
+  const newTrack = ensureTrack({ source: 'tx', songmid: newSongmid, name: 'New Ready', singer: 'Cleanup Limit Artist' })
+  const oldFile = upsertTrackFileStatus(oldTrack.id, '320k', 'ready', { finalPath: oldPath, sizeBytes: 15 })
+  const newFile = upsertTrackFileStatus(newTrack.id, '320k', 'ready', { finalPath: newPath, sizeBytes: 15 })
+  const oldTime = Date.now() - 10_000
+  utimesSync(oldPath, oldTime / 1000, oldTime / 1000)
+
+  try {
+    const result = await cleanupTrackCache({
+      stagingTtlHours: 999,
+      inboxTtlDays: 999,
+      failedTtlDays: 999,
+      maxBytes: 15,
+    })
+    assert.equal(existsSync(oldPath), false)
+    assert.equal(existsSync(newPath), true)
+    assert.equal(result.byReason.track_cache_over_limit.count, 1)
+    const oldRow = db.prepare('SELECT status, final_path AS finalPath FROM track_files WHERE id = ?').get(oldFile.id) as {
+      status: string
+      finalPath?: string | null
+    }
+    const newRow = db.prepare('SELECT status, final_path AS finalPath FROM track_files WHERE id = ?').get(newFile.id) as {
+      status: string
+      finalPath?: string | null
+    }
+    assert.equal(oldRow.status, 'missing')
+    assert.equal(oldRow.finalPath, null)
+    assert.equal(newRow.status, 'ready')
+    assert.equal(newRow.finalPath, newPath)
+  } finally {
+    rmSync(path.join(appConfig.musicDir, 'Cleanup Limit Artist'), { recursive: true, force: true })
+    db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid IN (?, ?)").run(oldSongmid, newSongmid)
+  }
 })
 
 test('archive track job falls back to highest reachable declared quality', async () => {
@@ -1192,9 +1311,9 @@ test('emby sync job skips WebDAV upload when remote audio already exists', async
         'HEAD /dav/music/WebDAV Existing Artist/WebDAV Existing Album/WebDAV Existing Artist - WebDAV Existing Song.flac',
       ],
     )
-    assert.equal(existsSync(finalPath), true)
-    assert.equal(existsSync(lyricsPath), true)
-    assert.equal(existsSync(coverPath), true)
+    assert.equal(existsSync(finalPath), false)
+    assert.equal(existsSync(lyricsPath), false)
+    assert.equal(existsSync(coverPath), false)
     const row = db.prepare(`
       SELECT status, final_path AS finalPath, lyrics_path AS lyricsPath, cover_path AS coverPath
       FROM track_files
@@ -1205,10 +1324,10 @@ test('emby sync job skips WebDAV upload when remote audio already exists', async
       lyricsPath?: string | null
       coverPath?: string | null
     }
-    assert.equal(row.status, 'ready')
-    assert.equal(row.finalPath, finalPath)
-    assert.equal(row.lyricsPath, lyricsPath)
-    assert.equal(row.coverPath, coverPath)
+    assert.equal(row.status, 'missing')
+    assert.equal(row.finalPath, null)
+    assert.equal(row.lyricsPath, null)
+    assert.equal(row.coverPath, null)
     const event = db.prepare(`
       SELECT status, payload_json AS payloadJson
       FROM sync_events

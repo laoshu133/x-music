@@ -1,5 +1,6 @@
 import { schedules, task } from '@trigger.dev/sdk/v3'
 import { enqueueCleanupResourceCacheJob } from '@/lib/cache/cleanup-job'
+import { enqueueCleanupTrackCacheJob } from '@/lib/cache/track-cache-cleanup-job'
 import type { JobType } from '@/lib/jobs'
 import { runJobByIdThroughConfiguredRunner } from '@/lib/jobs/run'
 import { triggerTaskIds } from '@/lib/trigger/dispatch'
@@ -78,13 +79,30 @@ export const cleanupResourceCacheTask = task({
   },
 })
 
+export const cleanupTrackCacheTask = task({
+  id: triggerTaskIds.cleanupTrackCache,
+  retry,
+  queue: {
+    name: 'xmusic-cleanup-track-cache',
+    concurrencyLimit: 1,
+  },
+  run: async (payload: JobPayload) => {
+    await runJobByIdThroughConfiguredRunner(payload)
+  },
+})
+
 export const scheduledCleanupResourceCacheTask = schedules.task({
   id: 'xmusic.scheduled-cleanup-resource-cache',
   cron: process.env.TRIGGER_CLEANUP_RESOURCE_CACHE_CRON ?? '0 3 * * *',
   run: async () => {
+    const scheduledAt = new Date().toISOString()
     enqueueCleanupResourceCacheJob({
       reason: 'scheduled',
-      scheduledAt: new Date().toISOString(),
+      scheduledAt,
+    })
+    enqueueCleanupTrackCacheJob({
+      reason: 'scheduled',
+      scheduledAt,
     })
   },
 })

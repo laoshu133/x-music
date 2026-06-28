@@ -746,6 +746,48 @@ test('local emby public info supports original emby routes', async () => {
   assert.equal(payload.ServerName, 'XMusic')
 })
 
+test('local emby system info supports prefixed client probe route', async () => {
+  const response = await handleLocalEmbyRequest(
+    new Request('http://local/emby/System/Info'),
+    stripOptionalEmbyPrefix('/emby/System/Info'),
+  )
+  assert.equal(response?.status, 200)
+  const payload = await response!.json()
+  assert.equal(payload.ServerName, 'XMusic')
+  assert.equal(payload.Id, 'x-music')
+})
+
+test('local emby startup probes return compatibility payloads', async () => {
+  const config = await handleLocalEmbyRequest(
+    new Request('http://local/emby/System/Configuration'),
+    stripOptionalEmbyPrefix('/emby/System/Configuration'),
+  )
+  assert.equal(config?.status, 200)
+  assert.equal((await config!.json()).ServerName, 'XMusic')
+
+  const ping = await handleLocalEmbyRequest(
+    new Request('http://local/emby/System/Ping'),
+    stripOptionalEmbyPrefix('/emby/System/Ping'),
+  )
+  assert.equal(ping?.status, 200)
+  assert.equal(await ping!.text(), 'XMusic')
+
+  const branding = await handleLocalEmbyRequest(
+    new Request('http://local/emby/Branding/Configuration'),
+    stripOptionalEmbyPrefix('/emby/Branding/Configuration'),
+  )
+  assert.equal(branding?.status, 200)
+  assert.equal((await branding!.json()).SplashscreenEnabled, false)
+
+  const css = await handleLocalEmbyRequest(
+    new Request('http://local/emby/Branding/Css'),
+    stripOptionalEmbyPrefix('/emby/Branding/Css'),
+  )
+  assert.equal(css?.status, 200)
+  assert.equal(css?.headers.get('content-type'), 'text/css; charset=utf-8')
+  assert.equal(await css!.text(), '')
+})
+
 test('narjo no lyrics capability probe is handled locally', async () => {
   const response = await dispatchEmbyRequest(
     new Request('http://local/emby-no-lyrics-api', {
@@ -969,6 +1011,72 @@ test('narjo users current returns the authenticated local user', async () => {
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999117')
     clearQQLoginCookie()
+  }
+})
+
+test('local emby authorized startup helpers are handled locally', async () => {
+  const originalFetch = globalThis.fetch
+  const upstreamRequests: string[] = []
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999116')
+    saveQQLoginCookie('uin=o999116; qm_keyst=test-key')
+    markAccountUpstreamBound('999116')
+    const account = getAccountByQQ('999116')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const headers = { 'X-Emby-Token': authPayload.AccessToken }
+
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      upstreamRequests.push(String(url))
+      return Response.json({ error: 'unexpected upstream request' }, { status: 500 })
+    }) as typeof fetch
+
+    const capabilities = await dispatchEmbyRequest(
+      new Request('http://local/emby/Sessions/Capabilities/Full', { method: 'POST', headers }),
+      stripOptionalEmbyPrefix('/emby/Sessions/Capabilities/Full'),
+    )
+    assert.equal(capabilities.status, 204)
+
+    const sessions = await dispatchEmbyRequest(
+      new Request('http://local/emby/Sessions', { headers }),
+      stripOptionalEmbyPrefix('/emby/Sessions'),
+    )
+    assert.equal(sessions.status, 200)
+    assert.deepEqual(await sessions.json(), [])
+
+    const preferences = await dispatchEmbyRequest(
+      new Request(`http://local/emby/DisplayPreferences/${authPayload.User.Id}?Client=Narjo`, { headers }),
+      stripOptionalEmbyPrefix(`/emby/DisplayPreferences/${authPayload.User.Id}`),
+    )
+    assert.equal(preferences.status, 200)
+    const preferencesPayload = await preferences.json()
+    assert.equal(preferencesPayload.Id, authPayload.User.Id)
+    assert.equal(preferencesPayload.Client, 'Narjo')
+
+    const mediaFolders = await dispatchEmbyRequest(
+      new Request('http://local/emby/Library/MediaFolders', { headers }),
+      stripOptionalEmbyPrefix('/emby/Library/MediaFolders'),
+    )
+    assert.equal(mediaFolders.status, 200)
+    assert.equal((await mediaFolders.json()).Items[0].Id, 'x-music-music')
+
+    const counts = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Items/Counts?UserId=${authPayload.User.Id}`, { headers }),
+      stripOptionalEmbyPrefix('/emby/Items/Counts'),
+    )
+    assert.equal(counts.status, 200)
+    assert.equal((await counts.json()).SongCount, 0)
+    assert.deepEqual(upstreamRequests, [])
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999116')
+    clearQQLoginCookie()
+    globalThis.fetch = originalFetch
   }
 })
 

@@ -1,5 +1,6 @@
 import { processArchiveTrackJobById } from '@/lib/archive/track'
 import { processCleanupResourceCacheJobById } from '@/lib/cache/cleanup-job'
+import { processCleanupTrackCacheJobById } from '@/lib/cache/track-cache-cleanup-job'
 import { processRefreshUmCryptoJobById } from '@/lib/cache/um-crypto-job'
 import { processEmbySyncJobById } from '@/lib/emby/sync-worker'
 import type { JobType } from '@/lib/jobs'
@@ -23,6 +24,9 @@ export async function runJobById(input: RunJobByIdInput): Promise<void> {
       return
     case 'cleanup_resource_cache':
       await processCleanupResourceCacheJobById(input.jobId)
+      return
+    case 'cleanup_track_cache':
+      await processCleanupTrackCacheJobById(input.jobId)
       return
     case 'refresh_um_crypto':
       await processRefreshUmCryptoJobById(input.jobId)

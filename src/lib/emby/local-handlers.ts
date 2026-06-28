@@ -139,14 +139,12 @@ const LOCAL_ROUTES: LocalRoute[] = [
   {
     name: 'public-system-info',
     match: ({ request, embyPath }) => request.method === 'GET' && pathEquals(embyPath, '/System/Info/Public'),
-    handle: () => Response.json({
-      LocalAddress: '',
-      ServerName: 'XMusic',
-      Version: '0.1.0',
-      ProductName: 'XMusic Emby Gateway',
-      Id: LOCAL_SERVER_ID,
-      StartupWizardCompleted: true,
-    }),
+    handle: () => Response.json(localSystemInfo()),
+  },
+  {
+    name: 'system-info',
+    match: ({ request, embyPath }) => request.method === 'GET' && pathEquals(embyPath, '/System/Info'),
+    handle: () => Response.json(localSystemInfo()),
   },
   {
     name: 'authenticate-by-name',
@@ -162,6 +160,78 @@ const LOCAL_ROUTES: LocalRoute[] = [
     name: 'system-endpoint',
     match: ({ request, embyPath }) => request.method === 'GET' && pathEquals(embyPath, '/System/Endpoint'),
     handle: () => Response.json({ IsLocal: true, IsInNetwork: true }),
+  },
+  {
+    name: 'system-configuration',
+    match: ({ request, embyPath }) => request.method === 'GET' && pathEquals(embyPath, '/System/Configuration'),
+    handle: () => Response.json(localSystemConfiguration()),
+  },
+  {
+    name: 'system-ping',
+    match: ({ request, embyPath }) => (request.method === 'GET' || request.method === 'POST') && pathEquals(embyPath, '/System/Ping'),
+    handle: () => new Response('XMusic', {
+      headers: { 'content-type': 'text/plain; charset=utf-8' },
+    }),
+  },
+  {
+    name: 'branding-configuration',
+    match: ({ request, embyPath }) => request.method === 'GET' && pathEquals(embyPath, '/Branding/Configuration'),
+    handle: () => Response.json({
+      LoginDisclaimer: '',
+      CustomCss: '',
+      SplashscreenEnabled: false,
+    }),
+  },
+  {
+    name: 'branding-css',
+    match: ({ request, embyPath }) => request.method === 'GET' && pathEquals(embyPath, '/Branding/Css'),
+    handle: () => new Response('', {
+      headers: { 'content-type': 'text/css; charset=utf-8' },
+    }),
+  },
+  {
+    name: 'sessions-capabilities',
+    authorize: true,
+    match: ({ request, embyPath }) => request.method === 'POST' && (
+      pathEquals(embyPath, '/Sessions/Capabilities') || pathEquals(embyPath, '/Sessions/Capabilities/Full')
+    ),
+    handle: () => new Response(null, { status: 204 }),
+  },
+  {
+    name: 'sessions-logout',
+    authorize: true,
+    match: ({ request, embyPath }) => request.method === 'POST' && pathEquals(embyPath, '/Sessions/Logout'),
+    handle: () => new Response(null, { status: 204 }),
+  },
+  {
+    name: 'sessions',
+    authorize: true,
+    match: ({ request, embyPath }) => request.method === 'GET' && pathEquals(embyPath, '/Sessions'),
+    handle: () => Response.json([]),
+  },
+  {
+    name: 'display-preferences',
+    authorize: true,
+    match: ({ request, embyPath }) => request.method === 'GET' && isDisplayPreferencesRequest(embyPath),
+    handle: ({ request, embyPath }) => Response.json(localDisplayPreferences(request, embyPath)),
+  },
+  {
+    name: 'display-preferences-write',
+    authorize: true,
+    match: ({ request, embyPath }) => (request.method === 'POST' || request.method === 'PUT') && isDisplayPreferencesRequest(embyPath),
+    handle: () => new Response(null, { status: 204 }),
+  },
+  {
+    name: 'library-media-folders',
+    authorize: true,
+    match: ({ request, embyPath }) => request.method === 'GET' && pathEquals(embyPath, '/Library/MediaFolders'),
+    handle: () => Response.json(localLibraryMediaFolders()),
+  },
+  {
+    name: 'items-counts',
+    authorize: true,
+    match: ({ request, embyPath }) => request.method === 'GET' && pathEquals(embyPath, '/Items/Counts'),
+    handle: () => Response.json(localItemCounts()),
   },
   {
     name: 'delete-items',
@@ -303,6 +373,92 @@ export async function handleLocalEmbyRequest(request: Request, embyPath: string)
 function matchLocalRoute(context: LocalRouteContext): MatchedLocalRoute | undefined {
   const route = LOCAL_ROUTES.find(candidate => candidate.match(context))
   return route ? { route, context } : undefined
+}
+
+function localSystemInfo() {
+  return {
+    LocalAddress: '',
+    ServerName: 'XMusic',
+    Version: '0.1.0',
+    ProductName: 'XMusic Emby Gateway',
+    Id: LOCAL_SERVER_ID,
+    StartupWizardCompleted: true,
+  }
+}
+
+function localSystemConfiguration() {
+  return {
+    ServerName: 'XMusic',
+    UICulture: 'zh-CN',
+    MetadataCountryCode: 'CN',
+    SortReplaceCharacters: ['.', '+', '%'],
+    SortRemoveCharacters: [',', '&', '-', '{', '}', "'"],
+    SortRemoveWords: ['the', 'a', 'an'],
+    MinResumePct: 5,
+    MaxResumePct: 90,
+    MinResumeDurationSeconds: 300,
+    LibraryMonitorDelay: 60,
+    EnableDashboardResponseCaching: true,
+    ImageSavingConvention: 'Compatible',
+  }
+}
+
+function isDisplayPreferencesRequest(path: string): boolean {
+  return /^\/DisplayPreferences\/[^/]+$/i.test(path)
+    || /^\/Users\/[^/]+\/DisplayPreferences\/[^/]+$/i.test(path)
+}
+
+function localDisplayPreferences(request: Request, path: string) {
+  const url = new URL(request.url)
+  const id = decodeURIComponent(path.split('/').pop() ?? 'usersettings')
+  return {
+    Id: id,
+    ViewType: '',
+    SortBy: 'SortName',
+    IndexBy: '',
+    RememberIndexing: false,
+    PrimaryImageHeight: 250,
+    PrimaryImageWidth: 250,
+    CustomPrefs: {},
+    ScrollDirection: 'Vertical',
+    ShowBackdrop: true,
+    RememberSorting: true,
+    SortOrder: 'Ascending',
+    Client: url.searchParams.get('client') ?? url.searchParams.get('Client') ?? '',
+  }
+}
+
+function localLibraryMediaFolders() {
+  return {
+    Items: [{
+      Name: 'XMusic',
+      ServerId: LOCAL_SERVER_ID,
+      Id: MUSIC_LIBRARY_ID,
+      Type: 'CollectionFolder',
+      CollectionType: 'music',
+      IsFolder: true,
+    }],
+    TotalRecordCount: 1,
+  }
+}
+
+function localItemCounts() {
+  return {
+    MovieCount: 0,
+    SeriesCount: 0,
+    EpisodeCount: 0,
+    GameCount: 0,
+    ArtistCount: 0,
+    ProgramCount: 0,
+    GameSystemCount: 0,
+    TrailerCount: 0,
+    SongCount: 0,
+    AlbumCount: 0,
+    MusicVideoCount: 0,
+    BoxSetCount: 0,
+    BookCount: 0,
+    ItemCount: 0,
+  }
 }
 
 async function handleAuthenticateByName(request: Request): Promise<Response> {

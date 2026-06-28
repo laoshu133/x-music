@@ -3,6 +3,7 @@ import { db } from '@/lib/db'
 import { processOneArchiveTrackJob } from '@/lib/archive/track'
 import { enqueueRefreshUmCryptoJob, processOneRefreshUmCryptoJob } from '@/lib/cache/um-crypto-job'
 import { enqueueCleanupResourceCacheJob, processOneCleanupResourceCacheJob } from '@/lib/cache/cleanup-job'
+import { enqueueCleanupTrackCacheJob, processOneCleanupTrackCacheJob } from '@/lib/cache/track-cache-cleanup-job'
 import {
   claimNextJob,
   completeJob,
@@ -106,14 +107,22 @@ async function processEmbySyncJob(): Promise<boolean> {
   return processOneEmbySyncJob(maxAttempts)
 }
 
-function ensureCleanupResourceCacheJob(): void {
+function ensureCleanupResourceCacheJob(): boolean {
   const now = Date.now()
-  if (now < nextCleanupAt) return
+  if (now < nextCleanupAt) return false
   enqueueCleanupResourceCacheJob({
     reason: 'scheduled',
     scheduledAt: new Date(now).toISOString(),
   })
   nextCleanupAt = now + cleanupIntervalMs
+  return true
+}
+
+function ensureCleanupTrackCacheJob(): void {
+  enqueueCleanupTrackCacheJob({
+    reason: 'scheduled',
+    scheduledAt: new Date().toISOString(),
+  })
 }
 
 interface WorkerTickProcessors {
@@ -121,12 +130,15 @@ interface WorkerTickProcessors {
   processArchiveTrackJob?: () => Promise<boolean>
   processEmbySyncJob?: () => Promise<boolean>
   processCleanupResourceCacheJob?: () => Promise<boolean>
+  processCleanupTrackCacheJob?: () => Promise<boolean>
   processRefreshUmCryptoJob?: () => Promise<boolean>
   scheduleCleanupResourceCacheJob?: boolean
 }
 
 export async function processWorkerTick(processors: WorkerTickProcessors = {}): Promise<boolean> {
-  if (processors.scheduleCleanupResourceCacheJob !== false) ensureCleanupResourceCacheJob()
+  if (processors.scheduleCleanupResourceCacheJob !== false) {
+    if (ensureCleanupResourceCacheJob()) ensureCleanupTrackCacheJob()
+  }
   const processedRefreshUmCryptoJob = await (
     processors.processRefreshUmCryptoJob ?? (() => processOneRefreshUmCryptoJob(maxAttempts))
   )()
@@ -136,7 +148,15 @@ export async function processWorkerTick(processors: WorkerTickProcessors = {}): 
   const processedCleanupResourceCacheJob = await (
     processors.processCleanupResourceCacheJob ?? (() => processOneCleanupResourceCacheJob(maxAttempts))
   )()
-  return processedRefreshUmCryptoJob || processedArchiveTrackJob || processedTagJob || processedEmbySyncJob || processedCleanupResourceCacheJob
+  const processedCleanupTrackCacheJob = await (
+    processors.processCleanupTrackCacheJob ?? (() => processOneCleanupTrackCacheJob(maxAttempts))
+  )()
+  return processedRefreshUmCryptoJob
+    || processedArchiveTrackJob
+    || processedTagJob
+    || processedEmbySyncJob
+    || processedCleanupResourceCacheJob
+    || processedCleanupTrackCacheJob
 }
 
 async function main(): Promise<void> {
