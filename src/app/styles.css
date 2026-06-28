@@ -514,17 +514,25 @@ a {
 }
 
 .login-tabs {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  display: flex;
+  flex-wrap: nowrap;
   gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface-2);
   padding: 4px;
 }
 
+.login-tabs::-webkit-scrollbar {
+  display: none;
+}
+
 .login-tabs button {
   min-height: 40px;
+  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -542,7 +550,8 @@ a {
 }
 
 .login-tabs button span {
-  min-width: 0;
+  flex: 0 0 auto;
+  min-width: max-content;
   overflow: visible;
   white-space: nowrap;
 }
@@ -2121,14 +2130,7 @@ button.user-row.active {
   }
 
   .login-tabs {
-    grid-template-columns: none;
-    grid-auto-flow: column;
-    grid-auto-columns: max-content;
-    justify-content: start;
     gap: 4px;
-    overflow-x: auto;
-    scrollbar-width: none;
-    -webkit-overflow-scrolling: touch;
   }
 
   .login-tabs button {
@@ -2137,10 +2139,6 @@ button.user-row.active {
     min-width: 112px;
     padding: 0 10px;
     font-size: 13px;
-  }
-
-  .login-tabs::-webkit-scrollbar {
-    display: none;
   }
 
   .login-tabs button svg {
