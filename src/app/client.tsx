@@ -1026,6 +1026,9 @@ function HomePanel({
           ))}
         </div>
       </section>
+      <div className="home-footer-link">
+        <a className="subtle-link" href="/architecture"><Workflow size={14} />架构说明</a>
+      </div>
     </div>
   )
 }
