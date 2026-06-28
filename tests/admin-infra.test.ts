@@ -7598,6 +7598,129 @@ test('local emby library exploration endpoints proxy upstream and fall back to e
   }
 })
 
+test('local emby root library reads cached QQ favorites and playlists without upstream', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999117')
+    saveQQLoginCookie('uin=o999117; euin=encrypted999117; qm_keyst=test-key')
+    const account = getAccountByQQ('999117')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const authHeader = `MediaBrowser Client="Amcfy Music for iOS", Version="1.0.20.5875", Device="iPhone", Token="${authPayload.AccessToken}"`
+
+    let favoriteRequests = 0
+    let playlistRequests = 0
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'u.y.qq.com' && requestUrl.pathname.includes('/cgi-bin/musics.fcg')) {
+        const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {}
+        assert.equal(body.req?.method, 'CgiGetDiss')
+        favoriteRequests += 1
+        return Response.json({
+          code: 0,
+          req: {
+            code: 0,
+            data: {
+              songlist: [{
+                id: 123,
+                mid: 'qq-root-song-1',
+                title: 'Root Favorite Song',
+                interval: 180,
+                singer: [{ name: 'Root Artist', mid: 'root-artist-1' }],
+                album: { name: 'Root Album', mid: 'root-album-1', time_public: '2025-01-02' },
+                file: { media_mid: 'root-media-1', size_320mp3: 2048 },
+              }],
+              total_song_num: 1,
+            },
+          },
+        })
+      }
+
+      if (requestUrl.hostname === 'c6.y.qq.com' && requestUrl.pathname.includes('/rsc/fcgi-bin/fcg_get_profile_homepage.fcg')) {
+        playlistRequests += 1
+        return Response.json({
+          code: 0,
+          data: {
+            mydiss: {
+              list: [{
+                dissid: 'root-playlist-1',
+                dissname: 'Root Playlist',
+                song_cnt: 12,
+                dir_create_time: '2025-02-03 04:05:06',
+                creator: { name: 'Root User' },
+                logo: 'https://y.qq.com/root-playlist.jpg',
+              }],
+            },
+          },
+        })
+      }
+
+      return Response.json({ error: 'unexpected request' }, { status: 500 })
+    }) as typeof fetch
+
+    const audioPath = `/emby/Users/${authPayload.User.Id}/Items`
+    const audioQuery = 'StartIndex=0&Limit=21&SortBy=Random&SortOrder=Ascending&IncludeItemTypes=Audio&EnableImageTypes=Primary%2CBackdrop%2CThumb&Fields=BasicSyncInfo%2CProductionYear%2CThumb%2CPath&ImageTypeLimit=1&Recursive=true&ParentId=x-music-music'
+    const [songs, cachedSongs] = await Promise.all([
+      dispatchEmbyRequest(new Request(`http://local${audioPath}?${audioQuery}`, { headers: { 'X-Emby-Authorization': authHeader } }), stripOptionalEmbyPrefix(audioPath)),
+      dispatchEmbyRequest(new Request(`http://local${audioPath}?${audioQuery}`, { headers: { 'X-Emby-Authorization': authHeader } }), stripOptionalEmbyPrefix(audioPath)),
+    ])
+    assert.equal(songs.status, 200)
+    assert.equal(cachedSongs.status, 200)
+    const songsPayload = await songs.json()
+    const cachedSongsPayload = await cachedSongs.json()
+    assert.equal(songsPayload.TotalRecordCount, 1)
+    assert.equal(songsPayload.Items[0].Name, 'Root Favorite Song')
+    assert.equal(songsPayload.Items[0].Type, 'Audio')
+    assert.equal(songsPayload.Items[0].UserData.IsFavorite, true)
+    assert.deepEqual(cachedSongsPayload, songsPayload)
+    assert.equal(favoriteRequests, 1)
+
+    const albumQuery = 'StartIndex=0&Limit=21&SortBy=Random&SortOrder=Ascending&IncludeItemTypes=MusicAlbum&Fields=PrimaryImageAspectRatio%2CChildCount%2CProductionYear&EnableImageTypes=Primary%2CThumb&ImageTypeLimit=1&Recursive=true&ParentId=x-music-music'
+    const albums = await dispatchEmbyRequest(
+      new Request(`http://local${audioPath}?${albumQuery}`, { headers: { 'X-Emby-Authorization': authHeader } }),
+      stripOptionalEmbyPrefix(audioPath),
+    )
+    assert.equal(albums.status, 200)
+    const albumsPayload = await albums.json()
+    assert.equal(albumsPayload.TotalRecordCount, 3)
+    assert.ok(albumsPayload.Items.some((item: { Name: string; Type: string }) => item.Name === 'Root Playlist' && item.Type === 'MusicAlbum'))
+    assert.ok(albumsPayload.Items.some((item: { Name: string; Type: string }) => item.Name === 'QQ 每日推荐' && item.Type === 'MusicAlbum'))
+
+    const playlists = await dispatchEmbyRequest(
+      new Request(`http://local${audioPath}?StartIndex=0&Limit=21&SortBy=SortName&IncludeItemTypes=Playlist&Recursive=true&ParentId=x-music-music`, { headers: { 'X-Emby-Authorization': authHeader } }),
+      stripOptionalEmbyPrefix(audioPath),
+    )
+    assert.equal(playlists.status, 200)
+    const playlistsPayload = await playlists.json()
+    assert.equal(playlistsPayload.TotalRecordCount, 3)
+    assert.ok(playlistsPayload.Items.some((item: { Name: string; Type: string }) => item.Name === 'Root Playlist' && item.Type === 'Playlist'))
+    assert.equal(playlistRequests, 1)
+
+    const mixed = await dispatchEmbyRequest(
+      new Request(`http://local${audioPath}?StartIndex=0&Limit=10&SortBy=SortName&IncludeItemTypes=Audio%2CMusicAlbum&Recursive=true&ParentId=x-music-music`, { headers: { 'X-Emby-Authorization': authHeader } }),
+      stripOptionalEmbyPrefix(audioPath),
+    )
+    assert.equal(mixed.status, 200)
+    const mixedPayload = await mixed.json()
+    assert.equal(mixedPayload.TotalRecordCount, 4)
+    assert.ok(mixedPayload.Items.some((item: { Name: string; Type: string }) => item.Name === 'Root Favorite Song' && item.Type === 'Audio'))
+    assert.ok(mixedPayload.Items.some((item: { Name: string; Type: string }) => item.Name === 'Root Playlist' && item.Type === 'MusicAlbum'))
+    assert.equal(favoriteRequests, 1)
+    assert.equal(playlistRequests, 1)
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999117')
+    clearQQLoginCookie()
+    db.prepare("DELETE FROM app_settings WHERE key IN ('virtual.song.qq-root-song-1', 'virtual.album.root-album-1', 'virtual.playlist.root-playlist-1')").run()
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('virtual emby ids round-trip structured ids', () => {
   const id = encodeVirtualId({ kind: 'qq-song', songmid: 'abc', playlistId: 'list1' })
   assert.deepEqual(decodeVirtualId(id), { kind: 'qq-song', songmid: 'abc', playlistId: 'list1' })

@@ -94,6 +94,7 @@ const QQ_FAVORITES_DEFAULT_TOTAL = 999
 const MAX_EMBY_SEARCH_VIRTUAL_ITEMS = 50
 const VIRTUAL_RECOMMENDATION_PLAYLIST_PLAY_COUNT = '999999999'
 const QQ_FAVORITE_ORDER_BASE_MS = Date.UTC(2099, 0, 1)
+const LOCAL_LIBRARY_CACHE_TTL_MS = 30_000
 const FAVORITE_SORT_TIME = Symbol('favoriteSortTime')
 
 type PageParams = {
@@ -112,6 +113,12 @@ type WindowResult<T> = {
 type TimedResult<T> = {
   result: T
   durationMs: number
+}
+
+type CachedValue<T> = {
+  value?: T
+  expiresAt: number
+  promise?: Promise<T>
 }
 
 type LocalRouteContext = {
@@ -133,6 +140,8 @@ type MatchedLocalRoute = {
 }
 
 const favoriteTotalCache = new Map<string, number>()
+const localFavoriteSongsCache = new Map<string, CachedValue<WindowResult<MusicInfo>>>()
+const localPlaylistsCache = new Map<string, CachedValue<QQPlaylistInfo[]>>()
 const authorizedAccountByRequest = new WeakMap<Request, AccountRecord>()
 
 const LOCAL_ROUTES: LocalRoute[] = [
@@ -1006,11 +1015,17 @@ async function handleItemsRequest(request: Request, embyPath: string): Promise<R
   }
 
   if (isMusicLibraryId(parentId) && requestedTypes.has('musicalbum')) {
+    if (!hasUpstreamEmbyConfigured(authorizedLocalAccount(request))) {
+      return handleLocalMusicLibraryItemsRequest(request, requestedTypes, page, filters)
+    }
     const upstream = await tryReadItemsResponse(request, embyPath)
     return upstream ? Response.json(upstream) : emptyItemsResponse()
   }
 
   if (requestedTypes.has('playlist')) {
+    if (isMusicLibraryId(parentId) && !hasUpstreamEmbyConfigured(authorizedLocalAccount(request))) {
+      return handleLocalMusicLibraryItemsRequest(request, requestedTypes, page, filters)
+    }
     const upstream = await tryReadItemsResponse(request, embyPath)
     const playlists = await listVirtualPlaylists(request, desiredCount)
     const upstreamItems = upstream?.Items ?? []
@@ -1024,6 +1039,9 @@ async function handleItemsRequest(request: Request, embyPath: string): Promise<R
   }
 
   if (isMusicLibraryId(parentId)) {
+    if (!hasUpstreamEmbyConfigured(authorizedLocalAccount(request))) {
+      return handleLocalMusicLibraryItemsRequest(request, requestedTypes, page, filters)
+    }
     const upstream = await tryReadItemsResponse(request, embyPath)
     return upstream ? Response.json(upstream) : emptyItemsResponse()
   }
@@ -1058,6 +1076,41 @@ async function handleVirtualGenreItemsRequest(
     })
 
   return pagedItemsResponse(items, page)
+}
+
+async function handleLocalMusicLibraryItemsRequest(
+  request: Request,
+  requestedTypes: Set<string>,
+  page: PageParams,
+  filters: Set<string>,
+): Promise<Response> {
+  const url = new URL(request.url)
+  const items: any[] = []
+
+  if (shouldIncludeType(requestedTypes, 'audio')) {
+    const songs = await cachedLocalFavoriteSongs(request)
+    const localItems = applyLocalFavoriteState(songs.items, localFavoriteStateForRequest(request))
+      .map((song, index) => {
+        rememberVirtualSong(song)
+        return favoriteSongToEmbyItem(song, index, authorizedLocalAccount(request))
+      })
+    const filtered = filters.has('isplayed')
+      ? localItems.filter(item => playCountOf(item) > 0 || lastPlayedTimeOf(item) > 0)
+      : localItems
+    items.push(...filtered)
+  }
+
+  if (shouldIncludeType(requestedTypes, 'musicalbum')) {
+    const playlists = await cachedLocalPlaylists(request, desiredFetchCount(page))
+    items.push(...playlists.map(playlist => playlistToMusicAlbumItem(playlist)))
+  }
+
+  if (shouldIncludeType(requestedTypes, 'playlist')) {
+    const playlists = await cachedLocalPlaylists(request, desiredFetchCount(page))
+    items.push(...playlists.map(playlistToEmbyItem))
+  }
+
+  return pagedItemsResponse(sortLocalLibraryItems(items, url), page, items.length)
 }
 
 async function handleVirtualArtistItemsRequest(
@@ -2356,6 +2409,54 @@ async function listVirtualPlaylists(request: Request, limit: number): Promise<QQ
   return [...deduped.values()].sort(compareVirtualPlaylists)
 }
 
+async function cachedLocalPlaylists(request: Request, limit: number): Promise<QQPlaylistInfo[]> {
+  const cacheKey = localLibraryCacheKey(request)
+  return readCachedValue(localPlaylistsCache, cacheKey, async () => listVirtualPlaylists(request, Math.max(finiteFetchCount(limit), QQ_PLAYLIST_PAGE_SIZE)))
+}
+
+async function cachedLocalFavoriteSongs(request: Request): Promise<WindowResult<MusicInfo>> {
+  const cacheKey = localLibraryCacheKey(request)
+  return readCachedValue(localFavoriteSongsCache, cacheKey, async () => {
+    const result = await listQQFavoriteSongs(request, Number.POSITIVE_INFINITY)
+    const localState = localFavoriteStateForRequest(request)
+    const items = applyLocalFavoriteState(result.items, localState)
+    return {
+      ...result,
+      items,
+      total: result.complete ? items.length : Math.max(result.total, items.length),
+    }
+  })
+}
+
+async function readCachedValue<T>(
+  cache: Map<string, CachedValue<T>>,
+  key: string,
+  loader: () => Promise<T>,
+): Promise<T> {
+  const now = Date.now()
+  const cached = cache.get(key)
+  if (cached?.value !== undefined && cached.expiresAt > now) return cached.value
+  if (cached?.promise) return cached.promise
+
+  const promise = loader()
+    .then(value => {
+      cache.set(key, { value, expiresAt: Date.now() + LOCAL_LIBRARY_CACHE_TTL_MS })
+      return value
+    })
+    .catch(error => {
+      cache.delete(key)
+      throw error
+    })
+  cache.set(key, { value: cached?.value, expiresAt: cached?.expiresAt ?? 0, promise })
+  return promise
+}
+
+function localLibraryCacheKey(request: Request): string {
+  const account = authorizedLocalAccount(request)
+  if (account?.qqUin) return `account:${account.qqUin}`
+  return favoriteCacheKey(qqCookieForRequest(request))
+}
+
 function defaultVirtualPlaylist(id: '__daily__' | '__guess__'): QQPlaylistInfo {
   const now = new Date().toISOString()
   return {
@@ -2586,6 +2687,44 @@ function sortFavoriteItems(items: any[]): any[] {
     .map(entry => entry.item)
 }
 
+function sortLocalLibraryItems(items: any[], url: URL): any[] {
+  const sortKeys = (url.searchParams.get('SortBy') ?? url.searchParams.get('sortBy') ?? '')
+    .split(',')
+    .map(item => item.trim().toLowerCase())
+    .filter(Boolean)
+  const result = [...items]
+  if (sortKeys.includes('random')) return stableShuffle(result, `${url.pathname}?${url.searchParams.toString()}`)
+  if (sortKeys.includes('dateplayed') || sortKeys.includes('playcount')) return sortPlayedItems(result, sortKeys.join(','))
+  if (sortKeys.includes('datecreated')) {
+    result.sort((a, b) => parseTimeMs(String(b?.DateCreated ?? b?.PremiereDate ?? '')) - parseTimeMs(String(a?.DateCreated ?? a?.PremiereDate ?? '')) || compareItemName(a, b))
+    return result
+  }
+  result.sort(compareItemName)
+  return result
+}
+
+function compareItemName(a: any, b: any): number {
+  return String(a?.SortName ?? a?.Name ?? '').localeCompare(String(b?.SortName ?? b?.Name ?? ''))
+}
+
+function stableShuffle<T>(items: T[], seed: string): T[] {
+  return items
+    .map((item, index) => ({ item, index, rank: hashRank(`${seed}:${index}:${itemRankKey(item)}`) }))
+    .sort((a, b) => a.rank - b.rank || a.index - b.index)
+    .map(entry => entry.item)
+}
+
+function itemRankKey(item: unknown): string {
+  if (!item || typeof item !== 'object') return String(item)
+  const record = item as Record<string, unknown>
+  return String(record.Id ?? record.Name ?? '')
+}
+
+function hashRank(value: string): number {
+  const digest = crypto.createHash('sha1').update(value).digest()
+  return digest.readUInt32BE(0)
+}
+
 function favoriteItemTimeMs(item: any): number {
   for (const value of favoriteItemTimeCandidates(item)) {
     const time = parseTimeMs(value)
@@ -2767,6 +2906,18 @@ function playlistToEmbyItem(playlist: QQPlaylistInfo) {
       IsFavorite: false,
       Played: playlistPlayCountNumber(playlist) > 0,
     },
+  }
+}
+
+function playlistToMusicAlbumItem(playlist: QQPlaylistInfo) {
+  const item = playlistToEmbyItem(playlist)
+  return {
+    ...item,
+    Type: 'MusicAlbum',
+    AlbumArtist: playlist.author ?? 'QQ 音乐',
+    AlbumArtists: playlist.author ? [playlist.author] : ['QQ 音乐'],
+    ArtistItems: [{ Name: playlist.author ?? 'QQ 音乐', Id: `${item.Id}-album-artist` }],
+    ChildCount: playlist.total ?? 0,
   }
 }
 
