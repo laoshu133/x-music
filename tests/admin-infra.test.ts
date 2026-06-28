@@ -7894,6 +7894,76 @@ test('local emby root library reads cached QQ favorites and playlists without up
   }
 })
 
+test('local emby random root library order reshuffles cached QQ items per request', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999119')
+    saveQQLoginCookie('uin=o999119; euin=encrypted999119; qm_keyst=test-key')
+    const account = getAccountByQQ('999119')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const authHeader = `MediaBrowser Client="Amcfy Music for iOS", Version="1.0.20.5875", Device="iPhone", Token="${authPayload.AccessToken}"`
+
+    let favoriteRequests = 0
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'u.y.qq.com' && requestUrl.pathname.includes('/cgi-bin/musics.fcg')) {
+        const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {}
+        assert.equal(body.req?.method, 'CgiGetDiss')
+        favoriteRequests += 1
+        return Response.json({
+          code: 0,
+          req: {
+            code: 0,
+            data: {
+              songlist: Array.from({ length: 12 }, (_, index) => ({
+                id: 1000 + index,
+                mid: `qq-random-song-${index}`,
+                title: `Random Favorite Song ${index}`,
+                interval: 180,
+                singer: [{ name: 'Random Artist', mid: 'random-artist-1' }],
+                album: { name: 'Random Album', mid: `random-album-${index}`, time_public: '2025-01-02' },
+                file: { media_mid: `random-media-${index}`, size_320mp3: 2048 },
+              })),
+              total_song_num: 12,
+            },
+          },
+        })
+      }
+
+      return Response.json({ error: 'unexpected request' }, { status: 500 })
+    }) as typeof fetch
+
+    const audioPath = `/emby/Users/${authPayload.User.Id}/Items`
+    const audioQuery = 'StartIndex=0&Limit=12&SortBy=Random&SortOrder=Ascending&IncludeItemTypes=Audio&Recursive=true&ParentId=x-music-music'
+    const orders: string[] = []
+    for (let index = 0; index < 6; index += 1) {
+      const response = await dispatchEmbyRequest(
+        new Request(`http://local${audioPath}?${audioQuery}`, { headers: { 'X-Emby-Authorization': authHeader } }),
+        stripOptionalEmbyPrefix(audioPath),
+      )
+      assert.equal(response.status, 200)
+      const payload = await response.json()
+      assert.equal(payload.TotalRecordCount, 12)
+      orders.push(payload.Items.map((item: { Id: string }) => item.Id).join(','))
+    }
+
+    assert.ok(new Set(orders).size > 1)
+    assert.equal(favoriteRequests, 1)
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999119')
+    clearQQLoginCookie()
+    db.prepare("DELETE FROM app_settings WHERE key LIKE 'virtual.song.qq-random-song-%'").run()
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('virtual emby ids round-trip structured ids', () => {
   const id = encodeVirtualId({ kind: 'qq-song', songmid: 'abc', playlistId: 'list1' })
   assert.deepEqual(decodeVirtualId(id), { kind: 'qq-song', songmid: 'abc', playlistId: 'list1' })

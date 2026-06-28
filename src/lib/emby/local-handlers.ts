@@ -2703,7 +2703,7 @@ function sortLocalLibraryItems(items: any[], url: URL): any[] {
     .map(item => item.trim().toLowerCase())
     .filter(Boolean)
   const result = [...items]
-  if (sortKeys.includes('random')) return stableShuffle(result, `${url.pathname}?${url.searchParams.toString()}`)
+  if (sortKeys.includes('random')) return randomShuffle(result)
   if (sortKeys.includes('dateplayed') || sortKeys.includes('playcount')) return sortPlayedItems(result, sortKeys.join(','))
   if (sortKeys.includes('datecreated')) {
     result.sort((a, b) => parseTimeMs(String(b?.DateCreated ?? b?.PremiereDate ?? '')) - parseTimeMs(String(a?.DateCreated ?? a?.PremiereDate ?? '')) || compareItemName(a, b))
@@ -2717,22 +2717,15 @@ function compareItemName(a: any, b: any): number {
   return String(a?.SortName ?? a?.Name ?? '').localeCompare(String(b?.SortName ?? b?.Name ?? ''))
 }
 
-function stableShuffle<T>(items: T[], seed: string): T[] {
-  return items
-    .map((item, index) => ({ item, index, rank: hashRank(`${seed}:${index}:${itemRankKey(item)}`) }))
-    .sort((a, b) => a.rank - b.rank || a.index - b.index)
-    .map(entry => entry.item)
-}
-
-function itemRankKey(item: unknown): string {
-  if (!item || typeof item !== 'object') return String(item)
-  const record = item as Record<string, unknown>
-  return String(record.Id ?? record.Name ?? '')
-}
-
-function hashRank(value: string): number {
-  const digest = crypto.createHash('sha1').update(value).digest()
-  return digest.readUInt32BE(0)
+function randomShuffle<T>(items: T[]): T[] {
+  const result = [...items]
+  for (let index = result.length - 1; index > 0; index -= 1) {
+    const swapIndex = crypto.randomInt(index + 1)
+    const current = result[index]
+    result[index] = result[swapIndex]
+    result[swapIndex] = current
+  }
+  return result
 }
 
 function favoriteItemTimeMs(item: any): number {
