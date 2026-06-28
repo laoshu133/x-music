@@ -8,8 +8,6 @@ services:
     restart: unless-stopped
     env_file:
       - .env
-    environment:
-      X_MUSIC_TASK_RUNNER_URL: http://web:8098/api/internal/jobs/run
     ports:
       - "${PORT:-8098}:8098"
     volumes:
@@ -21,14 +19,13 @@ services:
       retries: 5
       start_period: 20s
 
-  trigger-deploy:
+  worker:
     image: x-music-app:latest
     build:
       context: .
       dockerfile: Dockerfile
-    command: npm run trigger:deploy
-    profiles:
-      - trigger
+    command: npm run worker
+    restart: unless-stopped
     env_file:
       - .env
     volumes:

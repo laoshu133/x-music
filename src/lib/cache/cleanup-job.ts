@@ -20,14 +20,9 @@ export function enqueueCleanupResourceCacheJob(input: CleanupResourceCacheJobPay
   `).get() as { id: number } | undefined
   if (existing) return
 
-  const job = createJob<CleanupResourceCacheJobPayload>({
+  createJob<CleanupResourceCacheJobPayload>({
     type: 'cleanup_resource_cache',
     payload: input,
-  })
-  void import('@/lib/trigger/dispatch').then(({ dispatchJob }) => {
-    void dispatchJob(job).catch((error: unknown) => {
-      console.warn(`failed to dispatch resource cache cleanup job ${job.id}`, error)
-    })
   })
 }
 

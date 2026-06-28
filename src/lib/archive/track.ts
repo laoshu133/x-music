@@ -30,14 +30,9 @@ export function enqueueTrackArchive(input: ArchiveTrackJobPayload): void {
   }) as { id: number } | undefined
   if (existing) return
 
-  const job = createJob({
+  createJob({
     type: 'archive_track',
     payload: input,
-  })
-  void import('@/lib/trigger/dispatch').then(({ dispatchJob }) => {
-    void dispatchJob(job).catch((error: unknown) => {
-      console.warn(`failed to dispatch archive track job ${job.id}`, error)
-    })
   })
 }
 

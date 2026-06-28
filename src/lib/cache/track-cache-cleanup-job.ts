@@ -20,14 +20,9 @@ export function enqueueCleanupTrackCacheJob(input: CleanupTrackCacheJobPayload =
   `).get() as { id: number } | undefined
   if (existing) return
 
-  const job = createJob<CleanupTrackCacheJobPayload>({
+  createJob<CleanupTrackCacheJobPayload>({
     type: 'cleanup_track_cache',
     payload: input,
-  })
-  void import('@/lib/trigger/dispatch').then(({ dispatchJob }) => {
-    void dispatchJob(job).catch((error: unknown) => {
-      console.warn(`failed to dispatch track cache cleanup job ${job.id}`, error)
-    })
   })
 }
 

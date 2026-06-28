@@ -24,17 +24,12 @@ export function enqueueRefreshUmCryptoJob(input: { reason: RefreshUmCryptoJobPay
   `).get() as { id: number } | undefined
   if (existing) return
 
-  const job = createJob<RefreshUmCryptoJobPayload>({
+  createJob<RefreshUmCryptoJobPayload>({
     type: 'refresh_um_crypto',
     payload: {
       reason: input.reason,
       scheduledAt: new Date().toISOString(),
     },
-  })
-  void import('@/lib/trigger/dispatch').then(({ dispatchJob }) => {
-    void dispatchJob(job).catch((error: unknown) => {
-      console.warn(`failed to dispatch UM crypto refresh job ${job.id}`, error)
-    })
   })
 }
 
