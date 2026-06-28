@@ -11,7 +11,7 @@ export interface ArchiveTrackJobPayload {
   songmid: string
   musicInfo: MusicInfo
   preferredQuality?: MusicQuality
-  reason: 'playback_completed' | 'favorite' | 'unfavorite' | 'manual' | 'background'
+  reason: 'playback_completed' | 'favorite' | 'manual' | 'background'
   playlistId?: string
 }
 

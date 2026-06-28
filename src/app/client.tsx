@@ -341,13 +341,13 @@ function persistSidebarCollapsed(collapsed: boolean) {
   }
 }
 
-export default function MusicClient() {
+export default function MusicClient({ initialAccount }: { initialAccount: AccountState }) {
   const router = useRouter()
   const searchParams = useSearchParams()
   const routeView = parseView(searchParams.get('view'))
   const [view, setView] = useState<View>(routeView)
   const [cookieText, setCookieText] = useState('')
-  const [account, setAccount] = useState<ApiState<AccountState>>({ loading: true, error: '', data: null })
+  const [account, setAccount] = useState<ApiState<AccountState>>({ loading: false, error: '', data: initialAccount })
   const [loginQr, setLoginQr] = useState<ApiState<LoginQrState>>(emptyState)
   const [loginQrPhase, setLoginQrPhase] = useState<LoginQrPhase>('idle')
   const [avatar, setAvatar] = useState<ApiState<UserAvatarResult>>(emptyState)

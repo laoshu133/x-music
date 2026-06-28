@@ -710,7 +710,7 @@ async function handleFavoriteItemMutationRequest(request: Request, itemId: strin
   }
 
   setLocalFavorite(loaded.song, favorite, account?.qqUin)
-  enqueueArchiveAndSyncForSong(account, loaded.song, favorite ? 'favorite' : 'unfavorite', decoded.playlistId ?? loaded.playlistId)
+  if (favorite) enqueueArchiveAndSyncForSong(account, loaded.song, 'favorite', decoded.playlistId ?? loaded.playlistId)
 
   try {
     await setQQFavoriteSong({
@@ -1198,7 +1198,7 @@ async function handlePlaybackReportRequest(request: Request, embyPath: string): 
 function enqueueArchiveAndSyncForSong(
   account: AccountRecord | undefined,
   musicInfo: MusicInfo,
-  reason: 'playback_completed' | 'favorite' | 'unfavorite',
+  reason: 'playback_completed' | 'favorite',
   playlistId?: string,
 ): void {
   if (!shouldArchiveForAccount(account)) return
@@ -1220,7 +1220,7 @@ function enqueueArchiveAndSyncForSong(
 
 function shouldArchiveForAccount(account: AccountRecord | undefined): boolean {
   const config = embyConfigForAccount(account)
-  return Boolean(hasUpstreamEmbyConfigured(account) && config.sourceWebdavDsn)
+  return Boolean(config.sourceWebdavDsn)
 }
 
 async function handleItemRequest(request: Request, embyPath: string): Promise<Response | undefined> {

@@ -6277,7 +6277,7 @@ test('virtual favorite add enqueues track archive job', async () => {
   }
 })
 
-test('virtual favorite remove enqueues track archive and sync jobs when WebDAV is configured', async () => {
+test('virtual favorite remove does not enqueue track archive jobs when WebDAV is configured', async () => {
   const originalFetch = globalThis.fetch
   const songmid = `archive-unfavorite-${Date.now()}`
   try {
@@ -6324,22 +6324,20 @@ test('virtual favorite remove enqueues track archive and sync jobs when WebDAV i
     )
     assert.equal(response.status, 200)
     const archiveJob = db.prepare(`
-      SELECT payload_json AS payloadJson
+      SELECT COUNT(*) AS count
       FROM jobs
       WHERE type = 'archive_track'
         AND json_extract(payload_json, '$.songmid') = ?
-      LIMIT 1
-    `).get(songmid) as { payloadJson: string } | undefined
-    assert.equal(JSON.parse(archiveJob?.payloadJson ?? '{}').reason, 'unfavorite')
+    `).get(songmid) as { count: number }
+    assert.equal(archiveJob.count, 0)
 
     const syncJob = db.prepare(`
-      SELECT payload_json AS payloadJson
+      SELECT COUNT(*) AS count
       FROM jobs
       WHERE type = 'sync_emby_track'
         AND json_extract(payload_json, '$.songmid') = ?
-      LIMIT 1
-    `).get(songmid) as { payloadJson: string } | undefined
-    assert.equal(JSON.parse(syncJob?.payloadJson ?? '{}').qqUin, '999901')
+    `).get(songmid) as { count: number }
+    assert.equal(syncJob.count, 0)
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999901')
     db.prepare("DELETE FROM app_settings WHERE key = ?").run(`virtual.song.${songmid}`)
@@ -6411,6 +6409,104 @@ test('virtual playback stopped report enqueues track archive and sync jobs when 
     db.prepare("DELETE FROM jobs WHERE json_extract(payload_json, '$.songmid') = ?").run(songmid)
     db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run(songmid)
     clearQQLoginCookie()
+  }
+})
+
+test('virtual favorite and playback enqueue archive jobs with WebDAV-only Emby source', async () => {
+  const originalFetch = globalThis.fetch
+  const favoriteSongmid = `archive-webdav-only-favorite-${Date.now()}`
+  const stoppedSongmid = `archive-webdav-only-stopped-${Date.now()}`
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999904')
+    db.prepare("DELETE FROM jobs WHERE json_extract(payload_json, '$.songmid') IN (?, ?)").run(favoriteSongmid, stoppedSongmid)
+    saveQQLoginCookie('uin=o999904; euin=encrypted999904; qm_keyst=test-key')
+    configureAccountUpstreamWebdav('999904')
+    const account = getAccountByQQ('999904')
+    assert.ok(account)
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const favoriteSong: MusicInfo = {
+      source: 'tx',
+      songmid: favoriteSongmid,
+      name: 'WebDAV Only Favorite Song',
+      singer: 'Archive Artist',
+      raw: { songId: 123458, songType: 0 },
+    }
+    const stoppedSong: MusicInfo = {
+      source: 'tx',
+      songmid: stoppedSongmid,
+      name: 'WebDAV Only Stopped Song',
+      singer: 'Archive Artist',
+      types: [{ type: '320k', size: '1 MB' }],
+    }
+    for (const song of [favoriteSong, stoppedSong]) {
+      db.prepare(`
+        INSERT INTO app_settings (key, value_json, updated_at)
+        VALUES (?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP
+      `).run(`virtual.song.${song.songmid}`, JSON.stringify({ song }))
+    }
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'u.y.qq.com') return Response.json({ code: 0, req: { code: 0, data: { result: 0 } } })
+      return Response.json({ error: 'should not require upstream Emby' }, { status: 500 })
+    }) as typeof fetch
+
+    const favoriteId = encodeVirtualId({ kind: 'qq-song', songmid: favoriteSongmid })
+    const favoriteResponse = await dispatchEmbyRequest(
+      new Request(`http://local/Users/${authPayload.User.Id}/FavoriteItems/${encodeURIComponent(favoriteId)}`, {
+        method: 'POST',
+        headers: { 'X-Emby-Token': authPayload.AccessToken },
+      }),
+      `/Users/${authPayload.User.Id}/FavoriteItems/${encodeURIComponent(favoriteId)}`,
+    )
+    assert.equal(favoriteResponse.status, 200)
+
+    const stoppedId = encodeVirtualId({ kind: 'qq-song', songmid: stoppedSongmid })
+    const stoppedResponse = await dispatchEmbyRequest(
+      new Request(`http://local/Sessions/Playing/Stopped?api_key=${authPayload.AccessToken}`, {
+        method: 'POST',
+        body: JSON.stringify({ ItemId: stoppedId }),
+      }),
+      '/Sessions/Playing/Stopped',
+    )
+    assert.equal(stoppedResponse.status, 204)
+
+    const archiveJobs = db.prepare(`
+      SELECT payload_json AS payloadJson
+      FROM jobs
+      WHERE type = 'archive_track'
+        AND json_extract(payload_json, '$.songmid') IN (?, ?)
+      ORDER BY json_extract(payload_json, '$.songmid')
+    `).all(favoriteSongmid, stoppedSongmid) as Array<{ payloadJson: string }>
+    assert.deepEqual(
+      archiveJobs.map(job => {
+        const payload = JSON.parse(job.payloadJson) as { songmid: string; reason: string }
+        return [payload.songmid, payload.reason]
+      }),
+      [
+        [favoriteSongmid, 'favorite'],
+        [stoppedSongmid, 'playback_completed'],
+      ],
+    )
+    const syncJobs = db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM jobs
+      WHERE type = 'sync_emby_track'
+        AND json_extract(payload_json, '$.songmid') IN (?, ?)
+    `).get(favoriteSongmid, stoppedSongmid) as { count: number }
+    assert.equal(syncJobs.count, 2)
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999904')
+    db.prepare('DELETE FROM app_settings WHERE key IN (?, ?)').run(`virtual.song.${favoriteSongmid}`, `virtual.song.${stoppedSongmid}`)
+    db.prepare("DELETE FROM jobs WHERE json_extract(payload_json, '$.songmid') IN (?, ?)").run(favoriteSongmid, stoppedSongmid)
+    db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid IN (?, ?)").run(favoriteSongmid, stoppedSongmid)
+    clearQQLoginCookie()
+    globalThis.fetch = originalFetch
   }
 })
 

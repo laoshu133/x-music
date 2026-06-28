@@ -25,7 +25,7 @@ import type { SyncEmbyTrackJobPayload } from './sync'
 import type { MusicQuality } from '@/lib/types'
 import { syncMediaFilesToEmbyWebdav } from './webdav'
 import { qqLegacyLyricsUrl, qqPlayLyricInfoCacheBody, qqPlayLyricInfoCacheUrl } from '@/lib/qq'
-import { hasAccountUpstreamEmby } from './config'
+import { embyConfigForAccount, hasAccountUpstreamEmby } from './config'
 
 export interface EmbySyncJobOptions {
   maxAttempts?: number
@@ -112,9 +112,12 @@ async function processClaimedEmbySyncJob(
   try {
     const account = job.payload.qqUin ? getAccountByQQ(job.payload.qqUin) : undefined
     if (!hasAccountUpstreamEmby(account)) {
-      failJob(job.id, 'User Emby server is not configured')
-      return
+      if (!embyConfigForAccount(account).sourceWebdavDsn) {
+        failJob(job.id, 'User Emby server or source WebDAV is not configured')
+        return
+      }
     }
+    const hasUpstreamEmby = hasAccountUpstreamEmby(account)
     const row = await waitForCachedMedia(job.payload, {
       timeoutMs: options.cacheWaitMs,
       pollIntervalMs: options.cachePollIntervalMs,
@@ -141,6 +144,37 @@ async function processClaimedEmbySyncJob(
           account,
         })
       : undefined
+    if (syncedMedia && !hasUpstreamEmby) {
+      await deleteCachedResourcesForTrack({
+        source: job.payload.source,
+        songmid: job.payload.songmid,
+        imageUrl: job.payload.musicInfo.img,
+        lyricsUrls: [qqLegacyLyricsUrl(job.payload.songmid)],
+        lyricRequests: [{
+          url: qqPlayLyricInfoCacheUrl(),
+          method: 'POST',
+          body: qqPlayLyricInfoCacheBody(job.payload.songmid, readQQSongId(job.payload.musicInfo)),
+        }],
+      }).catch(() => undefined)
+      await deleteLocalSyncedMedia({
+        source: job.payload.source,
+        songmid: job.payload.songmid,
+        embyPath: syncedMedia.embyPath,
+        uploadedPaths: syncedMedia.uploadedPaths,
+      }).catch(() => undefined)
+      recordWebdavSyncEvent({
+        account,
+        payload: job.payload,
+        embyPath: syncedMedia.embyPath,
+        uploadedPaths: syncedMedia.uploadedPaths,
+      })
+      completeJob(job.id)
+      return
+    }
+    if (!hasUpstreamEmby) {
+      failJob(job.id, 'User Emby server is not configured')
+      return
+    }
     const scanPath = syncedMedia
       ? joinEmbyPath(await getDefaultUpstreamMusicLibraryLocation(account), syncedMedia.embyPath)
       : mediaPath

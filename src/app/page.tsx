@@ -1,10 +1,13 @@
 import { Suspense } from 'react'
 import MusicClient from './client'
+import { getInitialAccount } from './initial-account'
 
-export default function HomePage() {
+export default async function HomePage() {
+  const initialAccount = await getInitialAccount()
+
   return (
     <Suspense fallback={null}>
-      <MusicClient />
+      <MusicClient initialAccount={initialAccount} />
     </Suspense>
   )
 }

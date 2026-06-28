@@ -40,6 +40,22 @@ function configureTestAccountEmby(options: { webdav?: boolean } = {}): void {
   })
 }
 
+function configureTestAccountWebdavOnly(): void {
+  saveQQLoginCookie(`uin=o${TEST_EMBY_QQ_UIN}; qm_keyst=test-key`)
+  db.prepare(`
+    UPDATE accounts
+    SET emby_dsn = NULL,
+        emby_source_webdav_dsn = @sourceWebdavDsn,
+        emby_proxy_timeout_ms = 30000,
+        emby_user_id = NULL,
+        emby_access_token = NULL
+    WHERE qq_uin = @qqUin
+  `).run({
+    qqUin: TEST_EMBY_QQ_UIN,
+    sourceWebdavDsn: TEST_EMBY_WEBDAV_DSN,
+  })
+}
+
 test('job lifecycle claim complete and retry states', () => {
   db.prepare("DELETE FROM jobs WHERE type = 'tag_track_file'").run()
 
@@ -1222,6 +1238,91 @@ test('emby sync job uploads ready media through WebDAV before scanning Emby', as
   } finally {
     rmSync(path.join(appConfig.musicDir, 'WebDAV Artist'), { recursive: true, force: true })
     db.prepare("DELETE FROM sync_events WHERE type = 'emby_webdav' AND json_extract(payload_json, '$.songmid') = ?").run(songmid)
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('emby sync job uploads to WebDAV without upstream Emby and skips Emby refresh', async () => {
+  const originalFetch = globalThis.fetch
+  const songmid = `SYNC_WEBDAV_ONLY_${Date.now()}`
+  const relativeDir = path.join('WebDAV Only Artist', 'WebDAV Only Album')
+  const finalPath = path.join(appConfig.musicDir, relativeDir, 'WebDAV Only Artist - WebDAV Only Song.flac')
+  const lyricsPath = path.join(appConfig.musicDir, relativeDir, 'WebDAV Only Artist - WebDAV Only Song.lrc')
+  const coverPath = path.join(appConfig.musicDir, relativeDir, 'cover.jpg')
+  const requests: Array<{ method: string; hostname: string; pathname: string }> = []
+
+  db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track'").run()
+  mkdirSync(path.dirname(finalPath), { recursive: true })
+  writeFileSync(finalPath, 'fake audio')
+  writeFileSync(lyricsPath, '[00:00.00]WebDAV Only Song')
+  writeFileSync(coverPath, 'fake cover')
+  configureTestAccountWebdavOnly()
+
+  try {
+    const musicInfo = { source: 'tx' as const, songmid, name: 'WebDAV Only Song', singer: 'WebDAV Only Artist' }
+    const track = ensureTrack(musicInfo)
+    const trackFile = upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath })
+    db.prepare(`
+      UPDATE track_files
+      SET lyrics_path = ?, cover_path = ?
+      WHERE id = ?
+    `).run(lyricsPath, coverPath, trackFile.id)
+    const created = createJob({
+      type: 'sync_emby_track',
+      payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid, musicInfo },
+    })
+
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = new URL(String(url))
+      const method = init?.method ?? 'GET'
+      requests.push({ method, hostname: requestUrl.hostname, pathname: requestUrl.pathname })
+      if (requestUrl.hostname !== 'webdav.example') return Response.json({ error: 'should not request upstream Emby' }, { status: 500 })
+      if (method === 'PUT' && init?.body && typeof (init.body as { resume?: unknown }).resume === 'function') {
+        await new Promise<void>((resolve, reject) => {
+          const stream = init.body as unknown as NodeJS.ReadableStream
+          stream.on('end', resolve)
+          stream.on('error', reject)
+          stream.resume()
+        })
+      }
+      if (method === 'HEAD') return new Response(null, { status: 404 })
+      return new Response(null, { status: method === 'PUT' ? 204 : 201 })
+    }) as typeof fetch
+
+    assert.equal(await processOneEmbySyncJob(1), true)
+    assert.equal(getJob(created.id)?.status, 'completed')
+    assert.deepEqual(
+      requests.map(request => `${request.method} ${decodeURIComponent(request.pathname)}`),
+      [
+        'HEAD /dav/music/WebDAV Only Artist/WebDAV Only Album/WebDAV Only Artist - WebDAV Only Song.flac',
+        'MKCOL /dav/music/WebDAV Only Artist',
+        'MKCOL /dav/music/WebDAV Only Artist/WebDAV Only Album',
+        'PUT /dav/music/WebDAV Only Artist/WebDAV Only Album/WebDAV Only Artist - WebDAV Only Song.flac',
+        'PUT /dav/music/WebDAV Only Artist/WebDAV Only Album/WebDAV Only Artist - WebDAV Only Song.lrc',
+        'PUT /dav/music/WebDAV Only Artist/WebDAV Only Album/cover.jpg',
+      ],
+    )
+    assert.equal(requests.every(request => request.hostname === 'webdav.example'), true)
+    assert.equal(existsSync(path.dirname(finalPath)), false)
+    const event = db.prepare(`
+      SELECT status, payload_json AS payloadJson
+      FROM sync_events
+      WHERE type = 'emby_webdav'
+        AND json_extract(payload_json, '$.songmid') = ?
+      ORDER BY id DESC
+      LIMIT 1
+    `).get(songmid) as { status: string; payloadJson: string } | undefined
+    assert.equal(event?.status, 'uploaded')
+    assert.deepEqual(JSON.parse(event?.payloadJson ?? '{}').uploadedPaths, [
+      'WebDAV Only Artist/WebDAV Only Album/WebDAV Only Artist - WebDAV Only Song.flac',
+      'WebDAV Only Artist/WebDAV Only Album/WebDAV Only Artist - WebDAV Only Song.lrc',
+      'WebDAV Only Artist/WebDAV Only Album/cover.jpg',
+    ])
+  } finally {
+    rmSync(path.join(appConfig.musicDir, 'WebDAV Only Artist'), { recursive: true, force: true })
+    db.prepare("DELETE FROM sync_events WHERE type = 'emby_webdav' AND json_extract(payload_json, '$.songmid') = ?").run(songmid)
+    db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track' AND json_extract(payload_json, '$.songmid') = ?").run(songmid)
+    db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run(songmid)
     globalThis.fetch = originalFetch
   }
 })
