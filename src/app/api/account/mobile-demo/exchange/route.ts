@@ -1,1 +1,4 @@
-export { POST, dynamic, runtime } from '../../mobile/exchange/route'
+export const runtime = 'nodejs'
+export const dynamic = 'force-dynamic'
+
+export { POST } from '../../mobile/exchange/route'
