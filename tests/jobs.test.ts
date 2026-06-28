@@ -594,6 +594,58 @@ test('archive track job stops after highest reachable quality succeeds', async (
   }
 })
 
+test('archive track job downloads from QQ LX even when upstream Emby is configured', async () => {
+  const originalFetch = globalThis.fetch
+  const originalLxMusicSourceScript = process.env.LX_MUSIC_SOURCE_SCRIPT
+  const songmid = `ARCHIVE_QQ_LX_FIRST_${Date.now()}`
+  const requestedHosts: string[] = []
+  const requestedQualities: string[] = []
+  db.prepare("DELETE FROM jobs WHERE type = 'archive_track'").run()
+  try {
+    configureTestAccountEmby()
+    process.env.LX_MUSIC_SOURCE_SCRIPT = 'https://script.example/script/lxmusic?key=test-key'
+    const musicInfo = {
+      source: 'tx' as const,
+      songmid,
+      name: 'Archive QQ LX First',
+      singer: 'Archive Tester',
+      types: [{ type: 'flac' as const, size: '40 MB' }, { type: '320k' as const, size: '8 MB' }],
+    }
+    const created = createJob({
+      type: 'archive_track',
+      payload: { source: 'tx' as const, qqUin: TEST_EMBY_QQ_UIN, songmid, musicInfo, reason: 'favorite' as const },
+    })
+
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = new URL(String(url))
+      requestedHosts.push(requestUrl.host)
+      if (requestUrl.hostname === 'script.example') {
+        const body = JSON.parse(String(init?.body ?? '{}')) as { quality?: string }
+        requestedQualities.push(body.quality ?? '')
+        return Response.json({ url: `https://cdn.example/archive-${body.quality}.flac` })
+      }
+      if (requestUrl.hostname === 'cdn.example') {
+        return new Response('archive-audio', { headers: { 'content-type': 'audio/flac' } })
+      }
+      return Response.json({ error: 'archive should not request upstream Emby' }, { status: 500 })
+    }) as typeof fetch
+
+    assert.equal(await processOneArchiveTrackJob(1), true)
+    assert.equal(getJob(created.id)?.status, 'completed')
+    assert.deepEqual(requestedQualities, ['flac'])
+    assert.ok(requestedHosts.includes('script.example'))
+    assert.ok(requestedHosts.includes('cdn.example'))
+    assert.ok(!requestedHosts.includes('127.0.0.1:8096'))
+  } finally {
+    db.prepare("DELETE FROM jobs WHERE type = 'archive_track' AND json_extract(payload_json, '$.songmid') = ?").run(songmid)
+    db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run(songmid)
+    db.prepare("DELETE FROM accounts WHERE qq_uin = ?").run(TEST_EMBY_QQ_UIN)
+    globalThis.fetch = originalFetch
+    if (originalLxMusicSourceScript === undefined) delete process.env.LX_MUSIC_SOURCE_SCRIPT
+    else process.env.LX_MUSIC_SOURCE_SCRIPT = originalLxMusicSourceScript
+  }
+})
+
 test('UM crypto refresh job downloads latest package once and reuses local version', async () => {
   const originalFetch = globalThis.fetch
   const version = `99.0.${Date.now()}`

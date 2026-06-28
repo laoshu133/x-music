@@ -57,6 +57,8 @@ export interface ResolvedMusicUrl {
   quality: MusicQuality
   source: OnlineSource
   songmid: string
+  upstreamSource?: string
+  upstreamMusicId?: string
   ekey?: string
   expiresAt?: Date
 }

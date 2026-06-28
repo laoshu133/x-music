@@ -23,7 +23,6 @@ export function getCachedUnplayableQuality(
   quality: MusicQuality,
 ): UnplayableRecord | undefined {
   return readRecord(cacheKey(musicInfo.source, musicInfo.songmid, quality))
-    ?? readRecord(cacheKey(musicInfo.source, musicInfo.songmid))
 }
 
 export function markUnplayableQuality(

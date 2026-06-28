@@ -8,6 +8,7 @@ const defaultAmpcastUrl = 'http://ampcast:8000/'
 
 const envSchema = z.object({
   LX_MUSIC_SOURCE_SCRIPT: z.string().url().optional(),
+  LX_MUSIC_ID_LOOKUP_ENABLED: z.string().optional(),
   DATABASE_URL: z.string().default('file:./data/app.sqlite'),
   MUSIC_DATA_DIR: z.string().default('./data'),
   AMPCAST_URL: z.string().url().default(defaultAmpcastUrl),
@@ -27,6 +28,9 @@ export const appConfig = {
   toolsDir: path.resolve(env.MUSIC_DATA_DIR, 'tools'),
   get lxMusicSourceScript() {
     return currentEnv().LX_MUSIC_SOURCE_SCRIPT
+  },
+  get lxMusicIdLookupEnabled() {
+    return currentEnv().LX_MUSIC_ID_LOOKUP_ENABLED === 'true'
   },
   get ampcastUrl() {
     return currentEnv().AMPCAST_URL

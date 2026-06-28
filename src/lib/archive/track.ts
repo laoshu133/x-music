@@ -2,7 +2,7 @@ import { ensureTrack, getPlayableTrackFile, hasActiveTrackFile, upsertTrackFileS
 import { createUpstreamTeeResponse } from '@/lib/cache/stream'
 import { db } from '@/lib/db'
 import { createJob, claimJobById, claimNextJob, completeJob, failJob, requeueJob } from '@/lib/jobs'
-import { qualityFallbacks, resolveMusicUrl } from '@/lib/music-url/resolve'
+import { MusicUrlResolveError, qualityFallbacks, resolveMusicUrl } from '@/lib/music-url/resolve'
 import { highestAvailableQuality } from '@/lib/quality'
 import type { MusicInfo, MusicQuality } from '@/lib/types'
 
@@ -88,7 +88,7 @@ export async function archiveTrack(payload: ArchiveTrackJobPayload): Promise<voi
   if (getPlayableTrackFile(musicInfo.source, musicInfo.songmid, preferredQuality)) return
 
   const track = ensureTrack(musicInfo)
-  const attempts: Array<{ quality: MusicQuality; error: string }> = []
+  const attempts: Array<{ quality: MusicQuality; error: string; source?: string; musicId?: string }> = []
 
   for (const quality of qualityFallbacks(preferredQuality)) {
     if (getPlayableTrackFile(musicInfo.source, musicInfo.songmid, quality)) return
@@ -110,11 +110,24 @@ export async function archiveTrack(payload: ArchiveTrackJobPayload): Promise<voi
       await completion
       return
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      attempts.push({ quality, error: message })
+      const message = musicUrlErrorMessage(error)
+      if (error instanceof MusicUrlResolveError) {
+        attempts.push(...error.attempts)
+      } else {
+        attempts.push({ quality, error: message })
+      }
       upsertTrackFileStatus(track.id, quality, 'failed', { error: message })
     }
   }
 
-  throw new Error(`Unable to archive track ${musicInfo.source}:${musicInfo.songmid}. ${attempts.map(attempt => `${attempt.quality}: ${attempt.error}`).join('; ')}`)
+  throw new Error(`Unable to archive track ${musicInfo.source}:${musicInfo.songmid}. ${attempts.map(attempt => `${attempt.quality}${attempt.source ? `/${attempt.source}` : ''}: ${attempt.error}`).join('; ')}`)
+}
+
+function musicUrlErrorMessage(error: unknown): string {
+  if (error instanceof MusicUrlResolveError && error.attempts.length) {
+    return error.attempts
+      .map(attempt => `${attempt.source ? `${attempt.source}: ` : ''}${attempt.error}`)
+      .join('; ')
+  }
+  return error instanceof Error ? error.message : String(error)
 }

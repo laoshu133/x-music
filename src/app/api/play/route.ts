@@ -119,7 +119,7 @@ const resolvePlayableUpstreamResponse = async (
   response: Response
   completion: Promise<void>
 }> => {
-  const attempts: Array<{ quality: MusicQuality; error: string }> = []
+  const attempts: Array<{ quality: MusicQuality; error: string; source?: string; musicId?: string }> = []
   let encryptedQQRequiresKey = false
 
   for (const quality of qualityFallbacks(preferredQuality)) {
@@ -156,8 +156,12 @@ const resolvePlayableUpstreamResponse = async (
       }
     } catch (error) {
       if (error instanceof MusicUrlConfigError) throw error
-      const message = error instanceof Error ? error.message : String(error)
-      attempts.push({ quality, error: message })
+      const message = musicUrlErrorMessage(error)
+      if (error instanceof MusicUrlResolveError) {
+        attempts.push(...error.attempts)
+      } else {
+        attempts.push({ quality, error: message })
+      }
       upsertTrackFileStatus(track.id, quality, 'failed', { error: message })
       if (isEncryptedQQAudioRequiresKeyError(error)) encryptedQQRequiresKey = true
     }
@@ -218,7 +222,7 @@ const playbackErrorMessage = (error: unknown): string => {
   }
 
   if (error instanceof MusicUrlResolveError) {
-    const detail = error.attempts.map((attempt) => `${attempt.quality}: ${attempt.error}`).join('; ')
+    const detail = error.attempts.map((attempt) => `${attempt.quality}${attempt.source ? `/${attempt.source}` : ''}: ${attempt.error}`).join('; ')
     if (error.attempts.some(attempt => attempt.error.includes('QQ encrypted audio requires a matching QQ Music local key'))) {
       return `${encryptedQQAudioRequiresKeyMessage} ${detail}`
     }
@@ -228,9 +232,24 @@ const playbackErrorMessage = (error: unknown): string => {
   return error instanceof Error ? error.message : 'Unable to play track'
 }
 
+function musicUrlErrorMessage(error: unknown): string {
+  if (error instanceof MusicUrlResolveError && error.attempts.length) {
+    return error.attempts
+      .map(attempt => `${attempt.source ? `${attempt.source}: ` : ''}${attempt.error}`)
+      .join('; ')
+  }
+  return error instanceof Error ? error.message : String(error)
+}
+
 function isUnplayableResolveError(error: unknown): boolean {
   if (!(error instanceof MusicUrlResolveError)) return false
-  return error.attempts.length > 0 && error.attempts.every(attempt => isMusicUrlUnavailableMessage(attempt.error))
+  return error.attempts.length > 0 && error.attempts.every(attempt => isMusicUrlUnavailableAttempt(attempt.error))
+}
+
+function isMusicUrlUnavailableAttempt(message: string): boolean {
+  if (isMusicUrlUnavailableMessage(message)) return true
+  return message.includes('Unable to resolve a playable music URL')
+    && message.includes('未获取到URL')
 }
 
 const parseMusicInfo = (input: PlayRequest): MusicInfo | undefined => {
