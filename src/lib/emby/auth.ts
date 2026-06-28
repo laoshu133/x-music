@@ -6,6 +6,7 @@ const MUSIC_COLLECTION_TYPE = 'music'
 const MUSIC_LIBRARY_NAME = '音乐'
 const UPSTREAM_MUSIC_LIBRARY_MAPPING_KEY = 'emby.upstreamMusicLibraryMapping'
 const LEGACY_UPSTREAM_MUSIC_LIBRARY_IDS_KEY = 'emby.upstreamMusicLibraryIds'
+const adminTokenCache = new Map<string, { token: string; expiresAt: number }>()
 
 interface EmbyLibraryCandidate {
   Id?: string
@@ -50,7 +51,7 @@ export function embyAuthorizationHeader(token?: string): string {
 
 export async function getEmbyAccessToken(account?: AccountRecord): Promise<string | undefined> {
   if (account?.embyAccessToken) return account.embyAccessToken
-  return embyConfigForAccount(account).apiKey
+  return getEmbyAdminAccessToken(account)
 }
 
 export function hasUpstreamEmbyConfigured(account?: AccountRecord): boolean {
@@ -312,19 +313,50 @@ async function authenticateUpstreamUser(account: AccountRecord, username: string
   return result.AccessToken
 }
 
+async function getEmbyAdminAccessToken(account?: AccountRecord): Promise<string | undefined> {
+  const settings = embyConfigForAccount(account)
+  if (!settings.baseUrl || !settings.username || !settings.password) return undefined
+
+  const cacheKey = `${settings.baseUrl}\n${settings.username}`
+  const cached = adminTokenCache.get(cacheKey)
+  if (cached && cached.expiresAt > Date.now()) return cached.token
+
+  const url = new URL(settings.baseUrl)
+  applyPathAndSearch(url, '/Users/AuthenticateByName')
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'X-Emby-Authorization': embyAuthorizationHeader(),
+    },
+    body: JSON.stringify({ Username: settings.username, Pw: settings.password }),
+    cache: 'no-store',
+    signal: AbortSignal.timeout(settings.proxyTimeoutMs),
+  })
+  const text = await response.text().catch(() => '')
+  if (!response.ok) {
+    throw new Error(`Emby admin authentication failed with ${response.status}: ${text.slice(0, 300)}`)
+  }
+  const token = (JSON.parse(text || '{}') as { AccessToken?: string }).AccessToken
+  if (!token) throw new Error('Emby admin authentication did not return an access token')
+  adminTokenCache.set(cacheKey, { token, expiresAt: Date.now() + 30 * 60 * 1000 })
+  return token
+}
+
 async function adminEmbyFetch<T = unknown>(account: AccountRecord | undefined, path: string, init: RequestInit = {}): Promise<T> {
   const settings = embyConfigForAccount(account)
-  if (!settings.baseUrl || !settings.apiKey) {
-    throw new Error('Upstream Emby base URL and API key are required')
+  const token = await getEmbyAdminAccessToken(account)
+  if (!settings.baseUrl || !token) {
+    throw new Error('Upstream Emby DSN is required')
   }
 
   const url = new URL(settings.baseUrl)
   applyPathAndSearch(url, path)
-  url.searchParams.set('api_key', settings.apiKey)
+  url.searchParams.set('api_key', token)
 
   const headers = new Headers(init.headers)
-  headers.set('X-Emby-Token', settings.apiKey)
-  headers.set('X-Emby-Authorization', embyAuthorizationHeader(settings.apiKey))
+  headers.set('X-Emby-Token', token)
+  headers.set('X-Emby-Authorization', embyAuthorizationHeader(token))
 
   const response = await fetch(url, {
     ...init,

@@ -7,6 +7,7 @@ import { getFavoriteSummary } from '@/lib/db/favorites'
 import { getJobSummary } from '@/lib/jobs/status'
 import { getCurrentAccount } from '@/lib/session'
 import { isAdminQQ, type AccountRecord } from '@/lib/db/accounts'
+import { hasAccountUpstreamEmby } from '@/lib/emby/config'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -62,9 +63,9 @@ const accountStatus = (account: AccountRecord | undefined) => {
       loggedIn: false,
       qqAuthState: 'missing',
       embyConfigured: false,
+      embyDsnConfigured: false,
       webdavConfigured: false,
       embyGatewayUsername: undefined,
-      hasEmbyApiKey: false,
       proxyTimeoutMs: undefined,
     }
   }
@@ -77,9 +78,8 @@ const accountStatus = (account: AccountRecord | undefined) => {
     qqAuthCheckedAt: account.qqAuthCheckedAt,
     qqAuthError: account.qqAuthError,
     embyGatewayUsername: account.embyUsername,
-    embyConfigured: Boolean(account.embyBaseUrl && account.embyApiKey),
-    embyBaseUrlConfigured: Boolean(account.embyBaseUrl),
-    hasEmbyApiKey: Boolean(account.embyApiKey),
+    embyConfigured: hasAccountUpstreamEmby(account),
+    embyDsnConfigured: Boolean(account.embyDsn),
     webdavConfigured: Boolean(account.embySourceWebdavDsn),
     proxyTimeoutMs: account.embyProxyTimeoutMs ?? 30000,
   }

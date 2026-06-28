@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { db } from '@/lib/db'
 import { saveQQLoginCookie, clearQQLoginCookie } from '@/lib/db/qq-session'
+import { deleteSetting, setSetting } from '@/lib/db/settings'
 import { getAccountByQQ } from '@/lib/db/accounts'
 import { setLocalFavoriteSynced } from '@/lib/db/favorites'
 import { ensureTrack, insertPlayEvent, listPlayHistory } from '@/lib/cache/store'
@@ -10,6 +11,7 @@ import { pullEmbyFavorites, pushLocalFavoritesToEmby, syncEmbyFavoritesFromQQLis
 import { pullEmbyPlayHistory, pushLocalPlayHistoryToEmby } from '@/lib/emby/history'
 import { GET as getFavorites } from '@/app/api/favorites/route'
 import { GET as getFavoriteStatus, POST as syncFavoriteStatus } from '@/app/api/favorites/status/route'
+import { POST as syncAccountEmby } from '@/app/api/account/emby/sync/route'
 import type { MusicInfo } from '@/lib/types'
 
 const originalFetch = globalThis.fetch
@@ -22,6 +24,8 @@ test.afterEach(() => {
   for (const songmid of historyPushSongmids) cleanupSong(songmid)
   favoritePushSongmids.clear()
   historyPushSongmids.clear()
+  deleteSetting('qq.syncFavorites')
+  deleteSetting('qq.syncPlaylists')
   clearQQLoginCookie()
 })
 
@@ -270,6 +274,79 @@ test('favorites status API reports totals and syncs QQ favorites into Emby', asy
   }
 })
 
+test('account Emby sync honors disabled QQ playlist sync', async () => {
+  const song = testSong('emby-account-sync-favorites-only')
+  const requests: Array<{ url: URL; method: string }> = []
+
+  try {
+    prepareAccount('777008')
+    setSetting('qq.syncFavorites', true)
+    setSetting('qq.syncPlaylists', false)
+    upsertRemoteMapping({
+      localType: 'track',
+      localKey: `${song.source}:${song.songmid}`,
+      remote: 'emby',
+      remoteId: 'emby-account-sync-fav-1',
+      raw: song,
+    })
+
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(url, init)
+      requests.push({ url: new URL(request.url), method: request.method })
+      if (request.url.includes('/cgi-bin/musics.fcg')) {
+        return Response.json({
+          code: 0,
+          req: {
+            code: 0,
+            data: {
+              songlist: [{
+                id: (song.raw as { songId: number }).songId,
+                mid: song.songmid,
+                title: song.name,
+                singer: [{ name: song.singer }],
+                album: { name: song.albumName, mid: song.albumId },
+              }],
+              total_song_num: 1,
+            },
+          },
+        })
+      }
+      if (request.url.includes('/Users/emby-user-777008/Items')) {
+        return Response.json({ Items: [], TotalRecordCount: 0 })
+      }
+      return new Response(null, { status: 204 })
+    }) as typeof fetch
+
+    const response = await syncAccountEmby()
+    const payload = await response.json()
+
+    assert.equal(response.status, 200, JSON.stringify(payload))
+    assert.equal(payload.favorites.attempted, 1)
+    assert.equal(payload.favorites.synced, 1)
+    assert.equal(payload.playlists.attempted, 0)
+    assert.ok(!requests.some(request => request.url.hostname === 'c.y.qq.com' && request.url.pathname.includes('/rsc/fcgi-bin/fcg_user_created_diss')))
+  } finally {
+    cleanupSong(song.songmid)
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('777008')
+  }
+})
+
+test('account Emby sync rejects when QQ favorites and playlists are both disabled', async () => {
+  try {
+    prepareAccount('777009')
+    setSetting('qq.syncFavorites', false)
+    setSetting('qq.syncPlaylists', false)
+
+    const response = await syncAccountEmby()
+    const payload = await response.json()
+
+    assert.equal(response.status, 400, JSON.stringify(payload))
+    assert.match(payload.error, /同步我的收藏|同步歌单/)
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('777009')
+  }
+})
+
 test('Emby play history sync pulls mapped played items into local history', async () => {
   const song = testSong('emby-history-pull-song')
   const playedAt = '2026-05-24T09:10:11.000Z'
@@ -350,8 +427,7 @@ function prepareAccount(qqUin: string) {
     UPDATE accounts
     SET emby_user_id = ?,
         emby_access_token = ?,
-        emby_base_url = 'http://127.0.0.1:8096',
-        emby_api_key = 'test-emby-api-key',
+        emby_dsn = 'http://admin:secret@127.0.0.1:8096',
         emby_proxy_timeout_ms = 30000
     WHERE qq_uin = ?
   `).run(`emby-user-${qqUin}`, `emby-token-${qqUin}`, qqUin)

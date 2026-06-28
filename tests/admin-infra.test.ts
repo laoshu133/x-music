@@ -40,8 +40,7 @@ function configureAccountUpstreamEmby(qqUin: string): void {
   db.prepare(`
     UPDATE accounts
     SET
-        emby_base_url = 'http://127.0.0.1:8096',
-        emby_api_key = 'test-emby-api-key',
+        emby_dsn = 'http://admin:secret@127.0.0.1:8096',
         emby_proxy_timeout_ms = 30000
     WHERE qq_uin = ?
   `).run(qqUin)
@@ -876,12 +875,14 @@ test('emby token parser accepts ampcast authorization header', () => {
 })
 
 test('runtime config updates do not accept upstream Emby or LX fields', () => {
-  updateEffectiveSettings({ qqEnabled: false })
+  updateEffectiveSettings({ qqEnabled: false, qqSyncPlaylists: false })
   const settings = getEffectiveSettings()
   assert.equal('emby' in settings, false)
   assert.equal(getEffectiveSettings().qq.enabled, false)
+  assert.equal(getEffectiveSettings().qq.syncPlaylists, false)
 
   deleteSetting('qq.enabled')
+  deleteSetting('qq.syncPlaylists')
 })
 
 test('local emby authenticate by name succeeds and rejects bad credentials', async () => {
@@ -1020,7 +1021,6 @@ test('local emby authorized startup helpers are handled locally', async () => {
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999116')
     saveQQLoginCookie('uin=o999116; qm_keyst=test-key')
-    markAccountUpstreamBound('999116')
     const account = getAccountByQQ('999116')
     assert.ok(account)
 
@@ -1075,6 +1075,43 @@ test('local emby authorized startup helpers are handled locally', async () => {
     assert.deepEqual(upstreamRequests, [])
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999116')
+    clearQQLoginCookie()
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('configured upstream emby handles startup helper routes', async () => {
+  const originalFetch = globalThis.fetch
+  const upstreamRequests: string[] = []
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999115')
+    saveQQLoginCookie('uin=o999115; qm_keyst=test-key')
+    markAccountUpstreamBound('999115')
+    const account = getAccountByQQ('999115')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const headers = { 'X-Emby-Token': authPayload.AccessToken }
+
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      upstreamRequests.push(String(url))
+      return Response.json({ upstream: true })
+    }) as typeof fetch
+
+    const response = await dispatchEmbyRequest(
+      new Request('http://local/emby/Library/MediaFolders', { headers }),
+      stripOptionalEmbyPrefix('/emby/Library/MediaFolders'),
+    )
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), { upstream: true })
+    assert.equal(new URL(upstreamRequests[0]!).pathname, '/Library/MediaFolders')
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999115')
     clearQQLoginCookie()
     globalThis.fetch = originalFetch
   }
@@ -1174,11 +1211,9 @@ test('account emby password can be manually changed', () => {
 
 test('account upstream emby config is stored per user and independent from env', () => {
   const previousBaseUrl = process.env.EMBY_UPSTREAM_URL
-  const previousApiKey = process.env.EMBY_API_KEY
   const previousWebdav = process.env.EMBY_SOURCE_WEBDAV_DSN
   try {
     process.env.EMBY_UPSTREAM_URL = 'http://env-emby.example'
-    process.env.EMBY_API_KEY = 'env-api-key'
     process.env.EMBY_SOURCE_WEBDAV_DSN = 'https://env-user:env-pass@webdav.example/dav'
     db.prepare('DELETE FROM accounts WHERE qq_uin IN (?, ?)').run('999027', '999028')
     saveQQLoginCookie('uin=o999027; qm_keyst=test-key')
@@ -1186,42 +1221,41 @@ test('account upstream emby config is stored per user and independent from env',
 
     const first = updateAccountEmbyConfig('999027', {
       password: ' player-password ',
-      baseUrl: ' https://emby-user.example:8096/ ',
-      apiKey: ' user-api-key ',
+      dsn: ' https://admin:secret@emby-dsn.example:8096/ ',
       sourceWebdavDsn: ' https://dav-user:pass@webdav-user.example/dav/music/ ',
       proxyTimeoutMs: 45678.9,
     })
     assert.ok(first)
     assert.equal(first.embyPassword, 'player-password')
-    assert.equal(first.embyBaseUrl, 'https://emby-user.example:8096')
-    assert.equal(first.embyApiKey, 'user-api-key')
+    assert.equal(first.embyDsn, 'https://admin:secret@emby-dsn.example:8096')
     assert.equal(first.embySourceWebdavDsn, 'https://dav-user:pass@webdav-user.example/dav/music')
     assert.equal(first.embyProxyTimeoutMs, 45678)
     assert.equal(hasAccountUpstreamEmby(first), true)
     assert.deepEqual(embyConfigForAccount(first), {
-      baseUrl: 'https://emby-user.example:8096',
-      apiKey: 'user-api-key',
+      dsn: 'https://admin:secret@emby-dsn.example:8096',
+      baseUrl: 'https://emby-dsn.example:8096',
+      username: 'admin',
+      password: 'secret',
       sourceWebdavDsn: 'https://dav-user:pass@webdav-user.example/dav/music',
       proxyTimeoutMs: 45678,
     })
 
     const second = getAccountByQQ('999028')
     assert.ok(second)
-    assert.equal(second.embyBaseUrl, undefined)
-    assert.equal(second.embyApiKey, undefined)
+    assert.equal(second.embyDsn, undefined)
     assert.equal(second.embySourceWebdavDsn, undefined)
     assert.equal(hasAccountUpstreamEmby(second), false)
     assert.deepEqual(embyConfigForAccount(second), {
+      dsn: undefined,
       baseUrl: undefined,
-      apiKey: undefined,
+      username: undefined,
+      password: undefined,
       sourceWebdavDsn: undefined,
       proxyTimeoutMs: 30000,
     })
   } finally {
     if (previousBaseUrl === undefined) delete process.env.EMBY_UPSTREAM_URL
     else process.env.EMBY_UPSTREAM_URL = previousBaseUrl
-    if (previousApiKey === undefined) delete process.env.EMBY_API_KEY
-    else process.env.EMBY_API_KEY = previousApiKey
     if (previousWebdav === undefined) delete process.env.EMBY_SOURCE_WEBDAV_DSN
     else process.env.EMBY_SOURCE_WEBDAV_DSN = previousWebdav
     db.prepare('DELETE FROM accounts WHERE qq_uin IN (?, ?)').run('999027', '999028')
@@ -1229,15 +1263,14 @@ test('account upstream emby config is stored per user and independent from env',
   }
 })
 
-test('account upstream emby config preserves masked api key and supports clearing fields', () => {
+test('account upstream emby config preserves masked dsn and supports clearing fields', () => {
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999029')
     saveQQLoginCookie('uin=o999029; qm_keyst=test-key')
 
     const saved = updateAccountEmbyConfig('999029', {
       password: 'player-password',
-      baseUrl: 'https://emby.example',
-      apiKey: 'real-api-key',
+      dsn: 'https://admin:secret@emby.example',
       sourceWebdavDsn: 'https://user:pass@webdav.example/dav/music',
       proxyTimeoutMs: 45000,
     })
@@ -1245,23 +1278,20 @@ test('account upstream emby config preserves masked api key and supports clearin
 
     const preserved = updateAccountEmbyConfig('999029', {
       password: 'next-password',
-      apiKey: '********',
+      dsn: 'https://admin:********@emby.example',
     })
     assert.equal(preserved?.embyPassword, 'next-password')
-    assert.equal(preserved?.embyApiKey, 'real-api-key')
-    assert.equal(preserved?.embyBaseUrl, 'https://emby.example')
+    assert.equal(preserved?.embyDsn, 'https://admin:secret@emby.example')
     assert.equal(preserved?.embySourceWebdavDsn, 'https://user:pass@webdav.example/dav/music')
     assert.equal(preserved?.embyProxyTimeoutMs, 45000)
 
     const cleared = updateAccountEmbyConfig('999029', {
       password: 'next-password',
-      baseUrl: '',
-      apiKey: '',
+      dsn: '',
       sourceWebdavDsn: '',
       proxyTimeoutMs: null,
     })
-    assert.equal(cleared?.embyBaseUrl, undefined)
-    assert.equal(cleared?.embyApiKey, undefined)
+    assert.equal(cleared?.embyDsn, undefined)
     assert.equal(cleared?.embySourceWebdavDsn, undefined)
     assert.equal(cleared?.embyProxyTimeoutMs, undefined)
     assert.equal(hasAccountUpstreamEmby(cleared), false)

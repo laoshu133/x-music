@@ -19,8 +19,7 @@ export interface AccountRecord {
   embyUsername: string
   embyPassword: string
   embyAccessToken?: string
-  embyBaseUrl?: string
-  embyApiKey?: string
+  embyDsn?: string
   embySourceWebdavDsn?: string
   embyProxyTimeoutMs?: number
   lastLoginAt?: string
@@ -63,8 +62,7 @@ interface AccountRow {
   emby_username: string
   emby_password: string
   emby_access_token: string | null
-  emby_base_url: string | null
-  emby_api_key: string | null
+  emby_dsn: string | null
   emby_source_webdav_dsn: string | null
   emby_proxy_timeout_ms: number | null
   last_login_at: string | null
@@ -100,8 +98,7 @@ export interface AccountDetail {
     hasQQMusicKey: boolean
     hasEmbyPassword: boolean
     hasEmbyAccessToken: boolean
-    hasEmbyApiKey: boolean
-    embyBaseUrl?: string
+    embyDsn?: string
     hasEmbySourceWebdavDsn: boolean
     embyProxyTimeoutMs?: number
   }
@@ -141,8 +138,7 @@ export function upsertAccountFromQQCookie(cookieText: string, options: { loginIp
       emby_username,
       emby_password,
       emby_access_token,
-      emby_base_url,
-      emby_api_key,
+      emby_dsn,
       emby_source_webdav_dsn,
       emby_proxy_timeout_ms,
       last_login_at,
@@ -163,8 +159,7 @@ export function upsertAccountFromQQCookie(cookieText: string, options: { loginIp
       @embyUsername,
       @embyPassword,
       @embyAccessToken,
-      @embyBaseUrl,
-      @embyApiKey,
+      @embyDsn,
       @embySourceWebdavDsn,
       @embyProxyTimeoutMs,
       CURRENT_TIMESTAMP,
@@ -196,8 +191,7 @@ export function upsertAccountFromQQCookie(cookieText: string, options: { loginIp
     embyUsername,
     embyPassword,
     embyAccessToken: existing?.embyAccessToken ?? null,
-    embyBaseUrl: existing?.embyBaseUrl ?? null,
-    embyApiKey: existing?.embyApiKey ?? null,
+    embyDsn: existing?.embyDsn ?? null,
     embySourceWebdavDsn: existing?.embySourceWebdavDsn ?? null,
     embyProxyTimeoutMs: existing?.embyProxyTimeoutMs ?? null,
     lastLoginIp: options.loginIp ?? null,
@@ -278,8 +272,7 @@ export function getAccountProfile(qqUin: string): AccountProfile | undefined {
       hasQQMusicKey: Boolean(account.qqmusicKey),
       hasEmbyPassword: Boolean(account.embyPassword),
       hasEmbyAccessToken: Boolean(account.embyAccessToken),
-      hasEmbyApiKey: Boolean(account.embyApiKey),
-      embyBaseUrl: account.embyBaseUrl,
+      embyDsn: account.embyDsn,
       hasEmbySourceWebdavDsn: Boolean(account.embySourceWebdavDsn),
       embyProxyTimeoutMs: account.embyProxyTimeoutMs,
     },
@@ -455,8 +448,7 @@ export function updateAccountEmbyConfig(
   qqUin: string,
   input: {
     password?: string
-    baseUrl?: string | null
-    apiKey?: string | null
+    dsn?: string | null
     sourceWebdavDsn?: string | null
     proxyTimeoutMs?: number | null
   },
@@ -465,8 +457,7 @@ export function updateAccountEmbyConfig(
   if (!current) return undefined
   const password = input.password !== undefined ? input.password.trim() : current.embyPassword
   if (!password) return current
-  const baseUrl = normalizeOptionalUrl(input.baseUrl, current.embyBaseUrl)
-  const apiKey = normalizeOptionalSecret(input.apiKey, current.embyApiKey)
+  const dsn = normalizeOptionalUrl(input.dsn, current.embyDsn)
   const sourceWebdavDsn = normalizeOptionalUrl(input.sourceWebdavDsn, current.embySourceWebdavDsn)
   const proxyTimeoutMs = normalizeProxyTimeout(input.proxyTimeoutMs, current.embyProxyTimeoutMs)
 
@@ -474,8 +465,7 @@ export function updateAccountEmbyConfig(
     UPDATE accounts
     SET
       emby_password = @password,
-      emby_base_url = @baseUrl,
-      emby_api_key = @apiKey,
+      emby_dsn = @dsn,
       emby_source_webdav_dsn = @sourceWebdavDsn,
       emby_proxy_timeout_ms = @proxyTimeoutMs,
       updated_at = CURRENT_TIMESTAMP
@@ -483,8 +473,7 @@ export function updateAccountEmbyConfig(
   `).run({
     qqUin,
     password,
-    baseUrl,
-    apiKey,
+    dsn,
     sourceWebdavDsn,
     proxyTimeoutMs,
   })
@@ -512,8 +501,7 @@ export function summarizeAccount(account: AccountRecord) {
       hasPassword: Boolean(account.embyPassword),
       userId: account.embyUserId,
       hasAccessToken: Boolean(account.embyAccessToken),
-      baseUrl: account.embyBaseUrl,
-      hasApiKey: Boolean(account.embyApiKey),
+      dsn: account.embyDsn,
       hasSourceWebdavDsn: Boolean(account.embySourceWebdavDsn),
       proxyTimeoutMs: account.embyProxyTimeoutMs,
     },
@@ -534,8 +522,7 @@ function rowToAccount(row: AccountRow): AccountRecord {
     embyUsername: row.emby_username,
     embyPassword: row.emby_password,
     embyAccessToken: row.emby_access_token ?? undefined,
-    embyBaseUrl: row.emby_base_url ?? undefined,
-    embyApiKey: row.emby_api_key ?? undefined,
+    embyDsn: row.emby_dsn ?? undefined,
     embySourceWebdavDsn: row.emby_source_webdav_dsn ?? undefined,
     embyProxyTimeoutMs: row.emby_proxy_timeout_ms ?? undefined,
     lastLoginAt: row.last_login_at ?? undefined,
@@ -546,18 +533,11 @@ function rowToAccount(row: AccountRow): AccountRecord {
   }
 }
 
-function normalizeOptionalSecret(value: string | null | undefined, current: string | undefined): string | null {
-  if (value === undefined) return current ?? null
-  const trimmed = value?.trim() ?? ''
-  if (!trimmed) return null
-  if (trimmed === '********') return current ?? null
-  return trimmed
-}
-
 function normalizeOptionalUrl(value: string | null | undefined, current: string | undefined): string | null {
   if (value === undefined) return current ?? null
   const trimmed = value?.trim() ?? ''
   if (!trimmed) return null
+  if (trimmed.includes('********')) return current ?? null
   return trimmed.replace(/\/+$/g, '')
 }
 

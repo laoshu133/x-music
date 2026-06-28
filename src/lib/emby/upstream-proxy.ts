@@ -29,7 +29,7 @@ export async function proxyToUpstreamEmby(request: Request, embyPath: string): P
   if (!settings.baseUrl) {
     return Response.json({
       error: 'Upstream Emby is not configured',
-      actionable: '在帐号配置中填写你的 Emby 服务器地址和 API Key。',
+      actionable: '在帐号配置中填写你的 Emby DSN。',
     }, { status: 502 })
   }
 

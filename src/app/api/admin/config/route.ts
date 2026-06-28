@@ -7,6 +7,7 @@ export const dynamic = 'force-dynamic'
 const updateSchema = z.object({
   qqEnabled: z.boolean().optional(),
   qqSyncFavorites: z.boolean().optional(),
+  qqSyncPlaylists: z.boolean().optional(),
   qqSyncPlayHistory: z.boolean().optional(),
 }).strict()
 

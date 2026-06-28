@@ -25,8 +25,7 @@ function configureTestAccountEmby(options: { webdav?: boolean } = {}): void {
   saveQQLoginCookie(`uin=o${TEST_EMBY_QQ_UIN}; qm_keyst=test-key`)
   db.prepare(`
     UPDATE accounts
-    SET emby_base_url = @baseUrl,
-        emby_api_key = @apiKey,
+    SET emby_dsn = @dsn,
         emby_source_webdav_dsn = @sourceWebdavDsn,
         emby_proxy_timeout_ms = 30000,
         emby_user_id = @embyUserId,
@@ -34,8 +33,7 @@ function configureTestAccountEmby(options: { webdav?: boolean } = {}): void {
     WHERE qq_uin = @qqUin
   `).run({
     qqUin: TEST_EMBY_QQ_UIN,
-    baseUrl: 'http://127.0.0.1:8096',
-    apiKey: 'test-emby-api-key',
+    dsn: 'http://admin:secret@127.0.0.1:8096',
     sourceWebdavDsn: options.webdav ? TEST_EMBY_WEBDAV_DSN : null,
     embyUserId: `emby-user-${TEST_EMBY_QQ_UIN}`,
     embyAccessToken: `emby-token-${TEST_EMBY_QQ_UIN}`,
@@ -293,6 +291,9 @@ test('emby sync job prefers highest ready quality over newer low quality cache',
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       const requestUrl = new URL(String(url))
       const method = init?.method ?? 'GET'
+      if (requestUrl.pathname.endsWith('/Users/AuthenticateByName')) {
+        return Response.json({ AccessToken: 'test-emby-admin-token' })
+      }
       if (requestUrl.hostname === 'webdav.example') {
         if (method === 'PUT' && init?.body && typeof (init.body as { resume?: unknown }).resume === 'function') {
           await new Promise<void>((resolve, reject) => {
@@ -1108,6 +1109,9 @@ test('emby sync job uploads ready media through WebDAV before scanning Emby', as
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       const requestUrl = new URL(String(url))
       const method = init?.method ?? 'GET'
+      if (requestUrl.pathname.endsWith('/Users/AuthenticateByName')) {
+        return Response.json({ AccessToken: 'test-emby-admin-token' })
+      }
       if (requestUrl.hostname === 'webdav.example') {
         if (method === 'PUT' && init?.body && typeof (init.body as { resume?: unknown }).resume === 'function') {
           await new Promise<void>((resolve, reject) => {
@@ -1256,6 +1260,9 @@ test('emby sync job skips WebDAV upload when remote audio already exists', async
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       const requestUrl = new URL(String(url))
       const method = init?.method ?? 'GET'
+      if (requestUrl.pathname.endsWith('/Users/AuthenticateByName')) {
+        return Response.json({ AccessToken: 'test-emby-admin-token' })
+      }
       if (requestUrl.hostname === 'webdav.example') {
         requests.push({
           method,

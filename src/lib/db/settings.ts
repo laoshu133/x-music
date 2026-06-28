@@ -4,6 +4,7 @@ import { db } from './index'
 export type AppSettingKey =
   | 'qq.enabled'
   | 'qq.syncFavorites'
+  | 'qq.syncPlaylists'
   | 'qq.syncPlayHistory'
 
 export interface EffectiveAppSettings {
@@ -13,6 +14,7 @@ export interface EffectiveAppSettings {
   qq: {
     enabled: boolean
     syncFavorites: boolean
+    syncPlaylists: boolean
     syncPlayHistory: boolean
   }
   gateway: {
@@ -64,6 +66,7 @@ export function getEffectiveSettings(): EffectiveAppSettings {
     qq: {
       enabled: booleanSetting('qq.enabled', true),
       syncFavorites: booleanSetting('qq.syncFavorites', true),
+      syncPlaylists: booleanSetting('qq.syncPlaylists', true),
       syncPlayHistory: booleanSetting('qq.syncPlayHistory', true),
     },
     gateway: {
@@ -78,10 +81,12 @@ export function getEffectiveSettings(): EffectiveAppSettings {
 export function updateEffectiveSettings(input: Partial<{
   qqEnabled: boolean
   qqSyncFavorites: boolean
+  qqSyncPlaylists: boolean
   qqSyncPlayHistory: boolean
 }>): EffectiveAppSettings {
   if ('qqEnabled' in input && typeof input.qqEnabled === 'boolean') setSetting('qq.enabled', input.qqEnabled)
   if ('qqSyncFavorites' in input && typeof input.qqSyncFavorites === 'boolean') setSetting('qq.syncFavorites', input.qqSyncFavorites)
+  if ('qqSyncPlaylists' in input && typeof input.qqSyncPlaylists === 'boolean') setSetting('qq.syncPlaylists', input.qqSyncPlaylists)
   if ('qqSyncPlayHistory' in input && typeof input.qqSyncPlayHistory === 'boolean') setSetting('qq.syncPlayHistory', input.qqSyncPlayHistory)
   return getEffectiveSettings()
 }

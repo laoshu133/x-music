@@ -195,43 +195,43 @@ const LOCAL_ROUTES: LocalRoute[] = [
     match: ({ request, embyPath }) => request.method === 'POST' && (
       pathEquals(embyPath, '/Sessions/Capabilities') || pathEquals(embyPath, '/Sessions/Capabilities/Full')
     ),
-    handle: () => new Response(null, { status: 204 }),
+    handle: ({ account }) => hasUpstreamEmbyConfigured(account) ? undefined : new Response(null, { status: 204 }),
   },
   {
     name: 'sessions-logout',
     authorize: true,
     match: ({ request, embyPath }) => request.method === 'POST' && pathEquals(embyPath, '/Sessions/Logout'),
-    handle: () => new Response(null, { status: 204 }),
+    handle: ({ account }) => hasUpstreamEmbyConfigured(account) ? undefined : new Response(null, { status: 204 }),
   },
   {
     name: 'sessions',
     authorize: true,
     match: ({ request, embyPath }) => request.method === 'GET' && pathEquals(embyPath, '/Sessions'),
-    handle: () => Response.json([]),
+    handle: ({ account }) => hasUpstreamEmbyConfigured(account) ? undefined : Response.json([]),
   },
   {
     name: 'display-preferences',
     authorize: true,
     match: ({ request, embyPath }) => request.method === 'GET' && isDisplayPreferencesRequest(embyPath),
-    handle: ({ request, embyPath }) => Response.json(localDisplayPreferences(request, embyPath)),
+    handle: ({ request, embyPath, account }) => hasUpstreamEmbyConfigured(account) ? undefined : Response.json(localDisplayPreferences(request, embyPath)),
   },
   {
     name: 'display-preferences-write',
     authorize: true,
     match: ({ request, embyPath }) => (request.method === 'POST' || request.method === 'PUT') && isDisplayPreferencesRequest(embyPath),
-    handle: () => new Response(null, { status: 204 }),
+    handle: ({ account }) => hasUpstreamEmbyConfigured(account) ? undefined : new Response(null, { status: 204 }),
   },
   {
     name: 'library-media-folders',
     authorize: true,
     match: ({ request, embyPath }) => request.method === 'GET' && pathEquals(embyPath, '/Library/MediaFolders'),
-    handle: () => Response.json(localLibraryMediaFolders()),
+    handle: ({ account }) => hasUpstreamEmbyConfigured(account) ? undefined : Response.json(localLibraryMediaFolders()),
   },
   {
     name: 'items-counts',
     authorize: true,
     match: ({ request, embyPath }) => request.method === 'GET' && pathEquals(embyPath, '/Items/Counts'),
-    handle: () => Response.json(localItemCounts()),
+    handle: ({ account }) => hasUpstreamEmbyConfigured(account) ? undefined : Response.json(localItemCounts()),
   },
   {
     name: 'delete-items',
@@ -1167,7 +1167,7 @@ function enqueueArchiveAndSyncForSong(
 
 function shouldArchiveForAccount(account: AccountRecord | undefined): boolean {
   const config = embyConfigForAccount(account)
-  return Boolean(config.baseUrl && config.apiKey && config.sourceWebdavDsn)
+  return Boolean(hasUpstreamEmbyConfigured(account) && config.sourceWebdavDsn)
 }
 
 async function handleItemRequest(request: Request, embyPath: string): Promise<Response | undefined> {

@@ -85,7 +85,7 @@ interface AdminConfig {
   player: {
     ampcastUrl: string
   }
-  qq: { enabled: boolean; syncFavorites: boolean; syncPlayHistory: boolean }
+  qq: { enabled: boolean; syncFavorites: boolean; syncPlaylists: boolean; syncPlayHistory: boolean }
 }
 
 interface HealthStatus {
@@ -100,8 +100,7 @@ interface HealthStatus {
     qqAuthError?: string
     embyGatewayUsername?: string
     embyConfigured: boolean
-    embyBaseUrlConfigured?: boolean
-    hasEmbyApiKey: boolean
+    embyDsnConfigured?: boolean
     webdavConfigured: boolean
     proxyTimeoutMs?: number
   }
@@ -233,6 +232,7 @@ interface JobItem {
 interface ConfigDraft {
   qqEnabled: boolean
   qqSyncFavorites: boolean
+  qqSyncPlaylists: boolean
   qqSyncPlayHistory: boolean
 }
 
@@ -240,12 +240,27 @@ interface AccountEmbyConfig {
   username: string
   password: string
   hasPassword: boolean
-  baseUrl?: string
-  apiKey?: string
-  hasApiKey?: boolean
+  dsn?: string
+  maskedDsn?: string
   sourceWebdavDsn?: string
   hasSourceWebdavDsn?: boolean
   proxyTimeoutMs: number
+  syncRecommended?: boolean
+}
+
+interface IncrementalEmbySyncResult {
+  favorites: {
+    attempted: number
+    synced: number
+    failed: number
+    skipped: number
+  }
+  playlists: {
+    attempted: number
+    synced: number
+    failed: number
+    skipped: number
+  }
 }
 
 interface ConnectionInfo {
@@ -334,13 +349,15 @@ export default function MusicClient() {
   const [browserOrigin, setBrowserOrigin] = useState('')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(initialSidebarCollapsed)
   const [embyPasswordDraft, setEmbyPasswordDraft] = useState('')
-  const [embyBaseUrlDraft, setEmbyBaseUrlDraft] = useState('')
-  const [embyApiKeyDraft, setEmbyApiKeyDraft] = useState('')
+  const [embyDsnDraft, setEmbyDsnDraft] = useState('')
   const [embyWebdavDraft, setEmbyWebdavDraft] = useState('')
   const [embyProxyTimeoutDraft, setEmbyProxyTimeoutDraft] = useState('30000')
+  const [embyIncrementalSync, setEmbyIncrementalSync] = useState<ApiState<IncrementalEmbySyncResult>>(emptyState)
+  const [showEmbySyncPrompt, setShowEmbySyncPrompt] = useState(false)
   const [configDraft, setConfigDraft] = useState<ConfigDraft>({
     qqEnabled: true,
     qqSyncFavorites: true,
+    qqSyncPlaylists: true,
     qqSyncPlayHistory: true,
   })
 
@@ -385,8 +402,7 @@ export default function MusicClient() {
   const loadAccountEmbyConfig = () => run(s => setAccountEmbyConfig(s), async () => {
     const data = await fetchJson<AccountEmbyConfig>('/api/account/emby')
     setEmbyPasswordDraft(data.password)
-    setEmbyBaseUrlDraft(data.baseUrl ?? '')
-    setEmbyApiKeyDraft(data.hasApiKey ? '********' : data.apiKey ?? '')
+    setEmbyDsnDraft(data.dsn ?? data.maskedDsn ?? '')
     setEmbyWebdavDraft(data.sourceWebdavDsn ?? '')
     setEmbyProxyTimeoutDraft(String(data.proxyTimeoutMs ?? 30000))
     return data
@@ -435,6 +451,7 @@ export default function MusicClient() {
     setConfigDraft({
       qqEnabled: data.qq.enabled,
       qqSyncFavorites: data.qq.syncFavorites,
+      qqSyncPlaylists: data.qq.syncPlaylists,
       qqSyncPlayHistory: data.qq.syncPlayHistory,
     })
     return data
@@ -528,6 +545,7 @@ export default function MusicClient() {
     const payload: Record<string, unknown> = {
       qqEnabled: configDraft.qqEnabled,
       qqSyncFavorites: configDraft.qqSyncFavorites,
+      qqSyncPlaylists: configDraft.qqSyncPlaylists,
       qqSyncPlayHistory: configDraft.qqSyncPlayHistory,
     }
     await run(s => setAdminConfig(s), () => fetchJson<AdminConfig>('/api/admin/config', {
@@ -536,25 +554,43 @@ export default function MusicClient() {
       body: JSON.stringify(payload),
     }))
     await run(s => setAccountEmbyConfig(s), async () => {
+      const hadUpstream = Boolean(accountEmbyConfig.data?.dsn)
       const data = await fetchJson<AccountEmbyConfig>('/api/account/emby', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           password,
-          baseUrl: embyBaseUrlDraft,
-          apiKey: embyApiKeyDraft,
+          dsn: embyDsnDraft,
           sourceWebdavDsn: embyWebdavDraft,
           proxyTimeoutMs: Number(embyProxyTimeoutDraft) || 30000,
         }),
       })
       setEmbyPasswordDraft(data.password)
-      setEmbyBaseUrlDraft(data.baseUrl ?? '')
-      setEmbyApiKeyDraft(data.hasApiKey ? '********' : data.apiKey ?? '')
+      setEmbyDsnDraft(data.dsn ?? data.maskedDsn ?? '')
       setEmbyWebdavDraft(data.sourceWebdavDsn ?? '')
       setEmbyProxyTimeoutDraft(String(data.proxyTimeoutMs ?? 30000))
+      if (data.syncRecommended || (!hadUpstream && data.dsn)) setShowEmbySyncPrompt(true)
       return data
     })
     setMessage('配置已保存')
+  }
+
+  const syncEmbyIncremental = async () => {
+    setMessage('')
+    setEmbyIncrementalSync({ loading: true, error: '', data: embyIncrementalSync.data })
+    try {
+      const result = await fetchJson<IncrementalEmbySyncResult>('/api/account/emby/sync', { method: 'POST' })
+      setEmbyIncrementalSync({ loading: false, error: '', data: result })
+      setShowEmbySyncPrompt(false)
+      setMessage(`同步至 Emby 完成：收藏 ${result.favorites.synced}/${result.favorites.attempted}，歌单 ${result.playlists.synced}/${result.playlists.attempted}`)
+      loadHealth()
+    } catch (error) {
+      setEmbyIncrementalSync({
+        loading: false,
+        error: error instanceof Error ? error.message : String(error),
+        data: embyIncrementalSync.data,
+      })
+    }
   }
 
   useEffect(() => {
@@ -699,17 +735,19 @@ export default function MusicClient() {
                 embyConfig={accountEmbyConfig}
                 connection={connectionInfo}
                 passwordDraft={embyPasswordDraft}
-                embyBaseUrlDraft={embyBaseUrlDraft}
-                embyApiKeyDraft={embyApiKeyDraft}
+                embyDsnDraft={embyDsnDraft}
                 embyWebdavDraft={embyWebdavDraft}
                 embyProxyTimeoutDraft={embyProxyTimeoutDraft}
+                incrementalSync={embyIncrementalSync}
+                showSyncPrompt={showEmbySyncPrompt}
                 onChange={setConfigDraft}
                 onPasswordChange={setEmbyPasswordDraft}
-                onEmbyBaseUrlChange={setEmbyBaseUrlDraft}
-                onEmbyApiKeyChange={setEmbyApiKeyDraft}
+                onEmbyDsnChange={setEmbyDsnDraft}
                 onEmbyWebdavChange={setEmbyWebdavDraft}
                 onEmbyProxyTimeoutChange={setEmbyProxyTimeoutDraft}
                 onSave={saveAdminConfig}
+                onIncrementalSync={syncEmbyIncremental}
+                onDismissSyncPrompt={() => setShowEmbySyncPrompt(false)}
                 loading={adminConfig.loading || accountEmbyConfig.loading}
               />
           </section>
@@ -991,34 +1029,38 @@ function ConfigPanel({
   embyConfig,
   connection,
   passwordDraft,
-  embyBaseUrlDraft,
-  embyApiKeyDraft,
+  embyDsnDraft,
   embyWebdavDraft,
   embyProxyTimeoutDraft,
+  incrementalSync,
+  showSyncPrompt,
   onChange,
   onPasswordChange,
-  onEmbyBaseUrlChange,
-  onEmbyApiKeyChange,
+  onEmbyDsnChange,
   onEmbyWebdavChange,
   onEmbyProxyTimeoutChange,
   onSave,
+  onIncrementalSync,
+  onDismissSyncPrompt,
   loading,
 }: {
   draft: ConfigDraft
   embyConfig: ApiState<AccountEmbyConfig>
   connection: ConnectionInfo
   passwordDraft: string
-  embyBaseUrlDraft: string
-  embyApiKeyDraft: string
+  embyDsnDraft: string
   embyWebdavDraft: string
   embyProxyTimeoutDraft: string
+  incrementalSync: ApiState<IncrementalEmbySyncResult>
+  showSyncPrompt: boolean
   onChange: (value: ConfigDraft) => void
   onPasswordChange: (value: string) => void
-  onEmbyBaseUrlChange: (value: string) => void
-  onEmbyApiKeyChange: (value: string) => void
+  onEmbyDsnChange: (value: string) => void
   onEmbyWebdavChange: (value: string) => void
   onEmbyProxyTimeoutChange: (value: string) => void
   onSave: () => void
+  onIncrementalSync: () => void
+  onDismissSyncPrompt: () => void
   loading: boolean
 }) {
   const patch = (value: Partial<ConfigDraft>) => onChange({ ...draft, ...value })
@@ -1060,24 +1102,13 @@ function ConfigPanel({
         <h3>上游 Emby</h3>
         <dl className="connection-list">
           <div>
-            <dt>服务器地址</dt>
+            <dt>Emby DSN</dt>
             <dd>
               <input
                 type="url"
-                value={embyBaseUrlDraft}
-                onChange={event => onEmbyBaseUrlChange(event.target.value)}
-                placeholder="https://emby.example.com:8096"
-              />
-            </dd>
-          </div>
-          <div>
-            <dt>API Key</dt>
-            <dd>
-              <input
-                type="password"
-                value={embyApiKeyDraft}
-                onChange={event => onEmbyApiKeyChange(event.target.value)}
-                placeholder="留空则不启用上游 Emby"
+                value={embyDsnDraft}
+                onChange={event => onEmbyDsnChange(event.target.value)}
+                placeholder="https://username:password@emby.example.com:8096"
               />
             </dd>
           </div>
@@ -1117,9 +1148,28 @@ function ConfigPanel({
           <span>同步我的收藏</span>
         </label>
         <label className="check-row">
+          <input type="checkbox" checked={draft.qqSyncPlaylists} onChange={event => patch({ qqSyncPlaylists: event.target.checked })} />
+          <span>同步歌单</span>
+        </label>
+        <label className="check-row">
           <input type="checkbox" checked={draft.qqSyncPlayHistory} onChange={event => patch({ qqSyncPlayHistory: event.target.checked })} />
           <span>同步播放历史</span>
         </label>
+        {showSyncPrompt ? (
+          <div className="sync-prompt">
+            <p>已添加上游 Emby。建议先执行一次同步至 Emby。</p>
+            <div className="toolbar">
+              <button className="secondary-button compact-button" onClick={onDismissSyncPrompt}>稍后</button>
+              <button className="compact-button" onClick={onIncrementalSync} disabled={incrementalSync.loading}><Workflow size={15} />同步至 Emby</button>
+            </div>
+          </div>
+        ) : null}
+        <div className="toolbar">
+          <button className="secondary-button compact-button" onClick={onIncrementalSync} disabled={incrementalSync.loading || !embyDsnDraft.trim()}>
+            <Workflow size={15} />同步至 Emby
+          </button>
+        </div>
+        <Status state={incrementalSync} />
       </section>
       <div className="form-actions">
         <button onClick={onSave} disabled={loading}>保存配置</button>
@@ -1196,7 +1246,7 @@ function HealthPanel({
             <div>
               <span>上游 Emby</span>
               <strong>{health.account.embyConfigured ? '已配置' : '未配置'}</strong>
-              <small>{health.account.embyBaseUrlConfigured ? '地址已填写' : '地址未填写'} · {health.account.hasEmbyApiKey ? 'API Key 已保存' : 'API Key 未保存'}</small>
+              <small>{health.account.embyDsnConfigured ? 'DSN 已保存' : 'DSN 未填写'}</small>
             </div>
             <div>
               <span>WebDAV 存储</span>

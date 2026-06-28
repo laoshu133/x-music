@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { updateAccountEmbyConfig } from '@/lib/db/accounts'
+import { hasAccountUpstreamEmby, maskEmbyDsn } from '@/lib/emby/config'
 import { getCurrentAccount } from '@/lib/session'
 
 export const runtime = 'nodejs'
@@ -17,8 +18,7 @@ export async function POST(request: Request): Promise<Response> {
 
   const body = await request.json().catch(() => undefined) as {
     password?: unknown
-    baseUrl?: unknown
-    apiKey?: unknown
+    dsn?: unknown
     sourceWebdavDsn?: unknown
     proxyTimeoutMs?: unknown
   } | undefined
@@ -27,22 +27,24 @@ export async function POST(request: Request): Promise<Response> {
     return NextResponse.json({ error: 'Missing password' }, { status: 400 })
   }
 
+  const hadUpstream = hasAccountUpstreamEmby(account)
   const updated = updateAccountEmbyConfig(account.qqUin, {
     password,
-    baseUrl: optionalString(body?.baseUrl),
-    apiKey: optionalString(body?.apiKey),
+    dsn: optionalString(body?.dsn),
     sourceWebdavDsn: optionalString(body?.sourceWebdavDsn),
     proxyTimeoutMs: optionalNumber(body?.proxyTimeoutMs),
   })
   if (!updated) return NextResponse.json({ error: 'Account not found' }, { status: 404 })
-  return NextResponse.json(accountEmbyConfig(updated))
+  return NextResponse.json({
+    ...accountEmbyConfig(updated),
+    syncRecommended: !hadUpstream && hasAccountUpstreamEmby(updated),
+  })
 }
 
 function accountEmbyConfig(account: {
   embyUsername: string
   embyPassword: string
-  embyBaseUrl?: string
-  embyApiKey?: string
+  embyDsn?: string
   embySourceWebdavDsn?: string
   embyProxyTimeoutMs?: number
 }, password = account.embyPassword) {
@@ -50,9 +52,8 @@ function accountEmbyConfig(account: {
     username: account.embyUsername,
     password,
     hasPassword: Boolean(account.embyPassword),
-    baseUrl: account.embyBaseUrl,
-    hasApiKey: Boolean(account.embyApiKey),
-    apiKey: account.embyApiKey ? '********' : '',
+    dsn: account.embyDsn,
+    maskedDsn: maskEmbyDsn(account.embyDsn),
     sourceWebdavDsn: account.embySourceWebdavDsn,
     hasSourceWebdavDsn: Boolean(account.embySourceWebdavDsn),
     proxyTimeoutMs: account.embyProxyTimeoutMs ?? 30000,

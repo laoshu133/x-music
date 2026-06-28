@@ -305,10 +305,7 @@ async function embyFetch<T = unknown>(
   options: { token?: string } = {},
 ): Promise<T> {
   const config = scriptEmbyConfig()
-  if (!config.baseUrl || !config.apiKey) {
-    throw new Error('Account upstream Emby base URL and API key must be configured in XMusic.')
-  }
-  const token = options.token ?? config.apiKey
+  const token = options.token ?? await scriptEmbyToken(config)
 
   const url = new URL(config.baseUrl)
   const [pathname, search = ''] = path.split('?')
@@ -377,8 +374,7 @@ function readScriptEmbyConfig(): ScriptEmbyConfig {
     ? db.prepare(`
       SELECT
         qq_uin AS qqUin,
-        emby_base_url AS baseUrl,
-        emby_api_key AS apiKey,
+        emby_dsn AS dsn,
         emby_source_webdav_dsn AS sourceWebdavDsn,
         emby_proxy_timeout_ms AS proxyTimeoutMs
       FROM accounts
@@ -388,25 +384,23 @@ function readScriptEmbyConfig(): ScriptEmbyConfig {
     : db.prepare(`
       SELECT
         qq_uin AS qqUin,
-        emby_base_url AS baseUrl,
-        emby_api_key AS apiKey,
+        emby_dsn AS dsn,
         emby_source_webdav_dsn AS sourceWebdavDsn,
         emby_proxy_timeout_ms AS proxyTimeoutMs
       FROM accounts
-      WHERE emby_base_url IS NOT NULL AND emby_base_url != ''
-        AND emby_api_key IS NOT NULL AND emby_api_key != ''
+      WHERE emby_dsn IS NOT NULL AND emby_dsn != ''
       ORDER BY updated_at DESC
       LIMIT 1
     `).get() as AccountEmbyConfigRow | undefined
 
-  if (!row?.baseUrl?.trim() || !row.apiKey?.trim()) {
+  if (!row?.dsn?.trim()) {
     const suffix = qqUinArg?.trim() ? ` for QQ account ${qqUinArg.trim()}` : ''
     throw new Error(`No account upstream Emby configuration found${suffix}. Configure it in the XMusic account Emby settings.`)
   }
+  const parsed = parseEmbyDsn(row.dsn)
   console.log(`Using upstream Emby configuration from XMusic account ${row.qqUin}.`)
   return {
-    baseUrl: row.baseUrl.trim().replace(/\/+$/g, ''),
-    apiKey: row.apiKey.trim(),
+    ...parsed,
     sourceWebdavDsn: row.sourceWebdavDsn?.trim() || undefined,
     proxyTimeoutMs: row.proxyTimeoutMs && row.proxyTimeoutMs > 0 ? row.proxyTimeoutMs : 30000,
   }
@@ -414,15 +408,52 @@ function readScriptEmbyConfig(): ScriptEmbyConfig {
 
 interface ScriptEmbyConfig {
   baseUrl: string
-  apiKey: string
+  username: string
+  password: string
   sourceWebdavDsn?: string
   proxyTimeoutMs: number
 }
 
+let cachedScriptEmbyToken: string | undefined
+async function scriptEmbyToken(config: ScriptEmbyConfig): Promise<string> {
+  if (cachedScriptEmbyToken) return cachedScriptEmbyToken
+  const url = new URL(config.baseUrl)
+  url.pathname = `${url.pathname.replace(/\/+$/, '')}/Users/AuthenticateByName`
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'X-Emby-Authorization': embyAuthorizationHeader(),
+    },
+    body: JSON.stringify({ Username: config.username, Pw: config.password }),
+    cache: 'no-store',
+    signal: AbortSignal.timeout(config.proxyTimeoutMs),
+  })
+  const text = await response.text().catch(() => '')
+  if (!response.ok) throw new Error(`Emby authentication failed ${response.status}: ${text.slice(0, 300)}`)
+  const token = (JSON.parse(text || '{}') as { AccessToken?: string }).AccessToken
+  if (!token) throw new Error('Emby authentication did not return an access token')
+  cachedScriptEmbyToken = token
+  return token
+}
+
+function parseEmbyDsn(dsn: string): Pick<ScriptEmbyConfig, 'baseUrl' | 'username' | 'password'> {
+  const url = new URL(dsn.trim())
+  const username = decodeURIComponent(url.username)
+  const password = decodeURIComponent(url.password)
+  if (!username || !password) throw new Error('Emby DSN must include username and password.')
+  url.username = ''
+  url.password = ''
+  return {
+    baseUrl: url.toString().replace(/\/+$/g, ''),
+    username,
+    password,
+  }
+}
+
 interface AccountEmbyConfigRow {
   qqUin: string
-  baseUrl: string | null
-  apiKey: string | null
+  dsn: string | null
   sourceWebdavDsn: string | null
   proxyTimeoutMs: number | null
 }
