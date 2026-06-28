@@ -9,6 +9,9 @@
     "build": "next build",
     "start": "next start -p 8098",
     "worker": "tsx --tsconfig tsconfig.json src/worker/index.ts",
+    "trigger:login": "trigger.dev login --api-url ${TRIGGER_API_URL:-http://localhost:8030}",
+    "trigger:dev": "trigger.dev dev --env-file .env --api-url ${TRIGGER_API_URL:-http://localhost:8030}",
+    "trigger:deploy": "trigger.dev deploy --env-file .env --api-url ${TRIGGER_API_URL:-http://localhost:8030}",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
     "test": "npm run typecheck && node --test --import tsx --import ./tests/setup-env.mjs tests/*.test.ts"
@@ -18,6 +21,7 @@
   "license": "MIT",
   "type": "module",
   "dependencies": {
+    "@trigger.dev/sdk": "^4.4.6",
     "better-sqlite3": "^12.10.0",
     "lucide-react": "^1.16.0",
     "music-metadata": "^11.12.3",
@@ -29,12 +33,14 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@trigger.dev/build": "^4.4.6",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^25.9.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "eslint": "^9.39.4",
     "eslint-config-next": "^16.2.6",
+    "trigger.dev": "^4.4.6",
     "tsx": "^4.22.2",
     "typescript": "^6.0.3"
   }

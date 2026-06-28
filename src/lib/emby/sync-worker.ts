@@ -7,7 +7,7 @@ import { getFavoriteStatusForAccount } from '@/lib/db/favorites'
 import path from 'node:path'
 import { rmdir, rm } from 'node:fs/promises'
 import { upsertRemoteMapping } from '@/lib/db/remote-mappings'
-import { claimNextJob, completeJob, failJob, requeueJob } from '@/lib/jobs'
+import { claimJobById, claimNextJob, completeJob, failJob, requeueJob, type JobRow } from '@/lib/jobs'
 import {
   createOrUpdateEmbyPlaylist,
   notifyEmbyMediaUpdated,
@@ -46,6 +46,14 @@ interface CachedMediaRow {
   unsupportedPath?: string
 }
 
+interface ResolvedEmbySyncJobOptions {
+  maxAttempts: number
+  cacheWaitMs: number
+  cachePollIntervalMs: number
+  scanWaitMs: number
+  scanPollIntervalMs: number
+}
+
 const defaultCacheWaitMs = Number(process.env.EMBY_SYNC_CACHE_WAIT_MS ?? 30000)
 const defaultCachePollIntervalMs = Number(process.env.EMBY_SYNC_CACHE_POLL_INTERVAL_MS ?? 2000)
 const defaultScanWaitMs = Number(process.env.EMBY_SYNC_SCAN_WAIT_MS ?? 60000)
@@ -56,45 +64,74 @@ function sleep(ms: number): Promise<void> {
 }
 
 export async function processOneEmbySyncJob(options: number | EmbySyncJobOptions = 3): Promise<boolean> {
-  const maxAttempts = typeof options === 'number' ? options : options.maxAttempts ?? 3
-  const cacheWaitMs = typeof options === 'number' ? defaultCacheWaitMs : options.cacheWaitMs ?? defaultCacheWaitMs
-  const cachePollIntervalMs = typeof options === 'number'
-    ? defaultCachePollIntervalMs
-    : options.cachePollIntervalMs ?? defaultCachePollIntervalMs
-  const scanWaitMs = typeof options === 'number' ? defaultScanWaitMs : options.scanWaitMs ?? defaultScanWaitMs
-  const scanPollIntervalMs = typeof options === 'number'
-    ? defaultScanPollIntervalMs
-    : options.scanPollIntervalMs ?? defaultScanPollIntervalMs
+  const resolvedOptions = resolveEmbySyncJobOptions(options)
   const job = claimNextJob<SyncEmbyTrackJobPayload>({
     type: 'sync_emby_track',
-    maxAttempts,
+    maxAttempts: resolvedOptions.maxAttempts,
   })
 
   if (!job) return false
 
+  await processClaimedEmbySyncJob(job, resolvedOptions, { throwOnError: false })
+  return true
+}
+
+export async function processEmbySyncJobById(
+  jobId: number,
+  options: number | EmbySyncJobOptions = 3,
+): Promise<void> {
+  const resolvedOptions = resolveEmbySyncJobOptions(options)
+  const job = claimJobById<SyncEmbyTrackJobPayload>({
+    id: jobId,
+    type: 'sync_emby_track',
+  })
+  if (!job) return
+
+  await processClaimedEmbySyncJob(job, resolvedOptions, { throwOnError: true })
+}
+
+function resolveEmbySyncJobOptions(options: number | EmbySyncJobOptions): ResolvedEmbySyncJobOptions {
+  return {
+    maxAttempts: typeof options === 'number' ? options : options.maxAttempts ?? 3,
+    cacheWaitMs: typeof options === 'number' ? defaultCacheWaitMs : options.cacheWaitMs ?? defaultCacheWaitMs,
+    cachePollIntervalMs: typeof options === 'number'
+      ? defaultCachePollIntervalMs
+      : options.cachePollIntervalMs ?? defaultCachePollIntervalMs,
+    scanWaitMs: typeof options === 'number' ? defaultScanWaitMs : options.scanWaitMs ?? defaultScanWaitMs,
+    scanPollIntervalMs: typeof options === 'number'
+      ? defaultScanPollIntervalMs
+      : options.scanPollIntervalMs ?? defaultScanPollIntervalMs,
+  }
+}
+
+async function processClaimedEmbySyncJob(
+  job: JobRow<SyncEmbyTrackJobPayload>,
+  options: ResolvedEmbySyncJobOptions,
+  behavior: { throwOnError: boolean },
+): Promise<void> {
   try {
     const account = job.payload.qqUin ? getAccountByQQ(job.payload.qqUin) : undefined
     if (!hasAccountUpstreamEmby(account)) {
       failJob(job.id, 'User Emby server is not configured')
-      return true
+      return
     }
     const row = await waitForCachedMedia(job.payload, {
-      timeoutMs: cacheWaitMs,
-      pollIntervalMs: cachePollIntervalMs,
+      timeoutMs: options.cacheWaitMs,
+      pollIntervalMs: options.cachePollIntervalMs,
       requireLibraryFinalPath: shouldRequireLibraryFinalPath(job.payload),
     })
     if (row?.unsupportedPath) {
       failJob(job.id, `Cached file format is not syncable to Emby: ${row.unsupportedPath}`)
-      return true
+      return
     }
     const mediaPath = row?.finalPath ?? row?.rawPath
     if (!mediaPath) {
-      if (job.attempts >= maxAttempts) {
+      if (job.attempts >= options.maxAttempts) {
         failJob(job.id, 'No cached file is ready for Emby sync yet')
       } else {
-        requeueJob(job.id, 'No cached file is ready for Emby sync yet')
+        throw new Error('No cached file is ready for Emby sync yet')
       }
-      return true
+      return
     }
     const syncedMedia = row?.finalPath
       ? await syncMediaFilesToEmbyWebdav({
@@ -110,19 +147,19 @@ export async function processOneEmbySyncJob(options: number | EmbySyncJobOptions
     await notifyEmbyMediaUpdated(scanPath, { account }).catch(() => refreshEmbyLibrary(account))
     const embyItemId = await waitForEmbyAudio(job.payload.musicInfo, {
       path: scanPath,
-      timeoutMs: scanWaitMs,
-      pollIntervalMs: scanPollIntervalMs,
+      timeoutMs: options.scanWaitMs,
+      pollIntervalMs: options.scanPollIntervalMs,
       requirePathMatch: Boolean(syncedMedia),
       account,
     })
     if (!embyItemId) {
       const message = `Emby scan triggered but item was not found for ${job.payload.musicInfo.name} at ${scanPath}`
-      if (job.attempts >= maxAttempts) {
+      if (job.attempts >= options.maxAttempts) {
         failJob(job.id, message)
       } else {
-        requeueJob(job.id, message)
+        throw new Error(message)
       }
-      return true
+      return
     }
 
     upsertRemoteMapping({
@@ -177,14 +214,13 @@ export async function processOneEmbySyncJob(options: number | EmbySyncJobOptions
 
     completeJob(job.id)
   } catch (error) {
-    if (job.attempts >= maxAttempts) {
+    if (job.attempts >= options.maxAttempts) {
       failJob(job.id, error)
     } else {
       requeueJob(job.id, error)
     }
+    if (behavior.throwOnError) throw error
   }
-
-  return true
 }
 
 function recordWebdavSyncEvent(input: {

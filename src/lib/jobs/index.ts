@@ -39,6 +39,11 @@ export interface ClaimJobOptions {
   maxAttempts?: number
 }
 
+export interface ClaimJobByIdOptions {
+  id: number
+  type?: JobType
+}
+
 export interface ClearStaleJobsOptions {
   olderThanSeconds: number
   maxAttempts?: number
@@ -139,6 +144,30 @@ export function claimNextJob<TPayload = unknown>(
   `).get({
     type: options.type,
     maxAttempts,
+  }) as JobRecord | undefined
+
+  return record ? parseJobRecord<TPayload>(record) : null
+}
+
+export function claimJobById<TPayload = unknown>(
+  options: ClaimJobByIdOptions,
+): JobRow<TPayload> | null {
+  ensureJobsTable()
+
+  const record = db.prepare(`
+    UPDATE jobs
+    SET status = 'running',
+        attempts = attempts + 1,
+        error = NULL,
+        next_run_at = NULL,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE id = @id
+      AND status = 'queued'
+      AND (@type IS NULL OR type = @type)
+    RETURNING *
+  `).get({
+    id: options.id,
+    type: options.type ?? null,
   }) as JobRecord | undefined
 
   return record ? parseJobRecord<TPayload>(record) : null

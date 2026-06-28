@@ -25,8 +25,13 @@ export function enqueueEmbyTrackSync(input: SyncEmbyTrackJobPayload): void {
   }) as { id: number } | undefined
   if (existing) return
 
-  createJob({
+  const job = createJob({
     type: 'sync_emby_track',
     payload: input,
+  })
+  void import('@/lib/trigger/dispatch').then(({ dispatchJob }) => {
+    void dispatchJob(job).catch((error: unknown) => {
+      console.warn(`failed to dispatch Emby sync job ${job.id}`, error)
+    })
   })
 }

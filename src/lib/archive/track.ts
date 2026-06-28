@@ -1,7 +1,7 @@
 import { ensureTrack, getPlayableTrackFile, hasActiveTrackFile, upsertTrackFileStatus } from '@/lib/cache/store'
 import { createUpstreamTeeResponse } from '@/lib/cache/stream'
 import { db } from '@/lib/db'
-import { createJob, claimNextJob, completeJob, failJob, requeueJob } from '@/lib/jobs'
+import { createJob, claimJobById, claimNextJob, completeJob, failJob, requeueJob } from '@/lib/jobs'
 import { qualityFallbacks, resolveMusicUrl } from '@/lib/music-url/resolve'
 import { highestAvailableQuality } from '@/lib/quality'
 import type { MusicInfo, MusicQuality } from '@/lib/types'
@@ -30,9 +30,14 @@ export function enqueueTrackArchive(input: ArchiveTrackJobPayload): void {
   }) as { id: number } | undefined
   if (existing) return
 
-  createJob({
+  const job = createJob({
     type: 'archive_track',
     payload: input,
+  })
+  void import('@/lib/trigger/dispatch').then(({ dispatchJob }) => {
+    void dispatchJob(job).catch((error: unknown) => {
+      console.warn(`failed to dispatch archive track job ${job.id}`, error)
+    })
   })
 }
 
@@ -56,7 +61,28 @@ export async function processOneArchiveTrackJob(maxAttempts = 3): Promise<boolea
   return true
 }
 
-async function archiveTrack(payload: ArchiveTrackJobPayload): Promise<void> {
+export async function processArchiveTrackJobById(jobId: number): Promise<void> {
+  const maxAttempts = Number(process.env.WORKER_MAX_ATTEMPTS ?? 3)
+  const job = claimJobById<ArchiveTrackJobPayload>({
+    id: jobId,
+    type: 'archive_track',
+  })
+  if (!job) return
+
+  try {
+    await archiveTrack(job.payload)
+    completeJob(job.id)
+  } catch (error) {
+    if (job.attempts >= maxAttempts) {
+      failJob(job.id, error)
+    } else {
+      requeueJob(job.id, error)
+    }
+    throw error
+  }
+}
+
+export async function archiveTrack(payload: ArchiveTrackJobPayload): Promise<void> {
   const musicInfo = payload.musicInfo
   const preferredQuality = payload.preferredQuality ?? highestAvailableQuality(musicInfo)
   if (getPlayableTrackFile(musicInfo.source, musicInfo.songmid, preferredQuality)) return

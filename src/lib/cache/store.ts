@@ -248,7 +248,7 @@ export const enqueueTagJob = (trackFile: TrackFileRecord, track: TrackRecord): v
   `).get(trackFile.id) as { id: number } | undefined
   if (existing) return
 
-  createJob({
+  const job = createJob({
     type: 'tag_track_file',
     payload: {
       trackFileId: trackFile.id,
@@ -261,6 +261,11 @@ export const enqueueTagJob = (trackFile: TrackFileRecord, track: TrackRecord): v
       album: track.albumName,
       albumId: track.albumId,
     },
+  })
+  void import('@/lib/trigger/dispatch').then(({ dispatchJob }) => {
+    void dispatchJob(job).catch((error: unknown) => {
+      console.warn(`failed to dispatch tag track file job ${job.id}`, error)
+    })
   })
 }
 

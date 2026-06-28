@@ -22,6 +22,7 @@ COPY --from=builder /app/public ./public
 COPY --from=builder /app/src ./src
 COPY --from=builder /app/next.config.ts ./next.config.ts
 COPY --from=builder /app/tsconfig.json ./tsconfig.json
+COPY --from=builder /app/trigger.config.ts ./trigger.config.ts
 ENV PORT=8098
 EXPOSE 8098
 CMD ["node", "server.js"]

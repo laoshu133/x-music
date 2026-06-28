@@ -1,10 +1,9 @@
 import { appConfig } from '@/lib/config'
 import { db } from '@/lib/db'
-import { cleanupResourceCache } from '@/lib/cache/resources'
 import { processOneArchiveTrackJob } from '@/lib/archive/track'
 import { enqueueRefreshUmCryptoJob, processOneRefreshUmCryptoJob } from '@/lib/cache/um-crypto-job'
+import { enqueueCleanupResourceCacheJob, processOneCleanupResourceCacheJob } from '@/lib/cache/cleanup-job'
 import {
-  createJob,
   claimNextJob,
   completeJob,
   ensureJobsTable,
@@ -107,55 +106,14 @@ async function processEmbySyncJob(): Promise<boolean> {
   return processOneEmbySyncJob(maxAttempts)
 }
 
-interface CleanupResourceCacheJobPayload {
-  reason: 'scheduled'
-  scheduledAt: string
-}
-
 function ensureCleanupResourceCacheJob(): void {
   const now = Date.now()
   if (now < nextCleanupAt) return
-  const existing = db.prepare(`
-    SELECT id
-    FROM jobs
-    WHERE type = 'cleanup_resource_cache'
-      AND status IN ('queued', 'running')
-    LIMIT 1
-  `).get() as { id: number } | undefined
-  if (!existing) {
-    createJob<CleanupResourceCacheJobPayload>({
-      type: 'cleanup_resource_cache',
-      payload: {
-        reason: 'scheduled',
-        scheduledAt: new Date(now).toISOString(),
-      },
-    })
-  }
-  nextCleanupAt = now + cleanupIntervalMs
-}
-
-async function processCleanupResourceCacheJob(): Promise<boolean> {
-  const job = claimNextJob<CleanupResourceCacheJobPayload>({
-    type: 'cleanup_resource_cache',
-    maxAttempts,
+  enqueueCleanupResourceCacheJob({
+    reason: 'scheduled',
+    scheduledAt: new Date(now).toISOString(),
   })
-  if (!job) return false
-
-  try {
-    const result = await cleanupResourceCache()
-    completeJob(job.id)
-    console.log(`completed resource cache cleanup job ${job.id}: deleted ${result.deleted} files (${result.bytes} bytes)`)
-  } catch (error) {
-    if (job.attempts >= maxAttempts) {
-      failJob(job.id, error)
-      console.error(`failed resource cache cleanup job ${job.id}`, error)
-    } else {
-      requeueJob(job.id, error)
-      console.warn(`requeued resource cache cleanup job ${job.id}`, error)
-    }
-  }
-
-  return true
+  nextCleanupAt = now + cleanupIntervalMs
 }
 
 interface WorkerTickProcessors {
@@ -176,7 +134,7 @@ export async function processWorkerTick(processors: WorkerTickProcessors = {}): 
   const processedTagJob = await (processors.processTagJob ?? processTagJob)()
   const processedEmbySyncJob = await (processors.processEmbySyncJob ?? processEmbySyncJob)()
   const processedCleanupResourceCacheJob = await (
-    processors.processCleanupResourceCacheJob ?? processCleanupResourceCacheJob
+    processors.processCleanupResourceCacheJob ?? (() => processOneCleanupResourceCacheJob(maxAttempts))
   )()
   return processedRefreshUmCryptoJob || processedArchiveTrackJob || processedTagJob || processedEmbySyncJob || processedCleanupResourceCacheJob
 }
