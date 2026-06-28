@@ -990,6 +990,10 @@ a {
   font-size: 20px;
 }
 
+.status-banner .toolbar {
+  flex-shrink: 0;
+}
+
 .status-banner.ok {
   border-color: rgba(23, 107, 93, 0.45);
   background: var(--accent-soft);
@@ -998,6 +1002,22 @@ a {
 .status-banner.attention {
   border-color: rgba(168, 60, 47, 0.45);
   background: #f7e5e0;
+}
+
+.ops-grid article > .section-head {
+  align-items: center;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.ops-grid article > .section-head h3 {
+  margin: 0;
+}
+
+.ops-grid article > .section-head + .status-table > div:first-child {
+  border-top: 0;
+  padding-top: 0;
 }
 
 .metric-grid {
@@ -1061,6 +1081,14 @@ a {
   padding-top: 8px;
 }
 
+.status-table strong {
+  min-width: 0;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .status-table span {
   min-width: 0;
   overflow: hidden;
@@ -1070,6 +1098,43 @@ a {
 
 .status-table small {
   grid-column: 1 / -1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.failure-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.failure-row {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: inherit;
+  padding: 9px 10px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.failure-row span,
+.failure-row small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.failure-row small {
+  color: var(--muted);
+}
+
+.failure-row:hover {
+  border-color: var(--line-strong);
 }
 
 .jobs-table,

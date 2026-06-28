@@ -167,6 +167,12 @@ export async function processOneEmbySyncJob(options: number | EmbySyncJobOptions
         songmid: job.payload.songmid,
         uploadedPaths: syncedMedia.uploadedPaths,
       }).catch(() => undefined)
+      recordWebdavSyncEvent({
+        account,
+        payload: job.payload,
+        embyPath: syncedMedia.embyPath,
+        uploadedPaths: syncedMedia.uploadedPaths,
+      })
     }
 
     completeJob(job.id)
@@ -179,6 +185,28 @@ export async function processOneEmbySyncJob(options: number | EmbySyncJobOptions
   }
 
   return true
+}
+
+function recordWebdavSyncEvent(input: {
+  account: AccountRecord | undefined
+  payload: SyncEmbyTrackJobPayload
+  embyPath: string
+  uploadedPaths: string[]
+}): void {
+  db.prepare(`
+    INSERT INTO sync_events (type, status, payload_json, updated_at)
+    VALUES (@type, @status, @payloadJson, CURRENT_TIMESTAMP)
+  `).run({
+    type: 'emby_webdav',
+    status: input.uploadedPaths.length > 0 ? 'uploaded' : 'skipped_existing',
+    payloadJson: JSON.stringify({
+      qqUin: input.account?.qqUin,
+      source: input.payload.source,
+      songmid: input.payload.songmid,
+      embyPath: input.embyPath,
+      uploadedPaths: input.uploadedPaths,
+    }),
+  })
 }
 
 function upsertPlaylistMapping(playlistId: string | undefined, remoteId: string, name: string, account?: AccountRecord): void {

@@ -1030,8 +1030,23 @@ test('emby sync job uploads ready media through WebDAV before scanning Emby', as
     assert.equal(row.lyricsPath, null)
     assert.equal(row.coverPath, null)
     assert.equal(row.error, 'Synced to Emby source and removed from local cache')
+    const event = db.prepare(`
+      SELECT status, payload_json AS payloadJson
+      FROM sync_events
+      WHERE type = 'emby_webdav'
+        AND json_extract(payload_json, '$.songmid') = ?
+      ORDER BY id DESC
+      LIMIT 1
+    `).get(songmid) as { status: string; payloadJson: string } | undefined
+    assert.equal(event?.status, 'uploaded')
+    assert.deepEqual(JSON.parse(event?.payloadJson ?? '{}').uploadedPaths, [
+      'WebDAV Artist/WebDAV Album/WebDAV Artist - WebDAV Song.flac',
+      'WebDAV Artist/WebDAV Album/WebDAV Artist - WebDAV Song.lrc',
+      'WebDAV Artist/WebDAV Album/cover.jpg',
+    ])
   } finally {
     rmSync(path.join(appConfig.musicDir, 'WebDAV Artist'), { recursive: true, force: true })
+    db.prepare("DELETE FROM sync_events WHERE type = 'emby_webdav' AND json_extract(payload_json, '$.songmid') = ?").run(songmid)
     globalThis.fetch = originalFetch
   }
 })
@@ -1142,8 +1157,19 @@ test('emby sync job skips WebDAV upload when remote audio already exists', async
     assert.equal(row.finalPath, finalPath)
     assert.equal(row.lyricsPath, lyricsPath)
     assert.equal(row.coverPath, coverPath)
+    const event = db.prepare(`
+      SELECT status, payload_json AS payloadJson
+      FROM sync_events
+      WHERE type = 'emby_webdav'
+        AND json_extract(payload_json, '$.songmid') = ?
+      ORDER BY id DESC
+      LIMIT 1
+    `).get(songmid) as { status: string; payloadJson: string } | undefined
+    assert.equal(event?.status, 'skipped_existing')
+    assert.deepEqual(JSON.parse(event?.payloadJson ?? '{}').uploadedPaths, [])
   } finally {
     rmSync(path.join(appConfig.musicDir, 'WebDAV Existing Artist'), { recursive: true, force: true })
+    db.prepare("DELETE FROM sync_events WHERE type = 'emby_webdav' AND json_extract(payload_json, '$.songmid') = ?").run(songmid)
     db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track' AND json_extract(payload_json, '$.songmid') = ?").run(songmid)
     db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run(songmid)
     globalThis.fetch = originalFetch

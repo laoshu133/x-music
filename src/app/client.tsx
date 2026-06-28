@@ -91,11 +91,43 @@ interface AdminConfig {
 interface HealthStatus {
   ok: boolean
   checkedAt: string
+  account: {
+    loggedIn: boolean
+    qqUin?: string
+    qqNickname?: string
+    qqAuthState: 'active' | 'expired' | 'missing'
+    qqAuthCheckedAt?: string
+    qqAuthError?: string
+    embyGatewayUsername?: string
+    embyConfigured: boolean
+    embyBaseUrlConfigured?: boolean
+    hasEmbyApiKey: boolean
+    webdavConfigured: boolean
+    proxyTimeoutMs?: number
+  }
   database: { ok: boolean; tracks?: number; trackFiles?: number; playEvents?: number; error?: string }
   cache: Record<string, { path: string; exists: boolean; writable: boolean; isDirectory: boolean; entries: number; error?: string }>
   jobs: { byStatus: Record<string, number>; byType?: Record<string, Record<string, number>>; total: number; queued: number; running: number; completed: number; failed: number }
   favorites: { favoriteCount: number; pendingCount: number; failedCount: number }
   resourceCache: { total: number; totalBytes: number; byType: Record<string, { count: number; bytes: number }> }
+  audioCache: {
+    total: number
+    totalBytes: number
+    byQuality: Record<string, { total: number; bytes: number; byStatus: Record<string, number> }>
+    byStatus: Record<string, number>
+    lyrics: number
+    covers: number
+    ready: number
+    tagging: number
+    cachedRaw: number
+    failed: number
+    missing: number
+  }
+  sync: {
+    jobs: Record<string, { total: number; queued: number; running: number; completed: number; failed: number }>
+    recentFailures: Array<{ id: number; type: string; error: string; updatedAt: string }>
+    webdav: { uploaded: number; skippedExisting: number }
+  }
   config: { missing: string[]; lxMusicSourceScript: boolean }
   permissions?: { isAdmin: boolean }
 }
@@ -698,6 +730,8 @@ export default function MusicClient() {
                 favoriteStatus={favoriteStatus}
                 isAdmin={Boolean(account.data?.isAdmin)}
                 onSyncFavorites={syncFavoriteStatus}
+                onOpenConfig={() => openView('config')}
+                onOpenJobs={() => openView('jobs')}
               />
             ) : null}
           </section>
@@ -1099,34 +1133,109 @@ function HealthPanel({
   favoriteStatus,
   isAdmin,
   onSyncFavorites,
+  onOpenConfig,
+  onOpenJobs,
 }: {
   health: HealthStatus
   favoriteStatus: ApiState<FavoriteStatusSummary>
   isAdmin: boolean
   onSyncFavorites: () => void
+  onOpenConfig: () => void
+  onOpenJobs: () => void
 }) {
   const cacheEntries = Object.entries(health.resourceCache.byType)
+  const archiveJob = health.sync.jobs.archive_track ?? emptyJobMetrics()
+  const embySyncJob = health.sync.jobs.sync_emby_track ?? emptyJobMetrics()
+  const tagJob = health.sync.jobs.tag_track_file ?? emptyJobMetrics()
+  const hasJobPressure = archiveJob.failed + embySyncJob.failed + tagJob.failed > 0
+  const hasQueuedJobs = archiveJob.queued + embySyncJob.queued + tagJob.queued > 0
+  const accountLabel = health.account.qqNickname ?? (health.account.qqUin ? `QQ ${health.account.qqUin}` : '未登录')
+  const pipelineTone = hasJobPressure ? 'bad' : hasQueuedJobs ? 'warn' : 'ok'
   return (
     <div className="ops-layout">
       <section className={health.ok ? 'status-banner ok' : 'status-banner attention'}>
         <div>
           <span>{health.ok ? 'OK' : 'Needs Attention'}</span>
-          <h3>{health.ok ? '核心依赖可用' : '需要处理运行问题'}</h3>
+          <h3>{health.ok ? '当前账号链路正常' : '需要处理运行问题'}</h3>
           <p>最后检查 {formatDateTime(health.checkedAt)}</p>
+        </div>
+        <div className="toolbar">
+          {!health.account.embyConfigured || !health.account.webdavConfigured || health.account.qqAuthState !== 'active'
+            ? <button className="secondary-button compact-button" onClick={onOpenConfig}><Settings size={15} />配置</button>
+            : null}
+          {isAdmin && hasJobPressure ? <button className="secondary-button compact-button" onClick={onOpenJobs}><Workflow size={15} />任务</button> : null}
         </div>
       </section>
 
       <section className="metric-grid">
-        <MetricCard icon={Database} label="曲库" value={String(health.database.tracks ?? 0)} detail={`${health.database.trackFiles ?? 0} 个文件 · ${health.database.playEvents ?? 0} 次播放`} tone={health.database.ok ? 'ok' : 'bad'} />
-        {isAdmin ? <MetricCard icon={Workflow} label="任务" value={String(health.jobs.total)} detail={`${health.jobs.queued} 等待 · ${health.jobs.failed} 失败`} tone={health.jobs.failed ? 'bad' : health.jobs.queued ? 'warn' : 'ok'} /> : null}
-        <MetricCard icon={PlayCircle} label="资源缓存" value={`${health.resourceCache.total}`} detail={formatBytes(health.resourceCache.totalBytes)} tone="ok" />
-        <MetricCard icon={KeyRound} label="配置" value={health.config.missing.length ? '缺少配置' : '可用'} detail={health.config.missing.length ? health.config.missing.join(', ') : '音源已就绪'} tone={health.config.missing.length ? 'bad' : 'ok'} />
+        <MetricCard icon={UserRound} label="QQ 授权" value={qqAuthLabel(health.account.qqAuthState)} detail={accountLabel} tone={health.account.qqAuthState === 'active' ? 'ok' : 'bad'} />
+        <MetricCard icon={KeyRound} label="音源 URL" value={health.config.missing.length ? '缺少配置' : '可用'} detail={health.config.missing.length ? health.config.missing.join(', ') : 'LX 音源已就绪'} tone={health.config.missing.length ? 'bad' : 'ok'} />
+        <MetricCard icon={MonitorPlay} label="账号 Emby" value={health.account.embyConfigured ? '已配置' : '未配置'} detail={health.account.webdavConfigured ? 'WebDAV 已配置' : 'WebDAV 未配置'} tone={health.account.embyConfigured ? health.account.webdavConfigured ? 'ok' : 'warn' : 'warn'} />
+        <MetricCard icon={Workflow} label="转存链路" value={pipelineLabel(pipelineTone)} detail={`${archiveJob.queued + embySyncJob.queued + tagJob.queued} 等待 · ${archiveJob.failed + embySyncJob.failed + tagJob.failed} 失败`} tone={pipelineTone} />
       </section>
 
       <section className="ops-grid">
         <article>
           <div className="section-head compact-head">
-            <h3>收藏状态</h3>
+            <h3>当前账号配置</h3>
+            <button className="secondary-button compact-button" onClick={onOpenConfig}>
+              <Settings size={15} />管理
+            </button>
+          </div>
+          <div className="status-table">
+            <div>
+              <span>QQ 用户</span>
+              <strong>{accountLabel}</strong>
+              <small>{health.account.qqAuthState === 'active' ? '授权有效' : health.account.qqAuthError ?? '需要重新授权'}</small>
+            </div>
+            <div>
+              <span>Emby 网关账号</span>
+              <strong>{health.account.embyGatewayUsername ?? '-'}</strong>
+              <small>播放器连接使用的本地账号</small>
+            </div>
+            <div>
+              <span>上游 Emby</span>
+              <strong>{health.account.embyConfigured ? '已配置' : '未配置'}</strong>
+              <small>{health.account.embyBaseUrlConfigured ? '地址已填写' : '地址未填写'} · {health.account.hasEmbyApiKey ? 'API Key 已保存' : 'API Key 未保存'}</small>
+            </div>
+            <div>
+              <span>WebDAV 存储</span>
+              <strong>{health.account.webdavConfigured ? '已配置' : '未配置'}</strong>
+              <small>超时 {health.account.proxyTimeoutMs ?? 30000} ms</small>
+            </div>
+          </div>
+        </article>
+
+        <article>
+          <div className="section-head compact-head">
+            <h3>转存链路</h3>
+            {isAdmin ? <button className="secondary-button compact-button" onClick={onOpenJobs}><Workflow size={15} />任务</button> : null}
+          </div>
+          <div className="status-table">
+            <JobMetricRow label="歌曲归档" metrics={archiveJob} />
+            <JobMetricRow label="Emby 同步" metrics={embySyncJob} />
+            <JobMetricRow label="标签整理" metrics={tagJob} />
+            <div>
+              <span>WebDAV 最近 7 天</span>
+              <strong>{health.sync.webdav.uploaded + health.sync.webdav.skippedExisting}</strong>
+              <small>{health.sync.webdav.uploaded} 次上传 · {health.sync.webdav.skippedExisting} 次远端已存在跳过</small>
+            </div>
+          </div>
+          {health.sync.recentFailures.length ? (
+            <div className="failure-list">
+              {health.sync.recentFailures.map(item => (
+                <button key={item.id} className="failure-row" onClick={onOpenJobs}>
+                  <span>#{item.id} {jobTypeLabel(item.type)}</span>
+                  <small>{item.error || '未知错误'} · {formatDateTime(item.updatedAt)}</small>
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </article>
+
+        <article>
+          <div className="section-head compact-head">
+            <h3>收藏同步</h3>
             <button className="secondary-button compact-button" onClick={onSyncFavorites} disabled={favoriteStatus.loading}>
               <Heart size={15} />同步收藏
             </button>
@@ -1140,8 +1249,8 @@ function HealthPanel({
             </div>
             <div>
               <span>Emby 源收藏数</span>
-              <strong>{favoriteStatus.data?.embyTotal ?? '-'}</strong>
-              <small>当前 Emby 用户收藏</small>
+              <strong>{health.account.embyConfigured ? favoriteStatus.data?.embyTotal ?? '-' : '不适用'}</strong>
+              <small>{health.account.embyConfigured ? '当前 Emby 用户收藏' : '当前账号未配置上游 Emby'}</small>
             </div>
             <div>
               <span>等待同步</span>
@@ -1152,6 +1261,37 @@ function HealthPanel({
               <span>同步失败</span>
               <strong>{health.favorites.failedCount}</strong>
               <small>{health.favorites.failedCount ? '需要检查任务详情' : '无需处理'}</small>
+            </div>
+          </div>
+        </article>
+
+        <article>
+          <h3>音频缓存</h3>
+          <div className="status-table">
+            <div>
+              <span>全部音频</span>
+              <strong>{health.audioCache.total}</strong>
+              <small>{formatBytes(health.audioCache.totalBytes)}</small>
+            </div>
+            {['flac', '320k', '128k'].map(quality => {
+              const item = health.audioCache.byQuality[quality]
+              return (
+                <div key={quality}>
+                  <span>{qualityLabel(quality)}</span>
+                  <strong>{item?.total ?? 0}</strong>
+                  <small>{formatBytes(item?.bytes ?? 0)} · ready {item?.byStatus.ready ?? 0} · failed {item?.byStatus.failed ?? 0}</small>
+                </div>
+              )
+            })}
+            <div>
+              <span>歌词 / 封面</span>
+              <strong>{health.audioCache.lyrics + health.audioCache.covers}</strong>
+              <small>{health.audioCache.lyrics} 份歌词 · {health.audioCache.covers} 张封面</small>
+            </div>
+            <div>
+              <span>异常缓存</span>
+              <strong>{health.audioCache.failed + health.audioCache.missing}</strong>
+              <small>{health.audioCache.failed} 失败 · {health.audioCache.missing} 丢失</small>
             </div>
           </div>
         </article>
@@ -1173,9 +1313,83 @@ function HealthPanel({
             )) : <p>暂无缓存</p>}
           </div>
         </article>
+
+        {isAdmin ? (
+          <article>
+            <h3>系统存储</h3>
+            <div className="status-table">
+              <div>
+                <span>曲库</span>
+                <strong>{String(health.database.tracks ?? 0)}</strong>
+                <small>{health.database.trackFiles ?? 0} 个文件 · {health.database.playEvents ?? 0} 次播放</small>
+              </div>
+              {Object.entries(health.cache).map(([key, item]) => (
+                <div key={key}>
+                  <span>{cacheDirectoryLabel(key)}</span>
+                  <strong>{item.writable ? '可写' : '异常'}</strong>
+                  <small>{item.path}</small>
+                </div>
+              ))}
+            </div>
+          </article>
+        ) : null}
       </section>
     </div>
   )
+}
+
+function JobMetricRow({
+  label,
+  metrics,
+}: {
+  label: string
+  metrics: { total: number; queued: number; running: number; completed: number; failed: number }
+}) {
+  return (
+    <div>
+      <span>{label}</span>
+      <strong>{metrics.total}</strong>
+      <small>{metrics.queued} 等待 · {metrics.running} 运行 · {metrics.failed} 失败</small>
+    </div>
+  )
+}
+
+function emptyJobMetrics() {
+  return { total: 0, queued: 0, running: 0, completed: 0, failed: 0 }
+}
+
+function qqAuthLabel(status: HealthStatus['account']['qqAuthState']): string {
+  if (status === 'active') return '有效'
+  if (status === 'expired') return '已过期'
+  return '未登录'
+}
+
+function pipelineLabel(tone: 'ok' | 'warn' | 'bad'): string {
+  if (tone === 'bad') return '有失败'
+  if (tone === 'warn') return '有等待'
+  return '正常'
+}
+
+function jobTypeLabel(type: string): string {
+  if (type === 'archive_track') return '歌曲归档'
+  if (type === 'sync_emby_track') return 'Emby 同步'
+  if (type === 'tag_track_file') return '标签整理'
+  return type
+}
+
+function qualityLabel(quality: string): string {
+  if (quality === 'flac') return '无损 FLAC'
+  if (quality === '320k') return '高品质 320k'
+  if (quality === '128k') return '标准 128k'
+  return quality
+}
+
+function cacheDirectoryLabel(key: string): string {
+  if (key === 'dataDir') return '数据目录'
+  if (key === 'stagingDir') return '暂存目录'
+  if (key === 'inboxDir') return '入库目录'
+  if (key === 'musicDir') return '音乐目录'
+  return key
 }
 
 function JobsPanel({ jobs }: { jobs: JobsResult }) {
