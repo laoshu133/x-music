@@ -93,6 +93,7 @@ const QQ_FAVORITES_MAX_CONCURRENCY = 4
 const QQ_FAVORITES_DEFAULT_TOTAL = 999
 const MAX_EMBY_SEARCH_VIRTUAL_ITEMS = 50
 const VIRTUAL_RECOMMENDATION_PLAYLIST_PLAY_COUNT = '999999999'
+const PINNED_RECOMMENDATION_COUNT = 2
 const QQ_FAVORITE_ORDER_BASE_MS = Date.UTC(2099, 0, 1)
 const LOCAL_LIBRARY_CACHE_TTL_MS = 30_000
 const FAVORITE_SORT_TIME = Symbol('favoriteSortTime')
@@ -1015,10 +1016,14 @@ async function handleItemsRequest(request: Request, embyPath: string): Promise<R
   }
 
   if (isMusicLibraryId(parentId) && requestedTypes.has('musicalbum')) {
+    const prependRecommendations = shouldPrependPinnedRecommendationItems(url, requestedTypes, parentId, 'musicalbum')
     if (!hasUpstreamEmbyConfigured(authorizedLocalAccount(request))) {
       return handleLocalMusicLibraryItemsRequest(request, requestedTypes, page, filters)
     }
-    const upstream = await tryReadItemsResponse(request, embyPath)
+    const upstream = await tryReadItemsResponse(request, embyPath, prependRecommendations ? upstreamPageAfterPinnedItems(page, PINNED_RECOMMENDATION_COUNT) : undefined)
+    if (prependRecommendations) {
+      return pagedItemsResponseWithPinnedRecommendations(upstream, page, 'musicalbum')
+    }
     return upstream ? Response.json(upstream) : emptyItemsResponse()
   }
 
@@ -1110,7 +1115,12 @@ async function handleLocalMusicLibraryItemsRequest(
     items.push(...playlists.map(playlistToEmbyItem))
   }
 
-  return pagedItemsResponse(sortLocalLibraryItems(items, url), page, items.length)
+  const sorted = sortLocalLibraryItems(items, url)
+  const containerType = requestedSingleContainerType(requestedTypes)
+  const ordered = containerType && shouldPrependPinnedRecommendationItems(url, requestedTypes, url.searchParams.get('ParentId') ?? url.searchParams.get('parentId') ?? '', containerType)
+    ? prependPinnedRecommendationItems(sorted, containerType)
+    : sorted
+  return pagedItemsResponse(ordered, page, ordered.length)
 }
 
 async function handleVirtualArtistItemsRequest(
@@ -2921,6 +2931,35 @@ function playlistToMusicAlbumItem(playlist: QQPlaylistInfo) {
   }
 }
 
+type PinnedRecommendationItemType = 'playlist' | 'musicalbum'
+
+function pinnedRecommendationPlaylists(): QQPlaylistInfo[] {
+  const playlists = [defaultVirtualPlaylist('__daily__'), defaultVirtualPlaylist('__guess__')]
+  for (const playlist of playlists) {
+    rememberVirtualPlaylist(playlist)
+  }
+  return playlists
+}
+
+function pinnedRecommendationItems(type: PinnedRecommendationItemType): any[] {
+  return pinnedRecommendationPlaylists().map(playlist => type === 'playlist' ? playlistToEmbyItem(playlist) : playlistToMusicAlbumItem(playlist))
+}
+
+function prependPinnedRecommendationItems(items: any[], type: PinnedRecommendationItemType): any[] {
+  const pinnedItems = pinnedRecommendationItems(type)
+  const pinnedKeys = new Set(pinnedItems.map(recommendationItemKey))
+  const others = items.filter(item => !pinnedKeys.has(recommendationItemKey(item)) && !isPinnedRecommendationPlaylistItem(item))
+  return [...pinnedItems, ...others]
+}
+
+function recommendationItemKey(item: any): string {
+  const id = String(item?.Id ?? '')
+  const decoded = decodeVirtualId(id)
+  if (decoded?.kind === 'qq-daily') return 'id:qq-daily'
+  if (decoded?.kind === 'qq-guess') return 'id:qq-guess'
+  return `name:${String(item?.Type ?? '').toLowerCase()}:${normalizeText(String(item?.Name ?? ''))}`
+}
+
 function isPinnedRecommendationPlaylistItem(item: { Id?: string }): boolean {
   const decoded = decodeVirtualId(item.Id ?? '')
   return decoded?.kind === 'qq-daily' || decoded?.kind === 'qq-guess'
@@ -3566,6 +3605,45 @@ function pagedItemsResponse(items: any[], page: PageParams, totalRecordCount = i
   })
 }
 
+function upstreamPageAfterPinnedItems(page: PageParams, pinnedCount: number): PageParams {
+  const pinnedItemsOnPage = Math.max(pinnedCount - page.startIndex, 0)
+  return {
+    startIndex: Math.max(page.startIndex - pinnedCount, 0),
+    limit: page.limit === undefined ? undefined : Math.max(page.limit - pinnedItemsOnPage, 0),
+  }
+}
+
+function pagedItemsResponseWithPinnedRecommendations(
+  upstream: { Items?: any[]; TotalRecordCount?: number } | undefined,
+  page: PageParams,
+  type: PinnedRecommendationItemType,
+): Response {
+  const pinned = pinnedRecommendationItems(type)
+  const pinnedKeys = new Set(pinned.map(recommendationItemKey))
+  const upstreamItems = (upstream?.Items ?? [])
+    .filter(item => !pinnedKeys.has(recommendationItemKey(item)) && !isPinnedRecommendationPlaylistItem(item))
+  const upstreamTotal = Number.isFinite(upstream?.TotalRecordCount)
+    ? Math.max(upstream?.TotalRecordCount ?? 0, upstreamItems.length)
+    : upstreamItems.length
+  const total = upstreamTotal + pinned.length
+  const desiredCount = page.limit ?? total
+  const items: any[] = []
+
+  if (page.startIndex < pinned.length) {
+    items.push(...pinned.slice(page.startIndex, Math.min(pinned.length, page.startIndex + desiredCount)))
+  }
+
+  const remaining = Math.max(desiredCount - items.length, 0)
+  if (remaining > 0) {
+    items.push(...upstreamItems.slice(0, remaining))
+  }
+
+  return Response.json({
+    Items: items,
+    TotalRecordCount: total,
+  })
+}
+
 function filteredUpstreamTotal(upstream: { Items?: any[]; TotalRecordCount?: number } | undefined, filteredItems: any[]): number | undefined {
   const rawItems = upstream?.Items ?? []
   if (rawItems.length !== filteredItems.length) return filteredItems.length
@@ -3657,6 +3735,69 @@ function parseIncludeTypes(includeTypes: string): Set<string> {
 
 function shouldIncludeType(requestedTypes: Set<string>, type: string): boolean {
   return requestedTypes.size === 0 || requestedTypes.has(type)
+}
+
+function requestedSingleContainerType(requestedTypes: Set<string>): PinnedRecommendationItemType | undefined {
+  if (requestedTypes.size !== 1) return undefined
+  if (requestedTypes.has('playlist')) return 'playlist'
+  if (requestedTypes.has('musicalbum')) return 'musicalbum'
+  return undefined
+}
+
+function shouldPrependPinnedRecommendationItems(
+  url: URL,
+  requestedTypes: Set<string>,
+  parentId: string,
+  type: PinnedRecommendationItemType,
+): boolean {
+  if (!isMusicLibraryId(parentId)) return false
+  if (requestedSingleContainerType(requestedTypes) !== type) return false
+  if ((url.searchParams.get('SearchTerm') ?? url.searchParams.get('searchTerm') ?? url.searchParams.get('search'))?.trim()) return false
+  if (requestFilters(url).size > 0) return false
+  if (hasVirtualArtistFilter(url) || virtualGenreIds(url).length > 0) return false
+  return !hasSpecialContainerFilter(url)
+}
+
+function hasSpecialContainerFilter(url: URL): boolean {
+  const keys = [
+    'AlbumArtistIds',
+    'ArtistIds',
+    'GenreIds',
+    'Ids',
+    'IsFavorite',
+    'IsPlayed',
+    'LimitToItems',
+    'MinDateLastSaved',
+    'NameStartsWith',
+    'NameStartsWithOrGreater',
+    'OfficialRatings',
+    'PersonIds',
+    'SearchTerm',
+    'SeriesStatuses',
+    'StudioIds',
+    'Tags',
+    'Years',
+    'Year',
+    'albumArtistIds',
+    'artistIds',
+    'genreIds',
+    'ids',
+    'isFavorite',
+    'isPlayed',
+    'limitToItems',
+    'minDateLastSaved',
+    'nameStartsWith',
+    'nameStartsWithOrGreater',
+    'officialRatings',
+    'personIds',
+    'searchTerm',
+    'seriesStatuses',
+    'studioIds',
+    'tags',
+    'years',
+    'year',
+  ]
+  return keys.some(key => Boolean(url.searchParams.get(key)?.trim()))
 }
 
 function shouldIncludePlaylistTracks(requestedTypes: Set<string>): boolean {

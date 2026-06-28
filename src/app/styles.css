@@ -516,7 +516,7 @@ a {
 .login-tabs {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
+  gap: 4px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface-2);
@@ -528,12 +528,23 @@ a {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 7px;
+  gap: 6px;
   min-width: 0;
   border: 0;
   border-radius: 6px;
   background: transparent;
   color: var(--muted);
+  padding: 0 8px;
+  font-size: 15px;
+  white-space: nowrap;
+  overflow: hidden;
+  line-height: 1;
+}
+
+.login-tabs button span {
+  min-width: 0;
+  overflow: visible;
+  white-space: nowrap;
 }
 
 .login-tabs button.active {
@@ -580,6 +591,34 @@ a {
   min-height: 128px;
   padding: 10px;
   resize: vertical;
+}
+
+.login-help {
+  max-width: 560px;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.mobile-auth-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.mobile-auth-form {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.mobile-auth-form label {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.mobile-auth-form textarea {
+  min-height: 92px;
 }
 
 .qr-login {
@@ -681,6 +720,7 @@ a {
   gap: 8px;
 }
 
+.auth-page,
 .demo-page {
   min-height: 100vh;
   display: grid;
@@ -688,6 +728,7 @@ a {
   padding: 24px;
 }
 
+.auth-panel,
 .demo-panel {
   width: min(720px, 100%);
   display: grid;
@@ -699,6 +740,7 @@ a {
   box-shadow: var(--shadow);
 }
 
+.auth-heading,
 .demo-heading {
   display: grid;
   grid-template-columns: 32px minmax(0, 1fr);
@@ -706,17 +748,20 @@ a {
   align-items: start;
 }
 
+.auth-heading h1,
 .demo-heading h1 {
   font-size: 24px;
   line-height: 1.2;
 }
 
+.auth-actions,
 .demo-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
 }
 
+.auth-actions button,
 .demo-actions button,
 .secondary-link {
   min-height: 40px;
@@ -732,17 +777,20 @@ a {
   text-decoration: none;
 }
 
+.auth-actions button,
 .demo-actions button {
   border-color: var(--accent);
   background: var(--accent);
   color: white;
 }
 
+.auth-facts,
 .demo-facts {
   display: grid;
   gap: 8px;
 }
 
+.auth-facts div,
 .demo-facts div {
   display: grid;
   grid-template-columns: 96px minmax(0, 1fr);
@@ -751,14 +799,54 @@ a {
   padding-top: 8px;
 }
 
+.auth-facts dt,
 .demo-facts dt {
   color: var(--muted);
   font-size: 13px;
 }
 
+.auth-facts dd,
 .demo-facts dd {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.auth-paste-form,
+.demo-paste-form {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+.auth-paste-form label,
+.demo-paste-form label {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.auth-paste-form textarea,
+.demo-paste-form textarea {
+  min-height: 96px;
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fffaf1;
+  color: var(--ink);
+  padding: 10px;
+  resize: vertical;
+}
+
+.auth-paste-form button,
+.demo-paste-form button {
+  width: fit-content;
+  min-height: 40px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--accent);
+  color: white;
+  padding: 0 12px;
 }
 
 .spin {
@@ -2029,6 +2117,53 @@ button.user-row.active {
 
   .login-card {
     padding: 16px;
+    gap: 18px;
+  }
+
+  .login-tabs {
+    grid-template-columns: none;
+    grid-auto-flow: column;
+    grid-auto-columns: max-content;
+    justify-content: start;
+    gap: 4px;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .login-tabs button {
+    min-height: 38px;
+    gap: 4px;
+    min-width: 112px;
+    padding: 0 10px;
+    font-size: 13px;
+  }
+
+  .login-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .login-tabs button svg {
+    width: 15px;
+    height: 15px;
+    flex: 0 0 auto;
+  }
+
+  .login-methods section {
+    padding: 14px;
+  }
+
+  .login-methods h2 {
+    font-size: 17px;
+  }
+
+  .login-help {
+    max-width: none;
+    font-size: 13px;
+  }
+
+  .mobile-auth-form textarea {
+    min-height: 88px;
   }
 
   .hero-panel {

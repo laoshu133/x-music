@@ -7660,6 +7660,12 @@ test('local emby library exploration endpoints proxy upstream and fall back to e
         assert.equal(typeof payload.TotalRecordCount, 'number')
       } else if (query.includes('Filters=IsFavorite') && query.includes('IncludeItemTypes=Audio')) {
         assert.deepEqual(payload, { Items: [], TotalRecordCount: 999 })
+      } else if (query.includes('IncludeItemTypes=MusicAlbum') && !query.includes('Filters=')) {
+        assert.equal(payload.TotalRecordCount, 2)
+        assert.deepEqual(payload.Items.map((item: { Name: string; Type: string }) => [item.Name, item.Type]), [
+          ['QQ 每日推荐', 'MusicAlbum'],
+          ['QQ 猜你喜欢', 'MusicAlbum'],
+        ])
       } else {
         assert.deepEqual(payload, { Items: [], TotalRecordCount: 0 })
       }
@@ -7688,6 +7694,69 @@ test('local emby library exploration endpoints proxy upstream and fall back to e
     assert.equal(image.status, 204)
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999004')
+    clearUpstreamMusicLibraryCache()
+    clearQQLoginCookie()
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('local emby root album list prepends QQ recommendation playlists after upstream response', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999118')
+    saveQQLoginCookie('uin=o999118; qm_keyst=test-key')
+    markAccountUpstreamBound('999118')
+    const account = getAccountByQQ('999118')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const authHeader = `MediaBrowser Client="Amcfy Music for iOS", Version="1.0.20.5875", Device="iPhone", Token="${authPayload.AccessToken}"`
+
+    const upstreamRequests: URL[] = []
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const requestUrl = new URL(String(url))
+      upstreamRequests.push(requestUrl)
+      return Response.json({
+        Items: [{ Id: 'upstream-album-1', Name: 'Upstream Album', Type: 'MusicAlbum' }],
+        TotalRecordCount: 1,
+      })
+    }) as typeof fetch
+
+    const rootAlbums = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=MusicAlbum&ParentId=x-music-music&SortBy=Random&Limit=21&StartIndex=0`, {
+        headers: { 'X-Emby-Authorization': authHeader },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/Items`),
+    )
+    assert.equal(rootAlbums.status, 200)
+    const rootAlbumsPayload = await rootAlbums.json()
+    assert.equal(rootAlbumsPayload.TotalRecordCount, 3)
+    assert.deepEqual(rootAlbumsPayload.Items.map((item: { Name: string; Type: string }) => [item.Name, item.Type]), [
+      ['QQ 每日推荐', 'MusicAlbum'],
+      ['QQ 猜你喜欢', 'MusicAlbum'],
+      ['Upstream Album', 'MusicAlbum'],
+    ])
+    assert.equal(upstreamRequests[0].searchParams.get('Limit'), '19')
+
+    const filteredAlbums = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=MusicAlbum&ParentId=x-music-music&Filters=IsFavorite&Limit=21&StartIndex=0`, {
+        headers: { 'X-Emby-Authorization': authHeader },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/Items`),
+    )
+    assert.equal(filteredAlbums.status, 200)
+    const filteredAlbumsPayload = await filteredAlbums.json()
+    assert.deepEqual(filteredAlbumsPayload, {
+      Items: [{ Id: 'upstream-album-1', Name: 'Upstream Album', Type: 'MusicAlbum' }],
+      TotalRecordCount: 1,
+    })
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999118')
     clearUpstreamMusicLibraryCache()
     clearQQLoginCookie()
     globalThis.fetch = originalFetch
@@ -7785,6 +7854,10 @@ test('local emby root library reads cached QQ favorites and playlists without up
     assert.equal(albums.status, 200)
     const albumsPayload = await albums.json()
     assert.equal(albumsPayload.TotalRecordCount, 3)
+    assert.deepEqual(albumsPayload.Items.slice(0, 2).map((item: { Name: string; Type: string }) => [item.Name, item.Type]), [
+      ['QQ 每日推荐', 'MusicAlbum'],
+      ['QQ 猜你喜欢', 'MusicAlbum'],
+    ])
     assert.ok(albumsPayload.Items.some((item: { Name: string; Type: string }) => item.Name === 'Root Playlist' && item.Type === 'MusicAlbum'))
     assert.ok(albumsPayload.Items.some((item: { Name: string; Type: string }) => item.Name === 'QQ 每日推荐' && item.Type === 'MusicAlbum'))
 
@@ -7795,6 +7868,10 @@ test('local emby root library reads cached QQ favorites and playlists without up
     assert.equal(playlists.status, 200)
     const playlistsPayload = await playlists.json()
     assert.equal(playlistsPayload.TotalRecordCount, 3)
+    assert.deepEqual(playlistsPayload.Items.slice(0, 2).map((item: { Name: string; Type: string }) => [item.Name, item.Type]), [
+      ['QQ 每日推荐', 'Playlist'],
+      ['QQ 猜你喜欢', 'Playlist'],
+    ])
     assert.ok(playlistsPayload.Items.some((item: { Name: string; Type: string }) => item.Name === 'Root Playlist' && item.Type === 'Playlist'))
     assert.equal(playlistRequests, 1)
 

@@ -43,9 +43,16 @@ export function serializeQQCookies(cookies: Map<string, string>): string {
 }
 
 export function replaceQQCookieValues(cookieText: string, values: Record<string, string | undefined>): string {
-  const cookies = parseQQCookieText(sanitizeCookieText(cookieText))
+  const cookies = new Map<string, string>()
+  for (const part of sanitizeCookieText(cookieText).split(';')) {
+    const index = part.indexOf('=')
+    if (index <= 0) continue
+    const key = part.slice(0, index).trim()
+    const value = part.slice(index + 1).trim()
+    if (key) cookies.set(key, value)
+  }
   for (const [key, value] of Object.entries(values)) {
-    if (value) cookies.set(key, value)
+    if (value !== undefined) cookies.set(key, value)
   }
   return serializeQQCookies(cookies)
 }

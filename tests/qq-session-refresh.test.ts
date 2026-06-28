@@ -24,15 +24,16 @@ test('refreshQQMusickey exchanges current musickey for a new one', async () => {
   const requests: Array<{ url: string; body: any; headers: Headers }> = []
   globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
     const request = new Request(url, init)
+    const requestUrl = new URL(String(url))
     requests.push({
       url: String(url),
-      body: JSON.parse(String(init?.body)),
+      body: JSON.parse(requestUrl.searchParams.get('data') ?? '{}'),
       headers: request.headers,
     })
     return Response.json({
       code: 0,
-      req1: {
-        code: 0,
+      'music.login.LoginServer.Login': {
+        code: 1000,
         data: { musickey: 'next-key' },
       },
     })
@@ -48,13 +49,38 @@ test('refreshQQMusickey exchanges current musickey for a new one', async () => {
   assert.match(result.cookie, /qm_keyst=next-key/)
   assert.match(result.cookie, /qqmusic_key=next-key/)
   assert.equal(requests.length, 1)
-  assert.match(requests[0].url, /^https:\/\/u\.y\.qq\.com\/cgi-bin\/musics\.fcg\?sign=/)
+  assert.match(requests[0].url, /^https:\/\/u6\.y\.qq\.com\/cgi-bin\/musics\.fcg\?sign=/)
   assert.equal(requests[0].headers.get('cookie'), 'uin=o123456; qm_keyst=old-key; qqmusic_key=old-key; euin=encrypted-uin')
-  assert.deepEqual(requests[0].body.req1.param, {
-    expired_in: 7776000,
-    musicid: '123456',
+  assert.deepEqual(requests[0].body['music.login.LoginServer.Login'].param, {
+    qq: '123456',
     musickey: 'old-key',
   })
+})
+
+test('refreshQQMusickey preserves musickey when upstream only refreshes QQ tokens', async () => {
+  globalThis.fetch = (async () => Response.json({
+    code: 0,
+    'music.login.LoginServer.Login': {
+      code: 1000,
+      data: {
+        access_token: 'access-next',
+        refresh_token: 'refresh-next',
+        expired_at: 7776000,
+        musickey: '',
+      },
+    },
+  })) as typeof fetch
+
+  const result = await refreshQQMusickey({
+    cookie: 'uin=o123456; qm_keyst=old-key; qqmusic_key=old-key; psrf_qqaccess_token=access-old; psrf_qqrefresh_token=refresh-old',
+  })
+
+  assert.equal(result.keyRefreshed, false)
+  assert.equal(result.tokenRefreshed, true)
+  assert.match(result.cookie, /qm_keyst=old-key/)
+  assert.match(result.cookie, /qqmusic_key=old-key/)
+  assert.match(result.cookie, /psrf_qqaccess_token=access-next/)
+  assert.match(result.cookie, /psrf_qqrefresh_token=refresh-next/)
 })
 
 test('refreshQQMusickey rejects incomplete cookies before remote request', async () => {

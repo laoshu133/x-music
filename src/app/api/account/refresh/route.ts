@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { getAccountByQQ, summarizeAccount, updateAccountQQCookie } from '@/lib/db/accounts'
 import { getStoredQQLoginState, updateStoredQQLoginCookie } from '@/lib/db/qq-session'
-import { refreshQQMusickey, qqMusicErrorResponse } from '@/lib/qq'
+import { buildQQLoginState, refreshQQMusickey, qqMusicErrorResponse } from '@/lib/qq'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -28,8 +28,11 @@ export async function POST(request: Request) {
       refreshed: true,
       uin: result.uin,
       changed: result.changed,
+      keyRefreshed: result.keyRefreshed,
+      tokenRefreshed: result.tokenRefreshed,
       refreshedAt: result.refreshedAt,
-      hasQQMusicKey: Boolean(result.musickey),
+      hasQQMusicKey: Boolean(buildQQLoginState(result.cookie, 'request').qqmusicKey),
+      upstreamCode: result.upstreamCode,
       persisted: shouldPersist,
       account: account ? summarizeAccount(account) : undefined,
     })

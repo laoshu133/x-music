@@ -68,6 +68,8 @@ interface AccountRefreshResult {
   refreshed: boolean
   uin: string
   changed: boolean
+  keyRefreshed?: boolean
+  tokenRefreshed?: boolean
   refreshedAt: string
   hasQQMusicKey: boolean
   persisted: boolean
@@ -358,6 +360,7 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
   const routeView = parseView(searchParams.get('view'))
   const [view, setView] = useState<View>(routeView)
   const [cookieText, setCookieText] = useState('')
+  const [mobileAuthUrl, setMobileAuthUrl] = useState('')
   const [account, setAccount] = useState<ApiState<AccountState>>({ loading: false, error: '', data: initialAccount })
   const [accountRefresh, setAccountRefresh] = useState<ApiState<AccountRefreshResult>>(emptyState)
   const [loginQr, setLoginQr] = useState<ApiState<LoginQrState>>(emptyState)
@@ -497,6 +500,31 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
     await loadAccountEmbyConfig()
   }
 
+  const completeMobileAuthLogin = async () => {
+    const value = mobileAuthUrl.trim()
+    if (!value) return
+    setMessage('')
+    setAccount({ loading: true, error: '', data: account.data })
+    try {
+      const result = await fetchJson<{ isOk: true; message: string; account: AccountState }>('/api/account/mobile/exchange', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ url: value }),
+      })
+      setMobileAuthUrl('')
+      setMessage(result.message)
+      setAccount({ loading: false, error: '', data: result.account })
+      await loadAdminConfig()
+      await loadAccountEmbyConfig()
+    } catch (error) {
+      setAccount(current => ({
+        loading: false,
+        error: error instanceof Error ? error.message : String(error),
+        data: current.data,
+      }))
+    }
+  }
+
   const requestLoginQr = () => {
     setMessage('')
     setLoginQrPhase('idle')
@@ -552,7 +580,11 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
       const result = await fetchJson<AccountRefreshResult>('/api/account/refresh', { method: 'POST' })
       setAccountRefresh({ loading: false, error: '', data: result })
       if (result.account) setAccount({ loading: false, error: '', data: result.account })
-      setMessage(result.changed ? 'QQ 音乐授权已刷新' : 'QQ 音乐授权已校验，当前 key 仍可用')
+      setMessage(result.keyRefreshed
+        ? 'QQ 音乐 key 已刷新'
+        : result.tokenRefreshed
+          ? 'QQ access token 已刷新；本次未下发新的 QQ 音乐 key'
+          : 'QQ 音乐授权已校验，当前 key 仍可用')
     } catch (error) {
       setAccountRefresh({
         loading: false,
@@ -702,8 +734,11 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
         <LoginPage
           account={account}
           cookieText={cookieText}
+          mobileAuthUrl={mobileAuthUrl}
           onCookieTextChange={setCookieText}
+          onMobileAuthUrlChange={setMobileAuthUrl}
           onLogin={login}
+          onCompleteMobileAuth={completeMobileAuthLogin}
           loginQr={loginQr}
           loginQrPhase={loginQrPhase}
           onRequestLoginQr={requestLoginQr}
@@ -869,8 +904,11 @@ function isViewAllowed(view: View, account?: AccountState | null): boolean {
 function LoginPage({
   account,
   cookieText,
+  mobileAuthUrl,
   onCookieTextChange,
+  onMobileAuthUrlChange,
   onLogin,
+  onCompleteMobileAuth,
   loginQr,
   loginQrPhase,
   onRequestLoginQr,
@@ -878,8 +916,11 @@ function LoginPage({
 }: {
   account: ApiState<AccountState>
   cookieText: string
+  mobileAuthUrl: string
   onCookieTextChange: (value: string) => void
+  onMobileAuthUrlChange: (value: string) => void
   onLogin: () => void
+  onCompleteMobileAuth: () => void
   loginQr: ApiState<LoginQrState>
   loginQrPhase: LoginQrPhase
   onRequestLoginQr: () => void
@@ -915,28 +956,34 @@ function LoginPage({
           className={loginMethod === 'qr' ? 'active' : ''}
           role="tab"
           aria-selected={loginMethod === 'qr'}
+          title="扫码登录"
+          aria-label="扫码登录"
           onClick={() => setLoginMethod('qr')}
         >
           <LogIn size={16} />
-          扫码登录
+          <span>扫码登录</span>
         </button>
         <button
           className={loginMethod === 'mobile' ? 'active' : ''}
           role="tab"
           aria-selected={loginMethod === 'mobile'}
+          title="手机授权"
+          aria-label="手机授权"
           onClick={() => setLoginMethod('mobile')}
         >
           <Smartphone size={16} />
-          手机授权
+          <span>手机授权</span>
         </button>
         <button
           className={loginMethod === 'cookie' ? 'active' : ''}
           role="tab"
           aria-selected={loginMethod === 'cookie'}
+          title="Cookie 登录"
+          aria-label="Cookie 登录"
           onClick={() => setLoginMethod('cookie')}
         >
           <KeyRound size={16} />
-          Cookie 登录
+          <span>Cookie 登录</span>
         </button>
       </div>
       <div className="login-methods">
@@ -965,12 +1012,31 @@ function LoginPage({
           </section>
         ) : loginMethod === 'mobile' ? (
           <section role="tabpanel">
-            <h2>手机授权 Demo</h2>
-            <p className="qr-hint">手机打开此页时可直接进入 QQ 授权验证页，回调页会显示是否拿到 code。</p>
-            <a className="primary-link" href="/auth/mobile-demo" target="_blank" rel="noreferrer">
-              <ExternalLink size={16} />
-              打开 Demo
-            </a>
+            <h2>QQ 手机授权</h2>
+            <p className="login-help">手机打开时可直接完成 QQ 授权；如果授权后停在 QQ 音乐空白页，把地址栏完整 URL 粘贴回来完成登录。</p>
+            <div className="mobile-auth-actions">
+              <a className="primary-link" href="/auth/mobile" target="_blank" rel="noreferrer">
+                <ExternalLink size={16} />
+                打开 QQ 授权
+              </a>
+            </div>
+            <form
+              className="mobile-auth-form"
+              onSubmit={(event) => {
+                event.preventDefault()
+                onCompleteMobileAuth()
+              }}
+            >
+              <label htmlFor="login-mobile-auth-url">授权后的完整 URL</label>
+              <textarea
+                id="login-mobile-auth-url"
+                name="url"
+                value={mobileAuthUrl}
+                onChange={event => onMobileAuthUrlChange(event.target.value)}
+                placeholder="https://y.qq.com/portal/wx_redirect.html?...&code=..."
+              />
+              <button type="submit" disabled={account.loading || !mobileAuthUrl.trim()}><KeyRound size={16} />完成登录</button>
+            </form>
           </section>
         ) : (
           <section role="tabpanel">
@@ -1083,7 +1149,13 @@ function HomePanel({
           <div>
             <span>最近刷新</span>
             <strong>{accountRefresh.data?.refreshedAt ? formatDateTime(accountRefresh.data.refreshedAt) : '-'}</strong>
-            <small>{accountRefresh.data ? accountRefresh.data.changed ? '已更新 QQ Music key' : 'Key 可继续使用' : '用于延长 QQ 音乐登录态'}</small>
+            <small>{accountRefresh.data
+              ? accountRefresh.data.keyRefreshed
+                ? '已更新 QQ Music key'
+                : accountRefresh.data.tokenRefreshed
+                  ? '已更新 QQ access token'
+                  : 'Key 可继续使用'
+              : '用于延长 QQ 音乐登录态'}</small>
           </div>
         </div>
         <Status state={accountRefresh} />
