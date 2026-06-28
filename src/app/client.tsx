@@ -32,6 +32,7 @@ import {
   UserRound,
 } from 'lucide-react'
 import { useRouter, useSearchParams } from 'next/navigation'
+import { buildQQMobileAuthorizeUrl, randomAuthState } from '@/lib/qq/mobile-auth'
 
 type View = 'home' | 'player' | 'config' | 'status' | 'users' | 'jobs'
 
@@ -389,6 +390,14 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
   })
 
   const embyUrl = browserOrigin
+  const mobileAuthorizeUrl = useMemo(() => {
+    if (!browserOrigin) return '/auth/mobile/start'
+    return buildQQMobileAuthorizeUrl({
+      callbackUrl: `${browserOrigin}/auth/mobile/callback`,
+      state: randomAuthState(),
+      useQQMusicRedirect: true,
+    })
+  }, [browserOrigin])
   const ampcastOfficialUrl = useMemo(() => new URL(AMPCAST_OFFICIAL_URL).toString(), [])
   const connectionInfo: ConnectionInfo = {
     server: embyUrl,
@@ -734,6 +743,7 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
         <LoginPage
           account={account}
           cookieText={cookieText}
+          mobileAuthorizeUrl={mobileAuthorizeUrl}
           mobileAuthUrl={mobileAuthUrl}
           onCookieTextChange={setCookieText}
           onMobileAuthUrlChange={setMobileAuthUrl}
@@ -904,6 +914,7 @@ function isViewAllowed(view: View, account?: AccountState | null): boolean {
 function LoginPage({
   account,
   cookieText,
+  mobileAuthorizeUrl,
   mobileAuthUrl,
   onCookieTextChange,
   onMobileAuthUrlChange,
@@ -916,6 +927,7 @@ function LoginPage({
 }: {
   account: ApiState<AccountState>
   cookieText: string
+  mobileAuthorizeUrl: string
   mobileAuthUrl: string
   onCookieTextChange: (value: string) => void
   onMobileAuthUrlChange: (value: string) => void
@@ -1015,7 +1027,7 @@ function LoginPage({
             <h2>QQ 手机授权</h2>
             <p className="login-help">手机打开时可直接完成 QQ 授权；如果授权后停在 QQ 音乐空白页，把地址栏完整 URL 粘贴回来完成登录。</p>
             <div className="mobile-auth-actions">
-              <a className="primary-link" href="/auth/mobile" target="_blank" rel="noreferrer">
+              <a className="primary-link" href={mobileAuthorizeUrl} target="_blank" rel="noreferrer">
                 <ExternalLink size={16} />
                 打开 QQ 授权
               </a>

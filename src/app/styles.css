@@ -499,6 +499,7 @@ a {
   width: min(840px, 100%);
   display: grid;
   gap: 24px;
+  min-width: 0;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: rgba(255, 253, 249, 0.94);
@@ -514,10 +515,14 @@ a {
 }
 
 .login-tabs {
+  width: 100%;
+  min-width: 0;
   display: flex;
   flex-wrap: nowrap;
+  justify-content: flex-start;
   gap: 4px;
   overflow-x: auto;
+  overflow-y: hidden;
   scrollbar-width: none;
   -webkit-overflow-scrolling: touch;
   border: 1px solid var(--line);
@@ -532,12 +537,12 @@ a {
 
 .login-tabs button {
   min-height: 40px;
-  flex: 0 0 auto;
+  flex: 1 0 max-content;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  min-width: 0;
+  min-width: max-content;
   border: 0;
   border-radius: 6px;
   background: transparent;
@@ -545,15 +550,18 @@ a {
   padding: 0 8px;
   font-size: 15px;
   white-space: nowrap;
+  text-wrap: nowrap;
   overflow: hidden;
   line-height: 1;
 }
 
 .login-tabs button span {
+  display: inline-block;
   flex: 0 0 auto;
   min-width: max-content;
   overflow: visible;
   white-space: nowrap;
+  text-wrap: nowrap;
 }
 
 .login-tabs button.active {
@@ -2137,7 +2145,7 @@ button.user-row.active {
     min-height: 38px;
     gap: 4px;
     min-width: 112px;
-    padding: 0 10px;
+    padding: 0 8px;
     font-size: 13px;
   }
 
