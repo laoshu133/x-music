@@ -2,11 +2,17 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { appConfig } from '@/lib/config'
 import type { AccountRecord } from '@/lib/db/accounts'
+import type { MusicQuality } from '@/lib/types'
 import { embyConfigForAccount } from './config'
 
 export interface WebdavSyncedMedia {
   embyPath: string
   uploadedPaths: string[]
+}
+
+export interface WebdavPlaybackCandidate {
+  quality: MusicQuality
+  relativePath: string
 }
 
 interface WebdavConfig {
@@ -55,6 +61,37 @@ export async function syncMediaFilesToEmbyWebdav(input: {
   }
 }
 
+export async function streamEmbyWebdavMedia(input: {
+  candidate: WebdavPlaybackCandidate
+  request: Request
+  account?: AccountRecord
+}): Promise<Response | undefined> {
+  const settings = embyConfigForAccount(input.account)
+  const dsn = settings.sourceWebdavDsn
+  if (!dsn) return undefined
+
+  const config = parseWebdavDsn(dsn)
+  const headers = new Headers({
+    accept: '*/*',
+    'user-agent': 'Mozilla/5.0 XMusic/1.0',
+  })
+  const range = input.request.headers.get('range')
+  if (range) headers.set('range', range)
+
+  const response = await webdavFetch(config, input.candidate.relativePath, {
+    method: 'GET',
+    headers,
+  }, settings.proxyTimeoutMs)
+  if (response.status === 404) return undefined
+  if (!response.ok && response.status !== 206) {
+    throw new Error(`WebDAV GET ${input.candidate.relativePath} failed with ${response.status}: ${(await response.text().catch(() => '')).slice(0, 300)}`)
+  }
+  return new Response(response.body, {
+    status: response.status,
+    headers: webdavPlaybackHeaders(response.headers, input.candidate.relativePath),
+  })
+}
+
 async function remoteFileExists(config: WebdavConfig, relativePath: string, timeoutMs: number): Promise<boolean> {
   const head = await webdavFetch(config, relativePath, {
     method: 'HEAD',
@@ -82,6 +119,12 @@ function relativeMusicPath(filePath: string): string {
     throw new Error(`WebDAV sync path is outside MUSIC_DATA_DIR/music: ${filePath}`)
   }
   return relativePath
+}
+
+export function relativeEmbyWebdavMusicPath(filePath: string): string | undefined {
+  const relativePath = path.relative(appConfig.musicDir, filePath)
+  if (!relativePath || relativePath.startsWith('..') || path.isAbsolute(relativePath)) return undefined
+  return toPosixPath(relativePath)
 }
 
 function parseWebdavDsn(dsn: string): WebdavConfig {
@@ -167,4 +210,17 @@ function contentTypeFromPath(filePath: string): string {
   if (extension === '.mp3') return 'audio/mpeg'
   if (extension === '.m4a') return 'audio/mp4'
   return 'application/octet-stream'
+}
+
+function webdavPlaybackHeaders(upstreamHeaders: Headers, relativePath: string): Headers {
+  const headers = new Headers()
+  for (const name of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'etag', 'last-modified']) {
+    const value = upstreamHeaders.get(name)
+    if (value) headers.set(name, value)
+  }
+  if (!headers.has('content-type')) headers.set('content-type', contentTypeFromPath(relativePath))
+  if (!headers.has('accept-ranges')) headers.set('accept-ranges', 'bytes')
+  headers.set('cache-control', 'no-store')
+  headers.set('x-x-music-stream-mode', 'webdav')
+  return headers
 }

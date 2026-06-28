@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import test from 'node:test'
+import { ensureTrack, upsertTrackFileStatus } from '@/lib/cache/store'
 import { db } from '@/lib/db'
 import { MusicUrlResolveError, parseRequestedQuality, qualityFallbacks, resolveMusicUrl } from '@/lib/music-url/resolve'
 import { GET as playGET } from '@/app/api/play/route'
@@ -318,6 +321,45 @@ test('play API redirects non-encrypted LX CDN URLs instead of proxying first pla
     assert.equal(response.headers.get('x-x-music-stream-mode'), 'redirect')
   } finally {
     db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run(songmid)
+  }
+})
+
+test('play API does not use local cache as a playback source', async () => {
+  process.env.LX_MUSIC_SOURCE_SCRIPT = 'https://api.example/music/url?key=secret-key'
+  const songmid = `LOCAL_CACHE_IGNORED_${Date.now()}`
+  const localPath = join(process.cwd(), `data/test-${songmid}.mp3`)
+  db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run(songmid)
+  mkdirSync(join(process.cwd(), 'data'), { recursive: true })
+  writeFileSync(localPath, 'local-cache-bytes')
+  const track = ensureTrack({
+    source: 'tx',
+    songmid,
+    name: 'Local Cache Ignored Song',
+    singer: 'Local Cache Singer',
+  })
+  upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath: localPath, sizeBytes: 17 })
+  const requestedQualities: string[] = []
+  globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body ?? '{}')) as { quality?: string }
+    requestedQualities.push(body.quality ?? '')
+    return Response.json({ code: 200, data: { url: `https://cdn.example/${songmid}.mp3` } })
+  }) as typeof fetch
+
+  try {
+    const response = await playGET(new Request(`http://local/api/play?${new URLSearchParams({
+      source: 'tx',
+      songmid,
+      name: 'Local Cache Ignored Song',
+      singer: 'Local Cache Singer',
+      quality: '320k',
+    })}`))
+    assert.equal(response.status, 302)
+    assert.equal(response.headers.get('location'), `https://cdn.example/${songmid}.mp3`)
+    assert.equal(response.headers.get('x-x-music-source'), 'upstream')
+    assert.deepEqual(requestedQualities, ['320k', 'flac'])
+  } finally {
+    db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run(songmid)
+    rmSync(localPath, { force: true })
   }
 })
 

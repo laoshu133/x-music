@@ -1,10 +1,10 @@
-import { ensureTrack, getPlayableTrackFile, insertPlayEvent, upsertTrackFileStatus } from '@/lib/cache/store'
-import { createUpstreamTeeResponse, streamLocalFile } from '@/lib/cache/stream'
+import { ensureTrack, insertPlayEvent, upsertTrackFileStatus } from '@/lib/cache/store'
+import { createUpstreamTeeResponse } from '@/lib/cache/stream'
 import { encryptedQQAudioRequiresKeyMessage, isEncryptedQQAudioFileName, isEncryptedQQAudioRequiresKeyError } from '@/lib/cache/decrypt'
 import { ensureEmbyMasterCachedBestEffort } from '@/lib/emby/master'
-import { isMusicUrlUnavailableMessage, MusicUrlConfigError, MusicUrlResolveError, parseRequestedQuality, qualityFallbacks, resolveMusicUrl, resolveMusicUrlWithFallback } from '@/lib/music-url/resolve'
+import { isMusicUrlUnavailableMessage, MusicUrlConfigError, MusicUrlResolveError, parseRequestedQuality, qualityFallbacks, resolveMusicUrl } from '@/lib/music-url/resolve'
 import { isHighestAvailableQuality } from '@/lib/quality'
-import { getQQLoginState, syncQQPlayHistoryBestEffort } from '@/lib/qq'
+import { syncQQPlayHistoryBestEffort } from '@/lib/qq'
 import { logCompletedRequest, logFailedRequest, markRequestSource } from '@/lib/request-log'
 import type { MusicInfo, MusicQuality, OnlineSource } from '@/lib/types'
 
@@ -55,26 +55,6 @@ const handlePlayRequest = async (request: Request, input: PlayRequest): Promise<
   const requestedQuality = parseRequestedQuality(input.quality)
   const preferredQuality = requestedQuality ?? 'flac'
   const shouldRecordPlayback = isPlaybackStartRequest(request)
-
-  const playableFile = qualityFallbacks(preferredQuality)
-    .map((quality) => getPlayableTrackFile(musicInfo.source, musicInfo.songmid, quality))
-    .find((file) => file !== undefined)
-  const localPath = playableFile?.finalPath ?? playableFile?.rawPath
-  if (playableFile && localPath) {
-    const track = ensureTrack(musicInfo)
-    if (!isHighestAvailableQuality(musicInfo, playableFile.quality)) {
-      ensureEmbyMasterCachedBestEffort({ musicInfo, track })
-    }
-    if (shouldRecordPlayback) {
-      insertPlayEvent(track.id, playableFile.quality)
-      syncQQPlayHistoryFromResolvedUrlBestEffort({
-        cookie: request.headers.get('x-qq-music-cookie') ?? undefined,
-        musicInfo,
-        quality: playableFile.quality,
-      })
-    }
-    return markRequestSource(await streamLocalFile(localPath, request), 'local')
-  }
 
   const track = ensureTrack(musicInfo)
   try {
@@ -187,33 +167,6 @@ const isPlaybackStartRequest = (request: Request): boolean => {
 
   const match = /^bytes=(\d*)-/.exec(range.trim())
   return match?.[1] === '0'
-}
-
-function syncQQPlayHistoryFromResolvedUrlBestEffort(input: {
-  cookie?: string
-  musicInfo: MusicInfo
-  quality: MusicQuality
-}): void {
-  try {
-    if (!getQQLoginState({ cookie: input.cookie })) return
-  } catch (error) {
-    console.warn(
-      `QQ play history sync skipped for ${input.musicInfo.songmid}: ${error instanceof Error ? error.message : String(error)}`,
-    )
-    return
-  }
-
-  void resolveMusicUrlWithFallback(input.musicInfo, input.quality).then((resolved) => {
-    syncQQPlayHistoryBestEffort({
-      ...input,
-      quality: resolved.quality,
-      playUrl: resolved.url,
-    })
-  }).catch((error: unknown) => {
-    console.warn(
-      `QQ play history URL resolve failed for ${input.musicInfo.songmid}: ${error instanceof Error ? error.message : String(error)}`,
-    )
-  })
 }
 
 const playbackErrorMessage = (error: unknown): string => {

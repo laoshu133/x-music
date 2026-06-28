@@ -1,9 +1,9 @@
-import { ensureTrack, getPlayableTrackFile, getTrack, hasActiveTrackFile, insertPlayEvent, listPlayHistory, upsertTrackFileStatus } from '@/lib/cache/store'
+import { ensureTrack, getPlayableTrackFile, getTrack, insertPlayEvent, listPlayHistory, upsertTrackFileStatus } from '@/lib/cache/store'
 import { cachedResourceResponse } from '@/lib/cache/resources'
-import { createUpstreamTeeResponse, streamLocalFile } from '@/lib/cache/stream'
+import { createUpstreamTeeResponse } from '@/lib/cache/stream'
 import { encryptedQQAudioRequiresKeyMessage, isEncryptedQQAudioFileName, isEncryptedQQAudioRequiresKeyError } from '@/lib/cache/decrypt'
 import { db } from '@/lib/db'
-import { isMusicUrlUnavailableError, isMusicUrlUnavailableMessage, MusicUrlConfigError, MusicUrlResolveError, qualityFallbacks, resolveMusicUrl, resolveMusicUrlWithFallback } from '@/lib/music-url/resolve'
+import { isMusicUrlUnavailableError, isMusicUrlUnavailableMessage, MusicUrlConfigError, MusicUrlResolveError, qualityFallbacks, resolveMusicUrl } from '@/lib/music-url/resolve'
 import { getCachedUnplayableQuality, isRecentlyUnplayableSong, markUnplayableQuality } from '@/lib/music-url/unplayable'
 import { isHighestAvailableQuality } from '@/lib/quality'
 import {
@@ -48,6 +48,7 @@ import { embyConfigForAccount } from './config'
 import { QQAuthExpiredError, qqAuthExpiredResponse, requireActiveQQAccount } from '@/lib/qq/auth-state'
 import { syncMappedEmbyFavoriteBestEffort } from './favorites'
 import { enqueueTrackArchive } from '@/lib/archive/track'
+import { relativeEmbyWebdavMusicPath, streamEmbyWebdavMedia, type WebdavPlaybackCandidate } from './webdav'
 import {
   extractFavoriteItemId,
   extractImageItemId,
@@ -1425,46 +1426,6 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
   }
 
   const preferredQuality = preferredAudioQualityForRequest(request, musicInfo)
-  const playableFile = getPreferredPlayableFile(musicInfo, preferredQuality)
-  const localPath = playableFile?.finalPath ?? playableFile?.rawPath
-
-  if (playableFile && localPath) {
-    const track = ensureTrack(musicInfo)
-    insertPlayEvent(track.id, playableFile.quality, authorizedLocalAccount(request)?.qqUin)
-    syncQQPlayHistoryFromStoredUrlBestEffort(request, musicInfo, playableFile.quality)
-    if (hasSyncableEmbyMedia(musicInfo)) {
-      enqueueEmbyTrackSync({
-        source: musicInfo.source,
-        songmid: musicInfo.songmid,
-        playlistId: decoded.playlistId ?? stored.playlistId,
-        musicInfo,
-        qqUin: authorizedLocalAccount(request)?.qqUin,
-      })
-    } else {
-      ensureEmbyMasterCachedBestEffort({ musicInfo, track })
-    }
-    return markRequestSource(await streamLocalFile(localPath, request), 'local')
-  }
-
-  const waitedFile = await waitForActivePlayableFile(musicInfo, preferredQuality)
-  const waitedPath = waitedFile?.finalPath ?? waitedFile?.rawPath
-  if (waitedFile && waitedPath) {
-    const track = ensureTrack(musicInfo)
-    insertPlayEvent(track.id, waitedFile.quality, authorizedLocalAccount(request)?.qqUin)
-    if (hasSyncableEmbyMedia(musicInfo)) {
-      enqueueEmbyTrackSync({
-        source: musicInfo.source,
-        songmid: musicInfo.songmid,
-        playlistId: decoded.playlistId ?? stored.playlistId,
-        musicInfo,
-        qqUin: authorizedLocalAccount(request)?.qqUin,
-      })
-    } else {
-      ensureEmbyMasterCachedBestEffort({ musicInfo, track })
-    }
-    return markRequestSource(await streamLocalFile(waitedPath, request), 'local')
-  }
-
   const track = ensureTrack(musicInfo)
   try {
     const resolved = await resolvePlayableUpstreamResponse(musicInfo, preferredQuality, track, request, {
@@ -1507,6 +1468,15 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
       error: message,
       attempts: error instanceof MusicUrlResolveError ? error.attempts : undefined,
     }, 'error')
+    const webdavFallback = await proxyWebdavAudioAfterLxFailure({
+      request,
+      account,
+      musicInfo,
+      songmid: decoded.songmid,
+      preferredQuality,
+      error: message,
+    })
+    if (webdavFallback) return webdavFallback
     const embyFallback = await proxyMappedEmbyAudioAfterLxFailure({
       request,
       embyPath,
@@ -1520,6 +1490,93 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
     if (embyFallback) return embyFallback
     return Response.json({ error: message }, { status: isUnplayableResolveError(error) ? 451 : 502 })
   }
+}
+
+async function proxyWebdavAudioAfterLxFailure(input: {
+  request: Request
+  account?: AccountRecord
+  musicInfo: MusicInfo
+  songmid: string
+  preferredQuality: MusicQuality
+  error: string
+}): Promise<Response | undefined> {
+  const candidates = webdavPlaybackCandidates(input.musicInfo, input.preferredQuality, input.account)
+  for (const candidate of candidates) {
+    const response = await streamEmbyWebdavMedia({
+      candidate,
+      request: input.request,
+      account: input.account,
+    }).catch((error: unknown) => {
+      logVirtualAudioEvent('virtual_audio_webdav_fallback_failed', input.request, {
+        songmid: input.songmid,
+        preferredQuality: input.preferredQuality,
+        quality: candidate.quality,
+        relativePath: candidate.relativePath,
+        lxError: input.error,
+        error: errorMessage(error),
+      }, 'error')
+      return undefined
+    })
+    if (!response) continue
+    if (isUsableUpstreamResponse(response)) {
+      logVirtualAudioEvent('virtual_audio_webdav_fallback_resolved', input.request, {
+        songmid: input.songmid,
+        preferredQuality: input.preferredQuality,
+        quality: candidate.quality,
+        relativePath: candidate.relativePath,
+        status: response.status,
+      })
+      return markRequestSource(response, 'upstream')
+    }
+  }
+  return undefined
+}
+
+function webdavPlaybackCandidates(musicInfo: MusicInfo, preferredQuality: MusicQuality, account?: AccountRecord): WebdavPlaybackCandidate[] {
+  const candidates = qualityFallbacks(preferredQuality).flatMap((quality) => {
+    const file = getPlayableTrackFile(musicInfo.source, musicInfo.songmid, quality)
+    const finalPath = file?.finalPath
+    const relativePath = finalPath ? relativeEmbyWebdavMusicPath(finalPath) : undefined
+    return relativePath ? [{ quality, relativePath }] : []
+  })
+  const seen = new Set(candidates.map(candidate => `${candidate.quality}:${candidate.relativePath}`))
+  for (const candidate of syncedWebdavPlaybackCandidates(musicInfo, preferredQuality, account)) {
+    const key = `${candidate.quality}:${candidate.relativePath}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    candidates.push(candidate)
+  }
+  return candidates
+}
+
+function syncedWebdavPlaybackCandidates(musicInfo: MusicInfo, preferredQuality: MusicQuality, account?: AccountRecord): WebdavPlaybackCandidate[] {
+  const rows = db.prepare(`
+    SELECT payload_json AS payloadJson
+    FROM sync_events
+    WHERE type = 'emby_webdav'
+      AND status IN ('uploaded', 'skipped_existing')
+    ORDER BY updated_at DESC, id DESC
+    LIMIT 50
+  `).all() as Array<{ payloadJson: string }>
+  const quality = qualityFallbacks(preferredQuality)[0] ?? preferredQuality
+  const result: WebdavPlaybackCandidate[] = []
+  for (const row of rows) {
+    try {
+      const payload = JSON.parse(row.payloadJson) as {
+        qqUin?: string
+        source?: string
+        songmid?: string
+        embyPath?: string
+      }
+      if (payload.source !== musicInfo.source || payload.songmid !== musicInfo.songmid) continue
+      if ((payload.qqUin ?? '') !== (account?.qqUin ?? '')) continue
+      const relativePath = payload.embyPath?.replace(/^\/+/, '')
+      if (relativePath) result.push({ quality, relativePath })
+    } catch {
+      continue
+    }
+  }
+  return result
 }
 
 async function proxyMappedEmbyAudioAfterLxFailure(input: {
@@ -1911,53 +1968,6 @@ function ticksToInterval(ticks?: number): string | undefined {
   return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
 }
 
-async function waitForActivePlayableFile(musicInfo: MusicInfo, preferredQuality: MusicQuality): Promise<ReturnType<typeof getPlayableTrackFile> | undefined> {
-  const qualities = qualityFallbacks(preferredQuality)
-  if (!hasActiveTrackFile(musicInfo.source, musicInfo.songmid, qualities)) return undefined
-
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    await new Promise(resolve => setTimeout(resolve, 250))
-    const file = getPreferredPlayableFile(musicInfo, preferredQuality)
-    if (file) return file
-  }
-  return undefined
-}
-
-function getPreferredPlayableFile(musicInfo: MusicInfo, preferredQuality: MusicQuality): ReturnType<typeof getPlayableTrackFile> | undefined {
-  const preferredFile = getPlayableTrackFile(musicInfo.source, musicInfo.songmid, preferredQuality)
-  if (preferredFile) return preferredFile
-  if (shouldRefreshPreferredQualityBeforeLocalFallback(musicInfo, preferredQuality)) return undefined
-  return qualityFallbacks(preferredQuality)
-    .slice(1)
-    .map((quality) => getPlayableTrackFile(musicInfo.source, musicInfo.songmid, quality))
-    .find((candidate) => candidate !== undefined)
-}
-
-function shouldRefreshPreferredQualityBeforeLocalFallback(musicInfo: MusicInfo, preferredQuality: MusicQuality): boolean {
-  return preferredQuality === 'flac' && availableSongQualities(musicInfo).includes('flac')
-}
-
-function syncQQPlayHistoryFromStoredUrlBestEffort(request: Request, musicInfo: MusicInfo, quality: MusicQuality): void {
-  const cookie = qqCookieForRequest(request)
-  try {
-    if (!getQQLoginState({ cookie })) return
-  } catch (error) {
-    debugBackgroundSync(`QQ play history sync skipped for ${musicInfo.songmid}: ${error instanceof Error ? error.message : String(error)}`)
-    return
-  }
-
-  void resolveMusicUrlWithFallback(musicInfo, quality).then((resolved) => {
-    syncQQPlayHistoryBestEffort({
-      cookie,
-      musicInfo,
-      quality: resolved.quality,
-      playUrl: resolved.url,
-    })
-  }).catch((error: unknown) => {
-    debugBackgroundSync(`QQ play history URL resolve failed for ${musicInfo.songmid}: ${error instanceof Error ? error.message : String(error)}`)
-  })
-}
-
 function debugBackgroundSync(message: string, error?: unknown): void {
   if (process.env.X_MUSIC_DEBUG_BACKGROUND_SYNC === '1') console.debug(message, error ?? '')
 }
@@ -2002,22 +2012,7 @@ async function resolveEmbyTrackMapping(musicInfo: MusicInfo, account?: AccountRe
   return mapped
 }
 
-async function virtualAudioHeadHeaders(musicInfo: MusicInfo, preferredQuality: MusicQuality = 'flac'): Promise<Headers> {
-  const playableFile = getPreferredPlayableFile(musicInfo, preferredQuality)
-  const localPath = playableFile?.finalPath ?? playableFile?.rawPath
-
-  if (localPath) {
-    const fileStat = await stat(localPath).catch(() => undefined)
-    if (fileStat) {
-      return new Headers({
-        'content-type': audioContentTypeFromPath(localPath),
-        'content-length': String(fileStat.size),
-        'accept-ranges': 'bytes',
-        'cache-control': 'no-store',
-      })
-    }
-  }
-
+async function virtualAudioHeadHeaders(_musicInfo: MusicInfo, _preferredQuality: MusicQuality = 'flac'): Promise<Headers> {
   return new Headers({
     'content-type': 'audio/mpeg',
     'accept-ranges': 'none',
@@ -2132,14 +2127,6 @@ function availableSongQualities(musicInfo: MusicInfo): MusicQuality[] {
     .filter((quality): quality is MusicQuality => quality === 'flac' || quality === '320k' || quality === '128k'))
   const ordered = qualityFallbacks('flac').filter(quality => available.has(quality))
   return ordered.length ? ordered : qualityFallbacks('flac')
-}
-
-function audioContentTypeFromPath(filePath: string): string {
-  const ext = path.extname(filePath).toLowerCase()
-  if (ext === '.flac') return 'audio/flac'
-  if (ext === '.m4a' || ext === '.mp4') return 'audio/mp4'
-  if (ext === '.ogg') return 'audio/ogg'
-  return 'audio/mpeg'
 }
 
 function playbackErrorMessage(error: unknown): string {

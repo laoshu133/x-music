@@ -4990,12 +4990,8 @@ test('local emby virtual audio GET records playback and syncs QQ history', async
       }),
       stripOptionalEmbyPrefix(`/emby/Audio/${encodeURIComponent(songId)}/universal`),
     )
-    assert.equal(response.status, 200)
-    const reader = response.body?.getReader()
-    assert.ok(reader)
-    const firstChunk = await reader.read()
-    assert.equal(new TextDecoder().decode(firstChunk.value), 'audio-bytes')
-    await reader.cancel()
+    assert.equal(response.status, 302)
+    assert.equal(response.headers.get('location'), 'https://cdn.example/audio.mp3')
 
     await waitFor(() => requestUrls.some(url => new URL(url).hostname === 'stat6.y.qq.com'))
 
@@ -5101,11 +5097,13 @@ test('local emby virtual audio GET fetches QQ metadata when cache is missing', a
   }
 })
 
-test('narjo virtual audio GET with extension suffix is handled locally', async () => {
+test('narjo virtual audio GET with extension suffix resolves upstream URL', async () => {
   const originalFetch = globalThis.fetch
+  const originalLxMusicSourceScript = process.env.LX_MUSIC_SOURCE_SCRIPT
   const localAudioPath = join(process.cwd(), 'data/test-narjo-virtual-song.flac')
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999114')
+    process.env.LX_MUSIC_SOURCE_SCRIPT = 'https://script.example/script/lxmusic?key=test-key'
     saveQQLoginCookie('uin=o999114; qm_keyst=test-key')
     markAccountUpstreamBound('999114')
     const account = getAccountByQQ('999114')
@@ -5150,7 +5148,11 @@ test('narjo virtual audio GET with extension suffix is handled locally', async (
       },
     }))
 
-    globalThis.fetch = (async () => Response.json({ error: 'should not proxy upstream' }, { status: 500 })) as typeof fetch
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'script.example') return Response.json({ url: 'https://cdn.example/narjo.flac' })
+      return Response.json({ error: 'unexpected request' }, { status: 500 })
+    }) as typeof fetch
 
     const response = await dispatchEmbyRequest(
       new Request(`http://local/Audio/${encodeURIComponent(songId)}/universal.flac?DeviceId=Narjo-Device&api_key=${authPayload.AccessToken}`, {
@@ -5158,10 +5160,9 @@ test('narjo virtual audio GET with extension suffix is handled locally', async (
       }),
       stripOptionalEmbyPrefix(`/Audio/${encodeURIComponent(songId)}/universal.flac`),
     )
-    assert.equal(response.status, 200)
-    assert.equal(response.headers.get('x-x-music-source'), 'local')
-    assert.match(response.headers.get('content-type') ?? '', /audio\/flac/)
-    assert.equal(await response.text(), 'narjo-audio-bytes')
+    assert.equal(response.status, 302)
+    assert.equal(response.headers.get('x-x-music-source'), 'upstream')
+    assert.equal(response.headers.get('location'), 'https://cdn.example/narjo.flac')
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999114')
     clearQQLoginCookie()
@@ -5170,6 +5171,11 @@ test('narjo virtual audio GET with extension suffix is handled locally', async (
     db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track' AND json_extract(payload_json, '$.songmid') = ?").run('qq-narjo-song-1')
     rmSync(localAudioPath, { force: true })
     globalThis.fetch = originalFetch
+    if (originalLxMusicSourceScript === undefined) {
+      delete process.env.LX_MUSIC_SOURCE_SCRIPT
+    } else {
+      process.env.LX_MUSIC_SOURCE_SCRIPT = originalLxMusicSourceScript
+    }
   }
 })
 
@@ -6457,7 +6463,7 @@ test('mapped Emby item detail returns upstream item when mapping is valid', asyn
   }
 })
 
-test('local emby virtual audio prefers local QQ cache before mapped high-quality Emby item', async () => {
+test('local emby virtual audio does not use local QQ cache as a playback source', async () => {
   const originalFetch = globalThis.fetch
   const originalLxMusicSourceScript = process.env.LX_MUSIC_SOURCE_SCRIPT
   const songmid = `qq-emby-master-mapped-${Date.now()}`
@@ -6503,7 +6509,6 @@ test('local emby virtual audio prefers local QQ cache before mapped high-quality
     const track = ensureTrack(song)
     upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath: lowPath, sizeBytes: 9 })
 
-    const proxiedAudioPaths: string[] = []
     const requestedQualities: string[] = []
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       const requestUrl = new URL(String(url))
@@ -6512,6 +6517,7 @@ test('local emby virtual audio prefers local QQ cache before mapped high-quality
         requestedQualities.push(body.quality ?? '')
         return Response.json({ url: 'https://cdn.example/audio.flac' })
       }
+      if (requestUrl.hostname === 'cdn.example') return new Response('cdn-audio-bytes', { headers: { 'content-type': 'audio/flac' } })
       if (requestUrl.pathname.endsWith('/Items/emby-flac-master-item') && !requestUrl.pathname.includes('/Users/')) {
         return Response.json({ error: 'Not found' }, { status: 404 })
       }
@@ -6528,7 +6534,6 @@ test('local emby virtual audio prefers local QQ cache before mapped high-quality
         })
       }
       if (requestUrl.pathname.includes('/Audio/emby-flac-master-item/')) {
-        proxiedAudioPaths.push(requestUrl.pathname)
         return new Response('emby-master-bytes', { headers: { 'content-type': 'audio/flac' } })
       }
       if (requestUrl.hostname === 'stat6.y.qq.com') return new Response('{}')
@@ -6541,10 +6546,9 @@ test('local emby virtual audio prefers local QQ cache before mapped high-quality
       }),
       stripOptionalEmbyPrefix(`/emby/Audio/${encodeURIComponent(songId)}/universal`),
     )
-    assert.equal(response.status, 200)
-    assert.equal(await response.text(), 'low-local-bytes')
-    assert.deepEqual(proxiedAudioPaths, [])
-    assert.ok(requestedQualities.every(quality => quality === 'flac' || quality === '320k' || quality === '128k'))
+    assert.equal(response.status, 302)
+    assert.equal(response.headers.get('location'), 'https://cdn.example/audio.flac')
+    assert.deepEqual(requestedQualities, ['320k', 'flac'])
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999049')
     clearQQLoginCookie()
@@ -6553,6 +6557,98 @@ test('local emby virtual audio prefers local QQ cache before mapped high-quality
     db.prepare("DELETE FROM remote_mappings WHERE local_type = 'track' AND local_key = ? AND remote = 'emby'").run(`tx:${songmid}`)
     db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track' AND json_extract(payload_json, '$.songmid') = ?").run(songmid)
     rmSync(lowPath, { force: true })
+    globalThis.fetch = originalFetch
+    if (originalLxMusicSourceScript === undefined) {
+      delete process.env.LX_MUSIC_SOURCE_SCRIPT
+    } else {
+      process.env.LX_MUSIC_SOURCE_SCRIPT = originalLxMusicSourceScript
+    }
+  }
+})
+
+test('local emby virtual audio falls back to WebDAV after LX sources fail', async () => {
+  const originalFetch = globalThis.fetch
+  const originalLxMusicSourceScript = process.env.LX_MUSIC_SOURCE_SCRIPT
+  const songmid = `qq-webdav-playback-${Date.now()}`
+  const finalPath = join(appConfig.musicDir, 'WebDAV Artist', 'WebDAV Album', 'WebDAV Artist - WebDAV Playback Song.flac')
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999052')
+    process.env.LX_MUSIC_SOURCE_SCRIPT = 'https://script.example/script/lxmusic?key=test-key'
+    saveQQLoginCookie('uin=o999052; qm_keyst=test-key')
+    markAccountUpstreamBound('999052')
+    configureAccountUpstreamWebdav('999052')
+    const account = getAccountByQQ('999052')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const songId = encodeVirtualId({ kind: 'qq-song', songmid })
+    const song: MusicInfo = {
+      source: 'tx',
+      songmid,
+      name: 'WebDAV Playback Song',
+      singer: 'WebDAV Artist',
+      albumName: 'WebDAV Album',
+      interval: '03:08',
+      types: [{ type: 'flac', size: '20 MB' }],
+    }
+    db.prepare(`
+      INSERT INTO app_settings (key, value_json, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP
+    `).run(`virtual.song.${songmid}`, JSON.stringify({ song }))
+    mkdirSync(dirname(finalPath), { recursive: true })
+    writeFileSync(finalPath, 'local-cache-should-not-be-read')
+    const track = ensureTrack(song)
+    upsertTrackFileStatus(track.id, 'flac', 'ready', { finalPath, sizeBytes: 31 })
+
+    const webdavPaths: string[] = []
+    const lxQualities: string[] = []
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'script.example') {
+        const body = JSON.parse(String(init?.body ?? '{}')) as { quality?: string }
+        lxQualities.push(body.quality ?? '')
+        return Response.json({ code: 500, message: '未获取到URL' })
+      }
+      if (requestUrl.hostname === 'webdav.example') {
+        webdavPaths.push(requestUrl.pathname)
+        assert.equal(new Headers(init?.headers).get('range'), 'bytes=0-')
+        return new Response('webdav-audio-bytes', {
+          status: 206,
+          headers: {
+            'content-type': 'audio/flac',
+            'content-range': 'bytes 0-17/18',
+            'content-length': '18',
+          },
+        })
+      }
+      return Response.json({ Items: [], TotalRecordCount: 0 })
+    }) as typeof fetch
+
+    const response = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Audio/${encodeURIComponent(songId)}/universal?api_key=${authPayload.AccessToken}`, {
+        headers: { range: 'bytes=0-' },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Audio/${encodeURIComponent(songId)}/universal`),
+    )
+    assert.equal(response.status, 206)
+    assert.equal(response.headers.get('x-x-music-stream-mode'), 'webdav')
+    assert.equal(await response.text(), 'webdav-audio-bytes')
+    assert.deepEqual(lxQualities, ['flac', '320k', '128k'])
+    assert.deepEqual(webdavPaths, ['/dav/music/WebDAV%20Artist/WebDAV%20Album/WebDAV%20Artist%20-%20WebDAV%20Playback%20Song.flac'])
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999052')
+    clearQQLoginCookie()
+    db.prepare('DELETE FROM app_settings WHERE key = ?').run(`virtual.song.${songmid}`)
+    db.prepare("DELETE FROM app_settings WHERE key LIKE ?").run(`music-url.unplayable.tx.${songmid}%`)
+    db.prepare("DELETE FROM tracks WHERE songmid = ? AND source = 'tx'").run(songmid)
+    db.prepare("DELETE FROM jobs WHERE json_extract(payload_json, '$.songmid') = ?").run(songmid)
+    rmSync(join(appConfig.musicDir, 'WebDAV Artist'), { recursive: true, force: true })
     globalThis.fetch = originalFetch
     if (originalLxMusicSourceScript === undefined) {
       delete process.env.LX_MUSIC_SOURCE_SCRIPT
