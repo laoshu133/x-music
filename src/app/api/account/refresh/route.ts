@@ -17,6 +17,7 @@ export async function POST(request: Request) {
     const stored = body?.cookie ? undefined : getStoredQQLoginState()
     const result = await refreshQQMusickey({ cookie: body?.cookie ?? stored?.cookie })
     const shouldPersist = body?.persist !== false && !body?.cookie
+    const refreshedState = buildQQLoginState(result.cookie, 'request')
 
     if (shouldPersist) {
       updateStoredQQLoginCookie(result.cookie)
@@ -31,7 +32,8 @@ export async function POST(request: Request) {
       keyRefreshed: result.keyRefreshed,
       tokenRefreshed: result.tokenRefreshed,
       refreshedAt: result.refreshedAt,
-      hasQQMusicKey: Boolean(buildQQLoginState(result.cookie, 'request').qqmusicKey),
+      hasQQMusicKey: Boolean(refreshedState.qqmusicKey),
+      accessTokenExpiresAt: refreshedState.accessTokenExpiresAt,
       upstreamCode: result.upstreamCode,
       persisted: shouldPersist,
       account: account ? summarizeAccount(account) : undefined,

@@ -6,6 +6,7 @@ export type QQLoginState = {
   uin: string
   encryptedUin?: string
   qqmusicKey?: string
+  accessTokenExpiresAt?: string
   source: 'env' | 'request' | 'stored'
 }
 
@@ -80,6 +81,7 @@ export function buildQQLoginState(cookieText: string, source: QQLoginState['sour
   const uin = normalizeUin(parsed.get('uin') ?? parsed.get('o_cookie') ?? parsed.get('luin'))
   const encryptedUin = parsed.get('euin') ?? parsed.get('encryptUin') ?? parsed.get('encryptedUin')
   const qqmusicKey = parsed.get('qm_keyst') ?? parsed.get('qqmusic_key')
+  const accessTokenExpiresAt = parseCookieEpochSecondsValue(parsed.get('psrf_access_token_expiresAt'))
   const hasSessionCookie = SESSION_COOKIE_NAMES.some((name) => parsed.has(name))
 
   if (!cookie || !uin || !hasSessionCookie) {
@@ -99,6 +101,7 @@ export function buildQQLoginState(cookieText: string, source: QQLoginState['sour
     uin,
     encryptedUin,
     qqmusicKey,
+    accessTokenExpiresAt,
     source,
   }
 }
@@ -143,5 +146,17 @@ export function summarizeQQLoginState(state: QQLoginState) {
     uin: state.uin,
     hasEncryptedUin: Boolean(state.encryptedUin),
     hasQQMusicKey: Boolean(state.qqmusicKey),
+    accessTokenExpiresAt: state.accessTokenExpiresAt,
   }
+}
+
+export function parseQQAccessTokenExpiresAt(cookieText: string): string | undefined {
+  return parseCookieEpochSecondsValue(parseQQCookieText(sanitizeCookieText(cookieText)).get('psrf_access_token_expiresAt'))
+}
+
+function parseCookieEpochSecondsValue(value: string | undefined): string | undefined {
+  if (!value) return undefined
+  const seconds = Number(value)
+  if (!Number.isFinite(seconds) || seconds <= 0) return undefined
+  return new Date(seconds * 1000).toISOString()
 }

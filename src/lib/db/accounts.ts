@@ -1,6 +1,6 @@
 import crypto from 'node:crypto'
 import { db } from '@/lib/db'
-import { buildQQLoginState, summarizeQQLoginState, type QQLoginState } from '@/lib/qq/account'
+import { buildQQLoginState, parseQQAccessTokenExpiresAt, summarizeQQLoginState, type QQLoginState } from '@/lib/qq/account'
 import { appConfig } from '@/lib/config'
 import { getQQFavoriteSongs } from '@/lib/qq/favorites'
 import { getQQUserProfile } from '@/lib/qq/user'
@@ -511,6 +511,7 @@ export function accountToQQLoginState(account: AccountRecord): QQLoginState {
     uin: account.qqUin,
     encryptedUin: account.encryptedUin,
     qqmusicKey: account.qqmusicKey,
+    accessTokenExpiresAt: parseQQAccessTokenExpiresAt(account.qqCookie),
     source: 'stored',
   }
 }

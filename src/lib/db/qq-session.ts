@@ -1,6 +1,6 @@
 import { db } from '@/lib/db'
 import { upsertAccountFromQQCookie } from '@/lib/db/accounts'
-import { buildQQLoginState, summarizeQQLoginState, type QQLoginState } from '@/lib/qq/account'
+import { buildQQLoginState, parseQQAccessTokenExpiresAt, summarizeQQLoginState, type QQLoginState } from '@/lib/qq/account'
 
 interface QQSessionRow {
   cookie: string
@@ -19,6 +19,7 @@ export function getStoredQQLoginState(): QQLoginState | undefined {
     uin: row.uin,
     encryptedUin: row.encrypted_uin ?? undefined,
     qqmusicKey: row.qqmusic_key ?? undefined,
+    accessTokenExpiresAt: parseQQAccessTokenExpiresAt(row.cookie),
     source: 'stored',
   }
 }

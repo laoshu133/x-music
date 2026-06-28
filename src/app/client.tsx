@@ -55,6 +55,7 @@ interface AccountState {
   isAdmin?: boolean
   hasEncryptedUin?: boolean
   hasQQMusicKey?: boolean
+  accessTokenExpiresAt?: string
   actionable?: string
   emby?: {
     username?: string
@@ -73,6 +74,7 @@ interface AccountRefreshResult {
   tokenRefreshed?: boolean
   refreshedAt: string
   hasQQMusicKey: boolean
+  accessTokenExpiresAt?: string
   persisted: boolean
   account?: AccountState
 }
@@ -803,6 +805,7 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
           <section className="workspace">
             <Status state={adminConfig} />
             <HomePanel
+              account={account.data}
               connection={connectionInfo}
               playerPath={EMBEDDED_PLAYER_AUTO_INIT_PATH}
               ampcastOfficialUrl={ampcastOfficialUrl}
@@ -1108,6 +1111,7 @@ function AccountSummary({ account, avatarUrl, onLogout }: { account: AccountStat
 }
 
 function HomePanel({
+  account,
   connection,
   playerPath,
   ampcastOfficialUrl,
@@ -1115,6 +1119,7 @@ function HomePanel({
   onOpenConfig,
   onRefreshQQAuthorization,
 }: {
+  account: AccountState
   connection: ConnectionInfo
   playerPath: string
   ampcastOfficialUrl: string
@@ -1122,6 +1127,10 @@ function HomePanel({
   onOpenConfig: () => void
   onRefreshQQAuthorization: () => void
 }) {
+  const accessTokenExpiresAt = accountRefresh.data?.accessTokenExpiresAt
+    ?? accountRefresh.data?.account?.accessTokenExpiresAt
+    ?? account.accessTokenExpiresAt
+
   return (
     <div className="home-layout">
       <section className="hero-panel">
@@ -1152,9 +1161,9 @@ function HomePanel({
       <section className="connect-panel">
         <div className="section-head">
           <h3>QQ 授权</h3>
-          <button className="secondary-button compact-button" onClick={onRefreshQQAuthorization} disabled={accountRefresh.loading}>
+          <button className="secondary-button compact-button auth-refresh-button" onClick={onRefreshQQAuthorization} disabled={accountRefresh.loading}>
             <RefreshCw className={accountRefresh.loading ? 'spin' : undefined} size={15} />
-            刷新
+            刷新授权
           </button>
         </div>
         <div className="status-table">
@@ -1168,6 +1177,11 @@ function HomePanel({
                   ? '已更新 QQ access token'
                   : 'Key 可继续使用'
               : '用于延长 QQ 音乐登录态'}</small>
+          </div>
+          <div>
+            <span>授权到期</span>
+            <strong>{accessTokenExpiresAt ? formatDateTime(accessTokenExpiresAt) : '未知'}</strong>
+            <small>{accessTokenExpiresAt ? '来自 QQ access token 过期时间' : '当前 Cookie 未包含明确到期时间'}</small>
           </div>
         </div>
         <Status state={accountRefresh} />

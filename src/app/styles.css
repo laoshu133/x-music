@@ -737,16 +737,14 @@ a {
   gap: 8px;
 }
 
-.auth-page,
-.demo-page {
+.auth-page {
   min-height: 100vh;
   display: grid;
   place-items: center;
   padding: 24px;
 }
 
-.auth-panel,
-.demo-panel {
+.auth-panel {
   width: min(720px, 100%);
   display: grid;
   gap: 18px;
@@ -757,29 +755,25 @@ a {
   box-shadow: var(--shadow);
 }
 
-.auth-heading,
-.demo-heading {
+.auth-heading {
   display: grid;
   grid-template-columns: 32px minmax(0, 1fr);
   gap: 12px;
   align-items: start;
 }
 
-.auth-heading h1,
-.demo-heading h1 {
+.auth-heading h1 {
   font-size: 24px;
   line-height: 1.2;
 }
 
-.auth-actions,
-.demo-actions {
+.auth-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
 }
 
 .auth-actions button,
-.demo-actions button,
 .secondary-link {
   min-height: 40px;
   display: inline-flex;
@@ -794,21 +788,18 @@ a {
   text-decoration: none;
 }
 
-.auth-actions button,
-.demo-actions button {
+.auth-actions button {
   border-color: var(--accent);
   background: var(--accent);
   color: white;
 }
 
-.auth-facts,
-.demo-facts {
+.auth-facts {
   display: grid;
   gap: 8px;
 }
 
-.auth-facts div,
-.demo-facts div {
+.auth-facts div {
   display: grid;
   grid-template-columns: 96px minmax(0, 1fr);
   gap: 12px;
@@ -816,34 +807,29 @@ a {
   padding-top: 8px;
 }
 
-.auth-facts dt,
-.demo-facts dt {
+.auth-facts dt {
   color: var(--muted);
   font-size: 13px;
 }
 
-.auth-facts dd,
-.demo-facts dd {
+.auth-facts dd {
   min-width: 0;
   overflow-wrap: anywhere;
 }
 
-.auth-paste-form,
-.demo-paste-form {
+.auth-paste-form {
   display: grid;
   gap: 10px;
   border-top: 1px solid var(--line);
   padding-top: 14px;
 }
 
-.auth-paste-form label,
-.demo-paste-form label {
+.auth-paste-form label {
   color: var(--muted);
   font-size: 13px;
 }
 
-.auth-paste-form textarea,
-.demo-paste-form textarea {
+.auth-paste-form textarea {
   min-height: 96px;
   width: 100%;
   min-width: 0;
@@ -855,8 +841,7 @@ a {
   resize: vertical;
 }
 
-.auth-paste-form button,
-.demo-paste-form button {
+.auth-paste-form button {
   width: fit-content;
   min-height: 40px;
   border: 1px solid var(--accent);
@@ -1013,8 +998,18 @@ a {
 }
 
 .connect-panel .section-head + .connection-copy-grid,
-.connect-panel .section-head + .player-support-grid {
+.connect-panel .section-head + .player-support-grid,
+.connect-panel .section-head + .status-table {
   margin-top: 12px;
+}
+
+.auth-refresh-button {
+  min-height: 34px;
+  padding: 0 12px;
+  border-color: rgba(23, 107, 93, 0.35);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-weight: 600;
 }
 
 .player-support-grid {
@@ -1541,6 +1536,11 @@ a {
   align-items: center;
   border-top: 1px solid var(--line);
   padding-top: 8px;
+}
+
+.status-table div:first-child {
+  border-top: 0;
+  padding-top: 0;
 }
 
 .status-table strong {

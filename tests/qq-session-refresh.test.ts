@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { replaceQQCookieValues } from '@/lib/qq/account'
+import { buildQQLoginState, parseQQAccessTokenExpiresAt, replaceQQCookieValues } from '@/lib/qq/account'
 import { refreshQQMusickey } from '@/lib/qq/session-refresh'
 
 const originalFetch = globalThis.fetch
@@ -18,6 +18,14 @@ test('replaceQQCookieValues updates musickey cookies without dropping existing v
   })
 
   assert.equal(cookie, 'uin=o123456; qqmusic_key=new-key; foo=bar; qm_keyst=new-key; psrf_musickey_createtime=1782666210')
+})
+
+test('QQ login state exposes access token expiration from cookie', () => {
+  const expiresAt = parseQQAccessTokenExpiresAt('uin=o123456; qm_keyst=key; psrf_access_token_expiresAt=1787850210')
+  const state = buildQQLoginState('uin=o123456; qm_keyst=key; psrf_access_token_expiresAt=1787850210', 'request')
+
+  assert.equal(expiresAt, '2026-08-27T17:03:30.000Z')
+  assert.equal(state.accessTokenExpiresAt, expiresAt)
 })
 
 test('refreshQQMusickey exchanges current musickey for a new one', async () => {
