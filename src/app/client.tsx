@@ -326,7 +326,19 @@ function parseView(value: string | null): View {
 
 function initialSidebarCollapsed() {
   if (typeof window === 'undefined') return false
-  return window.localStorage.getItem(sidebarCollapsedStorageKey) === '1'
+  try {
+    return window.localStorage.getItem(sidebarCollapsedStorageKey) === '1'
+  } catch {
+    return false
+  }
+}
+
+function persistSidebarCollapsed(collapsed: boolean) {
+  try {
+    window.localStorage.setItem(sidebarCollapsedStorageKey, collapsed ? '1' : '0')
+  } catch {
+    // Some mobile WebViews disable localStorage. Sidebar state is only a preference.
+  }
 }
 
 export default function MusicClient() {
@@ -396,7 +408,11 @@ export default function MusicClient() {
         })
         return
       }
-      setAccount({ loading: false, error: error instanceof Error ? error.message : String(error), data: null })
+      setAccount({
+        loading: false,
+        error: error instanceof Error ? error.message : String(error),
+        data: { loggedIn: false },
+      })
     }
   }
   const loadAccountEmbyConfig = () => run(s => setAccountEmbyConfig(s), async () => {
@@ -599,7 +615,7 @@ export default function MusicClient() {
   }, [])
 
   useEffect(() => {
-    window.localStorage.setItem(sidebarCollapsedStorageKey, sidebarCollapsed ? '1' : '0')
+    persistSidebarCollapsed(sidebarCollapsed)
   }, [sidebarCollapsed])
 
   useEffect(() => {
