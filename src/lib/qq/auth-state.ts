@@ -5,6 +5,7 @@ import {
 } from '@/lib/db/accounts'
 import { getQQUserProfile } from './user'
 import { QQMusicError } from './http'
+import { refreshAccountQQAuthorizationIfNeeded } from './auth-refresh'
 
 const defaultCheckTtlMs = Number(process.env.QQ_AUTH_CHECK_TTL_MS ?? 5 * 60 * 1000)
 
@@ -27,17 +28,26 @@ export async function requireActiveQQAccount<T extends AccountRecord | undefined
   if (account.qqAuthState === 'expired') {
     throw new QQAuthExpiredError(account.qqAuthError ?? undefined)
   }
-  if (!options.force && isRecentlyChecked(account.qqAuthCheckedAt)) return account
+  const refreshed = await refreshAccountQQAuthorizationIfNeeded(account)
+  const currentAccount = refreshed.account
+  if (!options.force && isRecentlyChecked(currentAccount.qqAuthCheckedAt)) return currentAccount as T
 
   try {
-    await getQQUserProfile({ uin: account.qqUin, cookie: account.qqCookie })
-    markAccountQQAuthChecked(account.qqUin)
-    return account
+    await getQQUserProfile({ uin: currentAccount.qqUin, cookie: currentAccount.qqCookie })
+    markAccountQQAuthChecked(currentAccount.qqUin)
+    return currentAccount as T
   } catch (error) {
     if (isQQAuthExpiredError(error)) {
-      const message = error instanceof Error ? error.message : String(error)
-      markAccountQQAuthExpired(account.qqUin, message)
-      throw new QQAuthExpiredError(message)
+      try {
+        const retry = await refreshAccountQQAuthorizationIfNeeded(currentAccount, { force: true })
+        await getQQUserProfile({ uin: retry.account.qqUin, cookie: retry.account.qqCookie })
+        markAccountQQAuthChecked(retry.account.qqUin)
+        return retry.account as T
+      } catch {
+        const message = error instanceof Error ? error.message : String(error)
+        markAccountQQAuthExpired(currentAccount.qqUin, message)
+        throw new QQAuthExpiredError(message)
+      }
     }
     throw error
   }
