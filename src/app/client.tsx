@@ -955,6 +955,10 @@ function LoginPage({
           ? '等待扫码'
           : ''
 
+  useEffect(() => {
+    if (isMobileLoginDevice()) setLoginMethod('mobile')
+  }, [])
+
   return (
     <section className="login-card">
       <div className="brand-lockup login-brand">
@@ -1065,6 +1069,15 @@ function LoginPage({
       <Status state={account} />
     </section>
   )
+}
+
+function isMobileLoginDevice(): boolean {
+  if (typeof window === 'undefined') return false
+  const userAgent = window.navigator.userAgent
+  const mobileUserAgent = /Android|iPhone|iPod|Mobile|Windows Phone/i.test(userAgent)
+  const coarsePointer = window.matchMedia?.('(pointer: coarse)').matches ?? false
+  const narrowViewport = window.matchMedia?.('(max-width: 640px)').matches ?? window.innerWidth <= 640
+  return mobileUserAgent || (coarsePointer && narrowViewport)
 }
 
 function AccountSummary({ account, avatarUrl, onLogout }: { account: AccountState; avatarUrl?: string; onLogout: () => void }) {
