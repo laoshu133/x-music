@@ -79,12 +79,6 @@ interface UserAvatarResult {
 
 interface AdminConfig {
   lx: { sourceScriptUrl?: string }
-  emby: {
-    baseUrl?: string
-    apiKey?: string
-    hasApiKey?: boolean
-    proxyTimeoutMs: number
-  }
   gateway: {
     accountMode?: string
   }

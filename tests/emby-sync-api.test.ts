@@ -346,8 +346,15 @@ test('Emby play history sync pushes local mapped plays upstream', async () => {
 function prepareAccount(qqUin: string) {
   db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run(qqUin)
   saveQQLoginCookie(`uin=o${qqUin}; euin=encrypted-${qqUin}; qm_keyst=test-key`)
-  db.prepare('UPDATE accounts SET emby_user_id = ?, emby_access_token = ? WHERE qq_uin = ?')
-    .run(`emby-user-${qqUin}`, `emby-token-${qqUin}`, qqUin)
+  db.prepare(`
+    UPDATE accounts
+    SET emby_user_id = ?,
+        emby_access_token = ?,
+        emby_base_url = 'http://127.0.0.1:8096',
+        emby_api_key = 'test-emby-api-key',
+        emby_proxy_timeout_ms = 30000
+    WHERE qq_uin = ?
+  `).run(`emby-user-${qqUin}`, `emby-token-${qqUin}`, qqUin)
   const account = getAccountByQQ(qqUin)
   assert.ok(account)
   return account

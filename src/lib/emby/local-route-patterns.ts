@@ -60,6 +60,10 @@ export function isPlaylistItemsRequest(path: string): boolean {
   return /^\/Playlists\/[^/]+\/Items$/i.test(path) || /^\/Users\/[^/]+\/Items\/[^/]+\/Items$/i.test(path)
 }
 
+export function isPlaylistItemsMutation(method: string, path: string): boolean {
+  return (method === 'POST' || method === 'DELETE') && isPlaylistItemsRequest(path)
+}
+
 export function isAudioRequest(path: string): boolean {
   return /^\/Audio\/[^/]+\/(?:universal|stream)(?:\.[^/?]+)?$/i.test(path)
 }

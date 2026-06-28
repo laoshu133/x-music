@@ -42,6 +42,7 @@ const ampcastInstalledVersion = '0.9.28'
 const localServerId = 'x-music'
 const localMusicLibraryId = 'x-music-music'
 const localMusicLibraryTitle = 'XMusic'
+const ampcastProxyTimeoutMs = 30000
 const defaultHiddenServices = {
   'spotify/charts': true,
   'spotify/featured-playlists': true,
@@ -99,7 +100,7 @@ export async function proxyToAmpcast(request: Request, playerPath: string): Prom
       headers,
       body,
       cache: 'no-store',
-      signal: AbortSignal.timeout(settings.emby.proxyTimeoutMs),
+      signal: AbortSignal.timeout(ampcastProxyTimeoutMs),
       duplex: body ? 'half' : undefined,
     } as RequestInit & { duplex?: 'half' })
   } catch (error) {

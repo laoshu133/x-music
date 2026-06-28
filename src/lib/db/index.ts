@@ -41,6 +41,7 @@ export const db = withDatabaseInitLock(() => {
     'ALTER TABLE favorite_sync ADD COLUMN qq_uin TEXT',
     'ALTER TABLE resource_cache ADD COLUMN last_accessed_at TEXT',
     'ALTER TABLE jobs ADD COLUMN next_run_at TEXT',
+    'ALTER TABLE remote_mappings ADD COLUMN qq_uin TEXT',
   ]) {
     try {
       database.exec(statement)
@@ -48,6 +49,13 @@ export const db = withDatabaseInitLock(() => {
       if (!String(error).includes('duplicate column name')) throw error
     }
   }
+
+  database.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_remote_mappings_user_local
+      ON remote_mappings(COALESCE(qq_uin, ''), local_type, local_key, remote);
+    CREATE INDEX IF NOT EXISTS idx_remote_mappings_user_remote
+      ON remote_mappings(COALESCE(qq_uin, ''), remote, remote_id);
+  `)
 
   return database
 })

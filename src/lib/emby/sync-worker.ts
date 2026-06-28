@@ -3,6 +3,7 @@ import { isPlayableAudioFileName, isPlayableAudioPath, markMissingTrackFile } fr
 import { deleteCachedResourcesForTrack } from '@/lib/cache/resources'
 import { appConfig } from '@/lib/config'
 import { getAccountByQQ, type AccountRecord } from '@/lib/db/accounts'
+import { getFavoriteStatusForAccount } from '@/lib/db/favorites'
 import path from 'node:path'
 import { rmdir, rm } from 'node:fs/promises'
 import { upsertRemoteMapping } from '@/lib/db/remote-mappings'
@@ -13,6 +14,7 @@ import {
   refreshEmbyLibrary,
   searchEmbyAudioByName,
   searchEmbyAudioByPath,
+  setEmbyFavorite,
 } from './upstream-api'
 import { getDefaultUpstreamMusicLibraryLocation } from './auth'
 import { decodeVirtualId } from './virtual-ids'
@@ -124,20 +126,29 @@ export async function processOneEmbySyncJob(options: number | EmbySyncJobOptions
     }
 
     upsertRemoteMapping({
+      qqUin: account?.qqUin,
       localType: 'track',
       localKey: `${job.payload.source}:${job.payload.songmid}`,
       remote: 'emby',
       remoteId: embyItemId,
       raw: job.payload.musicInfo,
     })
+    await syncFavoriteStateAfterMapping({
+      account,
+      source: job.payload.source,
+      songmid: job.payload.songmid,
+      embyItemId,
+    })
     const playlistName = syncedPlaylistName(job.payload.playlistId)
     if (playlistName) {
-      await createOrUpdateEmbyPlaylist({
+      const playlistRemoteId = await createOrUpdateEmbyPlaylist({
         name: playlistName,
         itemIds: [embyItemId],
       }, { account }).catch((error: unknown) => {
         console.warn(`failed to update Emby playlist ${job.payload.playlistId}`, error)
+        return undefined
       })
+      if (playlistRemoteId) upsertPlaylistMapping(job.payload.playlistId, playlistRemoteId, playlistName, account)
     }
     await deleteCachedResourcesForTrack({
       source: job.payload.source,
@@ -168,6 +179,36 @@ export async function processOneEmbySyncJob(options: number | EmbySyncJobOptions
   }
 
   return true
+}
+
+function upsertPlaylistMapping(playlistId: string | undefined, remoteId: string, name: string, account?: AccountRecord): void {
+  const decoded = playlistId ? decodeVirtualId(playlistId) : undefined
+  if (!decoded || decoded.kind !== 'qq-playlist') return
+  upsertRemoteMapping({
+    qqUin: account?.qqUin,
+    localType: 'playlist',
+    localKey: `qq:${decoded.id}`,
+    remote: 'emby',
+    remoteId,
+    raw: { id: decoded.id, name },
+  })
+}
+
+async function syncFavoriteStateAfterMapping(input: {
+  account: AccountRecord | undefined
+  source: SyncEmbyTrackJobPayload['source']
+  songmid: string
+  embyItemId: string
+}): Promise<void> {
+  const embyUserId = input.account?.embyUserId
+  if (!embyUserId) return
+  const status = getFavoriteStatusForAccount(input.source, input.songmid, input.account?.qqUin)
+  if (!status.desiredState) return
+  await setEmbyFavorite({
+    userId: embyUserId,
+    itemId: input.embyItemId,
+    favorite: status.desiredState === 'favorite',
+  }, { account: input.account })
 }
 
 function joinEmbyPath(root: string | undefined, relativePath: string): string {

@@ -11,7 +11,7 @@ export interface ArchiveTrackJobPayload {
   songmid: string
   musicInfo: MusicInfo
   preferredQuality?: MusicQuality
-  reason: 'playback_completed' | 'favorite' | 'manual' | 'background'
+  reason: 'playback_completed' | 'favorite' | 'unfavorite' | 'manual' | 'background'
   playlistId?: string
 }
 
@@ -60,11 +60,14 @@ async function archiveTrack(payload: ArchiveTrackJobPayload): Promise<void> {
   const musicInfo = payload.musicInfo
   const preferredQuality = payload.preferredQuality ?? highestAvailableQuality(musicInfo)
   if (getPlayableTrackFile(musicInfo.source, musicInfo.songmid, preferredQuality)) return
-  if (hasActiveTrackFile(musicInfo.source, musicInfo.songmid, qualityFallbacks(preferredQuality))) return
 
   const track = ensureTrack(musicInfo)
-  const attempts: string[] = []
+  const attempts: Array<{ quality: MusicQuality; error: string }> = []
+
   for (const quality of qualityFallbacks(preferredQuality)) {
+    if (getPlayableTrackFile(musicInfo.source, musicInfo.songmid, quality)) return
+    if (hasActiveTrackFile(musicInfo.source, musicInfo.songmid, [quality])) return
+
     try {
       upsertTrackFileStatus(track.id, quality, 'resolving_url')
       const resolved = await resolveMusicUrl(musicInfo, quality)
@@ -82,10 +85,10 @@ async function archiveTrack(payload: ArchiveTrackJobPayload): Promise<void> {
       return
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      attempts.push(`${quality}: ${message}`)
+      attempts.push({ quality, error: message })
       upsertTrackFileStatus(track.id, quality, 'failed', { error: message })
     }
   }
 
-  throw new Error(`Unable to archive track ${musicInfo.source}:${musicInfo.songmid}. ${attempts.join('; ')}`)
+  throw new Error(`Unable to archive track ${musicInfo.source}:${musicInfo.songmid}. ${attempts.map(attempt => `${attempt.quality}: ${attempt.error}`).join('; ')}`)
 }

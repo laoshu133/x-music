@@ -6,13 +6,14 @@ import { dirname, join } from 'node:path'
 import { db } from '@/lib/db'
 import { appConfig } from '@/lib/config'
 import { deleteSetting, getEffectiveSettings, getSetting, setSetting, updateEffectiveSettings } from '@/lib/db/settings'
-import { getAccountByQQ, getAccountDetail, isAdminQQ, listAccountSummaries, markAccountActive } from '@/lib/db/accounts'
+import { getAccountByQQ, getAccountDetail, isAdminQQ, listAccountSummaries, markAccountActive, updateAccountEmbyConfig } from '@/lib/db/accounts'
 import { clearQQLoginCookie, saveQQLoginCookie } from '@/lib/db/qq-session'
 import { dispatchEmbyRequest } from '@/lib/emby/dispatch'
 import { ensureUpstreamEmbyUserForAccount } from '@/lib/emby/auth'
 import { handleLocalEmbyRequest } from '@/lib/emby/local-handlers'
 import { normalizeEmbyPath, stripOptionalEmbyPrefix } from '@/lib/emby/paths'
 import { proxyToUpstreamEmby } from '@/lib/emby/upstream-proxy'
+import { embyConfigForAccount, hasAccountUpstreamEmby } from '@/lib/emby/config'
 import { ampcastAutoConnectConfig, ampcastAutoInitHtml, playerPathFromEmbyPath, proxyToAmpcast } from '@/lib/ampcast/proxy'
 import { createLocalAccessToken, readEmbyAccessToken } from '@/lib/emby/tokens'
 import { decodeVirtualId, encodeVirtualId, songVirtualId } from '@/lib/emby/virtual-ids'
@@ -42,6 +43,14 @@ function configureAccountUpstreamEmby(qqUin: string): void {
         emby_base_url = 'http://127.0.0.1:8096',
         emby_api_key = 'test-emby-api-key',
         emby_proxy_timeout_ms = 30000
+    WHERE qq_uin = ?
+  `).run(qqUin)
+}
+
+function configureAccountUpstreamWebdav(qqUin: string): void {
+  db.prepare(`
+    UPDATE accounts
+    SET emby_source_webdav_dsn = 'https://webdav-user:webdav-pass@webdav.example/dav/music'
     WHERE qq_uin = ?
   `).run(qqUin)
 }
@@ -818,8 +827,8 @@ test('emby token parser accepts ampcast authorization header', () => {
 
 test('runtime config updates do not accept upstream Emby or LX fields', () => {
   updateEffectiveSettings({ qqEnabled: false })
-  const settings = getEffectiveSettings().emby
-  assert.deepEqual(Object.keys(settings), ['proxyTimeoutMs'])
+  const settings = getEffectiveSettings()
+  assert.equal('emby' in settings, false)
   assert.equal(getEffectiveSettings().qq.enabled, false)
 
   deleteSetting('qq.enabled')
@@ -988,6 +997,49 @@ test('local emby authorized requests fail when QQ auth is expired', async () => 
   }
 })
 
+test('upstream fallback emby requests fail with 401 when QQ auth is expired', async () => {
+  const originalFetch = globalThis.fetch
+  let upstreamRequests = 0
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999906')
+    saveQQLoginCookie('uin=o999906; qm_keyst=test-key')
+    markAccountUpstreamBound('999906')
+    const account = getAccountByQQ('999906')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+
+    db.prepare(`
+      UPDATE accounts
+      SET qq_auth_state = 'expired',
+          qq_auth_error = 'expired fallback proxy test'
+      WHERE qq_uin = ?
+    `).run('999906')
+    globalThis.fetch = (async () => {
+      upstreamRequests += 1
+      return Response.json({ ok: true })
+    }) as typeof fetch
+
+    const response = await dispatchEmbyRequest(new Request('http://local/emby/System/Info', {
+      headers: { 'X-Emby-Token': authPayload.AccessToken },
+    }), stripOptionalEmbyPrefix('/emby/System/Info'))
+    assert.equal(response.status, 401)
+    const payload = await response.json()
+    assert.equal(payload.code, 'QQ_AUTH_EXPIRED')
+    assert.match(payload.actionable, /QQ 授权/)
+    assert.equal(upstreamRequests, 0)
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999906')
+    clearQQLoginCookie()
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('account emby password can be manually changed', () => {
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999026')
@@ -1000,6 +1052,105 @@ test('account emby password can be manually changed', () => {
     assert.equal(getAccountByQQ('999026')?.embyPassword, 'manual-player-password')
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999026')
+    clearQQLoginCookie()
+  }
+})
+
+test('account upstream emby config is stored per user and independent from env', () => {
+  const previousBaseUrl = process.env.EMBY_UPSTREAM_URL
+  const previousApiKey = process.env.EMBY_API_KEY
+  const previousWebdav = process.env.EMBY_SOURCE_WEBDAV_DSN
+  try {
+    process.env.EMBY_UPSTREAM_URL = 'http://env-emby.example'
+    process.env.EMBY_API_KEY = 'env-api-key'
+    process.env.EMBY_SOURCE_WEBDAV_DSN = 'https://env-user:env-pass@webdav.example/dav'
+    db.prepare('DELETE FROM accounts WHERE qq_uin IN (?, ?)').run('999027', '999028')
+    saveQQLoginCookie('uin=o999027; qm_keyst=test-key')
+    saveQQLoginCookie('uin=o999028; qm_keyst=test-key')
+
+    const first = updateAccountEmbyConfig('999027', {
+      password: ' player-password ',
+      baseUrl: ' https://emby-user.example:8096/ ',
+      apiKey: ' user-api-key ',
+      sourceWebdavDsn: ' https://dav-user:pass@webdav-user.example/dav/music/ ',
+      proxyTimeoutMs: 45678.9,
+    })
+    assert.ok(first)
+    assert.equal(first.embyPassword, 'player-password')
+    assert.equal(first.embyBaseUrl, 'https://emby-user.example:8096')
+    assert.equal(first.embyApiKey, 'user-api-key')
+    assert.equal(first.embySourceWebdavDsn, 'https://dav-user:pass@webdav-user.example/dav/music')
+    assert.equal(first.embyProxyTimeoutMs, 45678)
+    assert.equal(hasAccountUpstreamEmby(first), true)
+    assert.deepEqual(embyConfigForAccount(first), {
+      baseUrl: 'https://emby-user.example:8096',
+      apiKey: 'user-api-key',
+      sourceWebdavDsn: 'https://dav-user:pass@webdav-user.example/dav/music',
+      proxyTimeoutMs: 45678,
+    })
+
+    const second = getAccountByQQ('999028')
+    assert.ok(second)
+    assert.equal(second.embyBaseUrl, undefined)
+    assert.equal(second.embyApiKey, undefined)
+    assert.equal(second.embySourceWebdavDsn, undefined)
+    assert.equal(hasAccountUpstreamEmby(second), false)
+    assert.deepEqual(embyConfigForAccount(second), {
+      baseUrl: undefined,
+      apiKey: undefined,
+      sourceWebdavDsn: undefined,
+      proxyTimeoutMs: 30000,
+    })
+  } finally {
+    if (previousBaseUrl === undefined) delete process.env.EMBY_UPSTREAM_URL
+    else process.env.EMBY_UPSTREAM_URL = previousBaseUrl
+    if (previousApiKey === undefined) delete process.env.EMBY_API_KEY
+    else process.env.EMBY_API_KEY = previousApiKey
+    if (previousWebdav === undefined) delete process.env.EMBY_SOURCE_WEBDAV_DSN
+    else process.env.EMBY_SOURCE_WEBDAV_DSN = previousWebdav
+    db.prepare('DELETE FROM accounts WHERE qq_uin IN (?, ?)').run('999027', '999028')
+    clearQQLoginCookie()
+  }
+})
+
+test('account upstream emby config preserves masked api key and supports clearing fields', () => {
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999029')
+    saveQQLoginCookie('uin=o999029; qm_keyst=test-key')
+
+    const saved = updateAccountEmbyConfig('999029', {
+      password: 'player-password',
+      baseUrl: 'https://emby.example',
+      apiKey: 'real-api-key',
+      sourceWebdavDsn: 'https://user:pass@webdav.example/dav/music',
+      proxyTimeoutMs: 45000,
+    })
+    assert.ok(saved)
+
+    const preserved = updateAccountEmbyConfig('999029', {
+      password: 'next-password',
+      apiKey: '********',
+    })
+    assert.equal(preserved?.embyPassword, 'next-password')
+    assert.equal(preserved?.embyApiKey, 'real-api-key')
+    assert.equal(preserved?.embyBaseUrl, 'https://emby.example')
+    assert.equal(preserved?.embySourceWebdavDsn, 'https://user:pass@webdav.example/dav/music')
+    assert.equal(preserved?.embyProxyTimeoutMs, 45000)
+
+    const cleared = updateAccountEmbyConfig('999029', {
+      password: 'next-password',
+      baseUrl: '',
+      apiKey: '',
+      sourceWebdavDsn: '',
+      proxyTimeoutMs: null,
+    })
+    assert.equal(cleared?.embyBaseUrl, undefined)
+    assert.equal(cleared?.embyApiKey, undefined)
+    assert.equal(cleared?.embySourceWebdavDsn, undefined)
+    assert.equal(cleared?.embyProxyTimeoutMs, undefined)
+    assert.equal(hasAccountUpstreamEmby(cleared), false)
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999029')
     clearQQLoginCookie()
   }
 })
@@ -1746,6 +1897,74 @@ test('musiver items delete clears virtual items locally', async () => {
   }
 })
 
+test('musiver items delete syncs mapped virtual playlist deletion upstream', async () => {
+  const originalFetch = globalThis.fetch
+  const playlistId = 'virtual-delete-mapped-playlist'
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999030')
+    db.prepare("DELETE FROM remote_mappings WHERE local_type = 'playlist' AND local_key = ? AND remote = 'emby'").run(`qq:${playlistId}`)
+    saveQQLoginCookie('uin=o999030; qm_keyst=test-key')
+    markAccountUpstreamBound('999030')
+    const account = getAccountByQQ('999030')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const authHeader = `MediaBrowser Client="Musiver", Version="1.3.9", Token="${authPayload.AccessToken}"`
+    const virtualId = encodeVirtualId({ kind: 'qq-playlist', id: playlistId })
+
+    db.prepare(`
+      INSERT INTO app_settings (key, value_json, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP
+    `).run(`virtual.playlist.${playlistId}`, JSON.stringify({
+      source: 'tx',
+      id: playlistId,
+      name: 'Virtual Delete Mapped Playlist',
+    }))
+    upsertRemoteMapping({
+      localType: 'playlist',
+      localKey: `qq:${playlistId}`,
+      remote: 'emby',
+      remoteId: 'emby-delete-mapped-playlist',
+    })
+
+    const upstreamDeletes: Array<{ pathname: string; ids: string | null }> = []
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.pathname === '/Items/Delete' && init?.method === 'POST') {
+        upstreamDeletes.push({ pathname: requestUrl.pathname, ids: requestUrl.searchParams.get('Ids') })
+        return new Response(null, { status: 204 })
+      }
+      return Response.json({ error: 'unexpected upstream request' }, { status: 500 })
+    }) as typeof fetch
+
+    const response = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Items/Delete?Ids=${encodeURIComponent(virtualId)}`, {
+        method: 'POST',
+        headers: { authorization: authHeader },
+      }),
+      stripOptionalEmbyPrefix('/emby/Items/Delete'),
+    )
+    assert.equal(response.status, 204)
+    assert.deepEqual(upstreamDeletes, [
+      { pathname: '/Items/Delete', ids: 'emby-delete-mapped-playlist' },
+    ])
+    const row = db.prepare("SELECT id FROM remote_mappings WHERE local_type = 'playlist' AND local_key = ? AND remote = 'emby'").get(`qq:${playlistId}`)
+    assert.equal(row, undefined)
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999030')
+    db.prepare("DELETE FROM app_settings WHERE key = ?").run(`virtual.playlist.${playlistId}`)
+    db.prepare("DELETE FROM remote_mappings WHERE local_type = 'playlist' AND local_key = ? AND remote = 'emby'").run(`qq:${playlistId}`)
+    clearQQLoginCookie()
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('musiver single item delete clears virtual items locally', async () => {
   const originalFetch = globalThis.fetch
   try {
@@ -1795,6 +2014,77 @@ test('musiver single item delete clears virtual items locally', async () => {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999036')
     clearQQLoginCookie()
     db.prepare('DELETE FROM app_settings WHERE key = ?').run('virtual.playlist.virtual-single-delete-playlist')
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('virtual playlist item add maps virtual ids before syncing upstream Emby playlist', async () => {
+  const originalFetch = globalThis.fetch
+  const playlistId = 'virtual-playlist-add-map'
+  const songmid = `virtual-playlist-add-map-${Date.now()}`
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999037')
+    db.prepare("DELETE FROM remote_mappings WHERE local_type IN ('playlist', 'track') AND remote = 'emby'").run()
+    saveQQLoginCookie('uin=o999037; qm_keyst=test-key')
+    markAccountUpstreamBound('999037')
+    const account = getAccountByQQ('999037')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const authHeader = `MediaBrowser Client="Musiver", Version="1.3.9", Token="${authPayload.AccessToken}"`
+
+    db.prepare(`
+      INSERT INTO app_settings (key, value_json, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP
+    `).run(`virtual.playlist.${playlistId}`, JSON.stringify({
+      source: 'tx',
+      id: playlistId,
+      name: 'Virtual Playlist Add Map',
+    }))
+    upsertRemoteMapping({
+      localType: 'playlist',
+      localKey: `qq:${playlistId}`,
+      remote: 'emby',
+      remoteId: 'emby-playlist-add-map',
+    })
+    upsertRemoteMapping({
+      localType: 'track',
+      localKey: `tx:${songmid}`,
+      remote: 'emby',
+      remoteId: 'emby-track-add-map',
+    })
+
+    const upstreamRequests: Array<{ pathname: string; ids: string | null }> = []
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const requestUrl = new URL(String(url))
+      upstreamRequests.push({ pathname: requestUrl.pathname, ids: requestUrl.searchParams.get('Ids') })
+      return new Response(null, { status: 204 })
+    }) as typeof fetch
+
+    const virtualPlaylistId = encodeVirtualId({ kind: 'qq-playlist', id: playlistId })
+    const virtualSongId = encodeVirtualId({ kind: 'qq-song', songmid })
+    const response = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Playlists/${encodeURIComponent(virtualPlaylistId)}/Items?Ids=${encodeURIComponent(virtualSongId)}`, {
+        method: 'POST',
+        headers: { authorization: authHeader },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Playlists/${encodeURIComponent(virtualPlaylistId)}/Items`),
+    )
+    assert.equal(response.status, 204)
+    assert.deepEqual(upstreamRequests, [
+      { pathname: '/Playlists/emby-playlist-add-map/Items', ids: 'emby-track-add-map' },
+    ])
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999037')
+    db.prepare("DELETE FROM app_settings WHERE key = ?").run(`virtual.playlist.${playlistId}`)
+    db.prepare("DELETE FROM remote_mappings WHERE local_type IN ('playlist', 'track') AND remote = 'emby'").run()
+    clearQQLoginCookie()
     globalThis.fetch = originalFetch
   }
 })
@@ -5364,6 +5654,8 @@ test('virtual favorite add enqueues track archive job', async () => {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999902')
     db.prepare("DELETE FROM jobs WHERE type = 'archive_track' AND json_extract(payload_json, '$.songmid') = ?").run(songmid)
     saveQQLoginCookie('uin=o999902; euin=encrypted999902; qm_keyst=test-key')
+    markAccountUpstreamBound('999902')
+    configureAccountUpstreamWebdav('999902')
     const account = getAccountByQQ('999902')
     assert.ok(account)
     const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
@@ -5399,29 +5691,115 @@ test('virtual favorite add enqueues track archive job', async () => {
       `/Users/${authPayload.User.Id}/FavoriteItems/${encodeURIComponent(virtualId)}`,
     )
     assert.equal(response.status, 200)
-    const job = db.prepare(`
+    const archiveJob = db.prepare(`
       SELECT payload_json AS payloadJson
       FROM jobs
       WHERE type = 'archive_track'
         AND json_extract(payload_json, '$.songmid') = ?
       LIMIT 1
     `).get(songmid) as { payloadJson: string } | undefined
-    assert.equal(JSON.parse(job?.payloadJson ?? '{}').reason, 'favorite')
+    const archivePayload = JSON.parse(archiveJob?.payloadJson ?? '{}') as { reason?: string; playlistId?: string }
+    assert.equal(archivePayload.reason, 'favorite')
+
+    const syncJob = db.prepare(`
+      SELECT payload_json AS payloadJson
+      FROM jobs
+      WHERE type = 'sync_emby_track'
+        AND json_extract(payload_json, '$.songmid') = ?
+      LIMIT 1
+    `).get(songmid) as { payloadJson: string } | undefined
+    const syncPayload = JSON.parse(syncJob?.payloadJson ?? '{}') as { qqUin?: string }
+    assert.equal(syncPayload.qqUin, '999902')
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999902')
     db.prepare("DELETE FROM app_settings WHERE key = ?").run(`virtual.song.${songmid}`)
-    db.prepare("DELETE FROM jobs WHERE type = 'archive_track' AND json_extract(payload_json, '$.songmid') = ?").run(songmid)
+    db.prepare("DELETE FROM jobs WHERE json_extract(payload_json, '$.songmid') = ?").run(songmid)
     clearQQLoginCookie()
     globalThis.fetch = originalFetch
   }
 })
 
-test('virtual playback stopped report enqueues track archive job', async () => {
+test('virtual favorite remove enqueues track archive and sync jobs when WebDAV is configured', async () => {
+  const originalFetch = globalThis.fetch
+  const songmid = `archive-unfavorite-${Date.now()}`
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999901')
+    db.prepare("DELETE FROM jobs WHERE json_extract(payload_json, '$.songmid') = ?").run(songmid)
+    saveQQLoginCookie('uin=o999901; euin=encrypted999901; qm_keyst=test-key')
+    markAccountUpstreamBound('999901')
+    configureAccountUpstreamWebdav('999901')
+    const account = getAccountByQQ('999901')
+    assert.ok(account)
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const song: MusicInfo = {
+      source: 'tx',
+      songmid,
+      name: 'Archive Unfavorite Song',
+      singer: 'Archive Artist',
+      raw: { songId: 123457, songType: 0 },
+    }
+    db.prepare(`
+      INSERT INTO app_settings (key, value_json, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP
+    `).run(`virtual.song.${songmid}`, JSON.stringify({ song }))
+    setLocalFavoriteSynced(song, true, '999901')
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'u.y.qq.com') return Response.json({ code: 0, req: { code: 0, data: { result: 0 } } })
+      if (requestUrl.pathname.includes('/FavoriteItems/')) return new Response(null, { status: 204 })
+      return Response.json({ Items: [], TotalRecordCount: 0 })
+    }) as typeof fetch
+
+    const virtualId = encodeVirtualId({ kind: 'qq-song', songmid })
+    const response = await dispatchEmbyRequest(
+      new Request(`http://local/Users/${authPayload.User.Id}/FavoriteItems/${encodeURIComponent(virtualId)}`, {
+        method: 'DELETE',
+        headers: { 'X-Emby-Token': authPayload.AccessToken },
+      }),
+      `/Users/${authPayload.User.Id}/FavoriteItems/${encodeURIComponent(virtualId)}`,
+    )
+    assert.equal(response.status, 200)
+    const archiveJob = db.prepare(`
+      SELECT payload_json AS payloadJson
+      FROM jobs
+      WHERE type = 'archive_track'
+        AND json_extract(payload_json, '$.songmid') = ?
+      LIMIT 1
+    `).get(songmid) as { payloadJson: string } | undefined
+    assert.equal(JSON.parse(archiveJob?.payloadJson ?? '{}').reason, 'unfavorite')
+
+    const syncJob = db.prepare(`
+      SELECT payload_json AS payloadJson
+      FROM jobs
+      WHERE type = 'sync_emby_track'
+        AND json_extract(payload_json, '$.songmid') = ?
+      LIMIT 1
+    `).get(songmid) as { payloadJson: string } | undefined
+    assert.equal(JSON.parse(syncJob?.payloadJson ?? '{}').qqUin, '999901')
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999901')
+    db.prepare("DELETE FROM app_settings WHERE key = ?").run(`virtual.song.${songmid}`)
+    db.prepare("DELETE FROM jobs WHERE json_extract(payload_json, '$.songmid') = ?").run(songmid)
+    db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run(songmid)
+    clearQQLoginCookie()
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('virtual playback stopped report enqueues track archive and sync jobs when WebDAV is configured', async () => {
   const songmid = `archive-stopped-${Date.now()}`
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999903')
-    db.prepare("DELETE FROM jobs WHERE type = 'archive_track' AND json_extract(payload_json, '$.songmid') = ?").run(songmid)
+    db.prepare("DELETE FROM jobs WHERE json_extract(payload_json, '$.songmid') = ?").run(songmid)
     saveQQLoginCookie('uin=o999903; qm_keyst=test-key')
+    markAccountUpstreamBound('999903')
+    configureAccountUpstreamWebdav('999903')
     const account = getAccountByQQ('999903')
     assert.ok(account)
     const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
@@ -5452,18 +5830,27 @@ test('virtual playback stopped report enqueues track archive job', async () => {
       '/Sessions/Playing/Stopped',
     )
     assert.equal(response.status, 204)
-    const job = db.prepare(`
+    const archiveJob = db.prepare(`
       SELECT payload_json AS payloadJson
       FROM jobs
       WHERE type = 'archive_track'
         AND json_extract(payload_json, '$.songmid') = ?
       LIMIT 1
     `).get(songmid) as { payloadJson: string } | undefined
-    assert.equal(JSON.parse(job?.payloadJson ?? '{}').reason, 'playback_completed')
+    assert.equal(JSON.parse(archiveJob?.payloadJson ?? '{}').reason, 'playback_completed')
+
+    const syncJob = db.prepare(`
+      SELECT payload_json AS payloadJson
+      FROM jobs
+      WHERE type = 'sync_emby_track'
+        AND json_extract(payload_json, '$.songmid') = ?
+      LIMIT 1
+    `).get(songmid) as { payloadJson: string } | undefined
+    assert.equal(JSON.parse(syncJob?.payloadJson ?? '{}').qqUin, '999903')
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999903')
     db.prepare("DELETE FROM app_settings WHERE key = ?").run(`virtual.song.${songmid}`)
-    db.prepare("DELETE FROM jobs WHERE type = 'archive_track' AND json_extract(payload_json, '$.songmid') = ?").run(songmid)
+    db.prepare("DELETE FROM jobs WHERE json_extract(payload_json, '$.songmid') = ?").run(songmid)
     db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run(songmid)
     clearQQLoginCookie()
   }

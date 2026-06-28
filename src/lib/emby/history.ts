@@ -37,7 +37,7 @@ export async function pullEmbyPlayHistory(input: {
   let qqFailed = 0
 
   for (const item of response.Items ?? []) {
-    const song = musicInfoFromEmbyMappedItem(item)
+    const song = musicInfoFromEmbyMappedItem(item, account)
     const lastPlayedAt = normalizeDate(item.UserData?.LastPlayedDate)
     if (!song || !lastPlayedAt) {
       skipped += 1
@@ -107,7 +107,7 @@ export async function pushLocalPlayHistoryToEmby(input: {
   let skipped = 0
 
   for (const event of events) {
-    const remoteItemId = mappedEmbyItemId(event)
+    const remoteItemId = mappedEmbyItemId(event, input.account)
     if (!remoteItemId) {
       skipped += 1
       continue
@@ -134,8 +134,9 @@ export async function pushLocalPlayHistoryToEmby(input: {
   }
 }
 
-function mappedEmbyItemId(song: Pick<MusicInfo, 'source' | 'songmid'>): string | undefined {
+function mappedEmbyItemId(song: Pick<MusicInfo, 'source' | 'songmid'>, account?: AccountRecord): string | undefined {
   return getRemoteMapping({
+    qqUin: account?.qqUin,
     localType: 'track',
     localKey: `${song.source}:${song.songmid}`,
     remote: 'emby',

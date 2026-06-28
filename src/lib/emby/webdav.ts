@@ -35,6 +35,13 @@ export async function syncMediaFilesToEmbyWebdav(input: {
   const uploadedPaths: string[] = []
   const createdDirectories = new Set<string>()
 
+  if (await remoteFileExists(config, relativeFinalPath, settings.proxyTimeoutMs)) {
+    return {
+      embyPath: toPosixPath(relativeFinalPath),
+      uploadedPaths,
+    }
+  }
+
   for (const filePath of files) {
     const relativePath = relativeMusicPath(filePath)
     await ensureRemoteDirectories(config, path.dirname(relativePath), createdDirectories, settings.proxyTimeoutMs)
@@ -46,6 +53,27 @@ export async function syncMediaFilesToEmbyWebdav(input: {
     embyPath: toPosixPath(relativeFinalPath),
     uploadedPaths,
   }
+}
+
+async function remoteFileExists(config: WebdavConfig, relativePath: string, timeoutMs: number): Promise<boolean> {
+  const head = await webdavFetch(config, relativePath, {
+    method: 'HEAD',
+  }, timeoutMs)
+  if (head.ok) return true
+  if (head.status === 404) return false
+  if (head.status !== 405 && head.status !== 501) {
+    throw new Error(`WebDAV HEAD ${relativePath} failed with ${head.status}: ${(await head.text().catch(() => '')).slice(0, 300)}`)
+  }
+
+  const propfind = await webdavFetch(config, relativePath, {
+    method: 'PROPFIND',
+    headers: {
+      depth: '0',
+    },
+  }, timeoutMs)
+  if (propfind.ok || propfind.status === 207) return true
+  if (propfind.status === 404) return false
+  throw new Error(`WebDAV PROPFIND ${relativePath} failed with ${propfind.status}: ${(await propfind.text().catch(() => '')).slice(0, 300)}`)
 }
 
 function relativeMusicPath(filePath: string): string {

@@ -10,9 +10,6 @@ export interface EffectiveAppSettings {
   lx: {
     sourceScriptUrl?: string
   }
-  emby: {
-    proxyTimeoutMs: number
-  }
   qq: {
     enabled: boolean
     syncFavorites: boolean
@@ -63,9 +60,6 @@ export function getEffectiveSettings(): EffectiveAppSettings {
   return {
     lx: {
       sourceScriptUrl: appConfig.lxMusicSourceScript,
-    },
-    emby: {
-      proxyTimeoutMs: 30000,
     },
     qq: {
       enabled: booleanSetting('qq.enabled', true),

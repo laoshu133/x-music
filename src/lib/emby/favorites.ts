@@ -19,6 +19,7 @@ export async function syncMappedEmbyFavoriteBestEffort(
 ): Promise<EmbyFavoriteSyncResult> {
   const embyUserId = account?.embyUserId
   const remoteItemId = getRemoteMapping({
+    qqUin: account?.qqUin,
     localType: 'track',
     localKey: `${song.source}:${song.songmid}`,
     remote: 'emby',
@@ -63,7 +64,7 @@ export async function pushLocalFavoritesToEmby(input: {
   let skipped = 0
 
   for (const record of favorites) {
-    const remoteItemId = mappedEmbyItemId(record)
+    const remoteItemId = mappedEmbyItemId(record, input.account)
     if (!remoteItemId) {
       skipped += 1
       continue
@@ -115,7 +116,7 @@ export async function pullEmbyFavorites(input: {
   let skipped = 0
 
   for (const item of response.Items ?? []) {
-    const song = musicInfoFromEmbyMappedItem(item)
+    const song = musicInfoFromEmbyMappedItem(item, account)
     if (!song) {
       skipped += 1
       continue
@@ -170,7 +171,7 @@ export async function syncEmbyFavoritesFromQQList(input: {
   }, { account: input.account }).catch(() => ({ Items: [] }))
   const embyFavoriteIds = new Set((embyFavorites.Items ?? []).map(item => item.Id).filter((id): id is string => Boolean(id)))
   const mappings = dedupeSongs(input.qqFavorites)
-    .map(song => getRemoteMapping({ localType: 'track', localKey: `${song.source}:${song.songmid}`, remote: 'emby' }))
+    .map(song => getRemoteMapping({ qqUin: input.account?.qqUin, localType: 'track', localKey: `${song.source}:${song.songmid}`, remote: 'emby' }))
     .filter((mapping): mapping is NonNullable<typeof mapping> => Boolean(mapping))
     .slice(0, input.limit ?? 500)
   const errors: Array<{ songmid: string; error: string }> = []
@@ -256,19 +257,20 @@ function dedupeSongs(songs: MusicInfo[]): MusicInfo[] {
   return result
 }
 
-function mappedEmbyItemId(song: Pick<FavoriteRecord, 'source' | 'songmid'>): string | undefined {
+function mappedEmbyItemId(song: Pick<FavoriteRecord, 'source' | 'songmid'>, account?: AccountRecord): string | undefined {
   return getRemoteMapping({
+    qqUin: account?.qqUin,
     localType: 'track',
     localKey: `${song.source}:${song.songmid}`,
     remote: 'emby',
   })?.remoteId
 }
 
-export function musicInfoFromEmbyMappedItem(item: EmbyAudioUserDataItem): MusicInfo | undefined {
+export function musicInfoFromEmbyMappedItem(item: EmbyAudioUserDataItem, account?: AccountRecord): MusicInfo | undefined {
   const itemId = item.Id
   if (!itemId) return undefined
 
-  const mapping = getRemoteMappingByRemote({ remote: 'emby', remoteId: itemId })
+  const mapping = getRemoteMappingByRemote({ qqUin: account?.qqUin, remote: 'emby', remoteId: itemId })
   const mapped = parseMappedMusicInfo(mapping?.rawJson)
   if (mapped) return mapped
 

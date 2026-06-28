@@ -163,7 +163,7 @@ export async function searchEmbyPlaylistByName(name: string, options: EmbyFetchO
 export async function createOrUpdateEmbyPlaylist(input: {
   name: string
   itemIds: string[]
-}, options: EmbyFetchOptions = {}): Promise<unknown> {
+}, options: EmbyFetchOptions = {}): Promise<string | undefined> {
   if (!input.itemIds.length) return undefined
   const existing = await embyFetch<{ Items?: Array<{ Id?: string; Name?: string }> }>(`/Items?${new URLSearchParams({
     IncludeItemTypes: 'Playlist',
@@ -173,16 +173,18 @@ export async function createOrUpdateEmbyPlaylist(input: {
   })}`, {}, options).catch(() => undefined)
   const playlist = existing?.Items?.find(item => item.Name === input.name)
   if (playlist?.Id) {
-    return embyFetch(`/Playlists/${encodeURIComponent(playlist.Id)}/Items?${new URLSearchParams({ Ids: input.itemIds.join(',') })}`, {
+    await embyFetch(`/Playlists/${encodeURIComponent(playlist.Id)}/Items?${new URLSearchParams({ Ids: input.itemIds.join(',') })}`, {
       method: 'POST',
     }, options)
+    return playlist.Id
   }
 
-  return embyFetch(`/Playlists?${new URLSearchParams({
+  const created = await embyFetch<{ Id?: string; PlaylistId?: string; ItemId?: string }>(`/Playlists?${new URLSearchParams({
     Name: input.name,
     Ids: input.itemIds.join(','),
     MediaType: 'Audio',
   })}`, { method: 'POST' }, options)
+  return created?.Id ?? created?.PlaylistId ?? created?.ItemId
 }
 
 export async function deleteEmbyItems(ids: string[], options: EmbyFetchOptions = {}): Promise<void> {

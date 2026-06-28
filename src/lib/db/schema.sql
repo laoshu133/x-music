@@ -127,6 +127,7 @@ CREATE TABLE IF NOT EXISTS app_settings (
 
 CREATE TABLE IF NOT EXISTS remote_mappings (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  qq_uin TEXT,
   local_type TEXT NOT NULL,
   local_key TEXT NOT NULL,
   remote TEXT NOT NULL,
@@ -134,10 +135,8 @@ CREATE TABLE IF NOT EXISTS remote_mappings (
   raw_json TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE(local_type, local_key, remote)
+  UNIQUE(qq_uin, local_type, local_key, remote)
 );
-
-CREATE INDEX IF NOT EXISTS idx_remote_mappings_remote ON remote_mappings(remote, remote_id);
 
 CREATE TABLE IF NOT EXISTS sync_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
