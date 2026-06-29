@@ -15,6 +15,7 @@ RUN DATABASE_URL=file:/tmp/x-music-build.sqlite \
 FROM node:24-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
+ENV HOST=0.0.0.0
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/node_modules ./node_modules
