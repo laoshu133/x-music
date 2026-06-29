@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server'
-import { getAccountByQQ, summarizeAccount, updateAccountQQCookie } from '@/lib/db/accounts'
-import { getStoredQQLoginState, updateStoredQQLoginCookie } from '@/lib/db/qq-session'
-import { buildQQLoginState, refreshQQMusickey, qqMusicErrorResponse } from '@/lib/qq'
+import { summarizeAccount } from '@/lib/db/accounts'
+import { getCurrentAccount } from '@/lib/session'
+import { buildQQLoginState, refreshQQMusickey, qqMusicErrorResponse, QQMusicError } from '@/lib/qq'
+import { refreshAccountQQAuthorization } from '@/lib/qq/auth-refresh'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -14,17 +15,20 @@ type RefreshRequest = {
 export async function POST(request: Request) {
   const body = await readRefreshBody(request)
   try {
-    const stored = body?.cookie ? undefined : getStoredQQLoginState()
-    const result = await refreshQQMusickey({ cookie: body?.cookie ?? stored?.cookie })
-    const shouldPersist = body?.persist !== false && !body?.cookie
-    const refreshedState = buildQQLoginState(result.cookie, 'request')
-
-    if (shouldPersist) {
-      updateStoredQQLoginCookie(result.cookie)
-      updateAccountQQCookie(result.cookie)
+    const currentAccount = body?.cookie ? undefined : await getCurrentAccount({ verifyQQ: false })
+    if (!body?.cookie && !currentAccount) {
+      throw new QQMusicError('Login is required to refresh QQ authorization', 401, {
+        actionable: '重新登录后再刷新授权。',
+      })
     }
 
-    const account = shouldPersist ? getAccountByQQ(result.uin) : undefined
+    const refreshed = currentAccount && body?.persist !== false && !body?.cookie
+      ? await refreshAccountQQAuthorization(currentAccount)
+      : undefined
+    const result = refreshed?.result ?? await refreshQQMusickey({ cookie: body?.cookie ?? currentAccount?.qqCookie })
+    const shouldPersist = body?.persist !== false && !body?.cookie && Boolean(currentAccount)
+    const refreshedState = buildQQLoginState(result.cookie, 'request')
+    const account = shouldPersist ? refreshed?.account : undefined
     return NextResponse.json({
       refreshed: true,
       uin: result.uin,

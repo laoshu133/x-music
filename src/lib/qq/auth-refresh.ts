@@ -5,7 +5,8 @@ import {
 } from '@/lib/db/accounts'
 import { getStoredQQLoginState, updateStoredQQLoginCookie } from '@/lib/db/qq-session'
 import { parseQQAccessTokenExpiresAt } from './account'
-import { refreshQQMusickey } from './session-refresh'
+import { QQMusicError } from './http'
+import { refreshQQMusickey, type QQMusickeyRefreshResult } from './session-refresh'
 
 const defaultRefreshWindowMs = Number(process.env.QQ_AUTH_AUTO_REFRESH_WINDOW_MS ?? 7 * 24 * 60 * 60 * 1000)
 const defaultRefreshMinIntervalMs = Number(process.env.QQ_AUTH_AUTO_REFRESH_MIN_INTERVAL_MS ?? 6 * 60 * 60 * 1000)
@@ -16,6 +17,29 @@ export interface QQAuthorizationRefreshResult {
   attempted: boolean
   refreshed: boolean
   error?: unknown
+}
+
+export interface AccountQQAuthorizationRefreshResult {
+  account: AccountRecord
+  result: QQMusickeyRefreshResult
+}
+
+export async function refreshAccountQQAuthorization(
+  account: AccountRecord,
+): Promise<AccountQQAuthorizationRefreshResult> {
+  const result = await refreshQQMusickey({ cookie: account.qqCookie })
+  if (result.uin !== account.qqUin) {
+    throw new QQMusicError('QQ authorization refresh returned a different account', 409, {
+      expectedUin: account.qqUin,
+      actualUin: result.uin,
+    })
+  }
+  updateStoredSessionIfCurrentAccount(result.uin, result.cookie)
+  const refreshedAccount = updateAccountQQCookie(result.cookie) ?? getAccountByQQ(result.uin) ?? account
+  return {
+    account: refreshedAccount,
+    result,
+  }
 }
 
 export async function refreshAccountQQAuthorizationIfNeeded(
@@ -32,13 +56,11 @@ export async function refreshAccountQQAuthorizationIfNeeded(
 
   lastRefreshAttemptByUin.set(account.qqUin, Date.now())
   try {
-    const result = await refreshQQMusickey({ cookie: account.qqCookie })
-    updateStoredSessionIfCurrentAccount(result.uin, result.cookie)
-    const refreshedAccount = updateAccountQQCookie(result.cookie) ?? getAccountByQQ(result.uin) ?? account
+    const refreshed = await refreshAccountQQAuthorization(account)
     return {
-      account: refreshedAccount,
+      account: refreshed.account,
       attempted: true,
-      refreshed: result.changed,
+      refreshed: refreshed.result.changed,
     }
   } catch (error) {
     if (options.force) throw error
