@@ -4,7 +4,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: node server.js
+    command: node scripts/start-next-standalone.mjs
     restart: unless-stopped
     env_file:
       - .env
