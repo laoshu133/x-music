@@ -319,6 +319,14 @@ test('play API redirects non-encrypted LX CDN URLs instead of proxying first pla
     assert.equal(response.status, 302)
     assert.equal(response.headers.get('location'), `https://cdn.example/${songmid}.mp3`)
     assert.equal(response.headers.get('x-x-music-stream-mode'), 'redirect')
+    const row = db.prepare(`
+      SELECT tf.status, tf.error
+      FROM track_files tf
+      INNER JOIN tracks t ON t.id = tf.track_id
+      WHERE t.source = 'tx' AND t.songmid = ? AND tf.quality = '320k'
+    `).get(songmid) as { status: string; error: string | null } | undefined
+    assert.equal(row?.status, 'failed')
+    assert.equal(row?.error, 'Redirected to non-encrypted upstream without local cache')
   } finally {
     db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run(songmid)
   }

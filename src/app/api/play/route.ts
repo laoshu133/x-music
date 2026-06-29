@@ -113,6 +113,9 @@ const resolvePlayableUpstreamResponse = async (
         continue
       }
       if (!isEncryptedQQAudioFileName(resolved.url)) {
+        upsertTrackFileStatus(track.id, resolved.quality, 'failed', {
+          error: 'Redirected to non-encrypted upstream without local cache',
+        })
         return {
           url: resolved.url,
           quality: resolved.quality,

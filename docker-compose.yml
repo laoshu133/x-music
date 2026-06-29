@@ -9,11 +9,11 @@ services:
     env_file:
       - .env
     ports:
-      - "${PORT:-8098}:8098"
+      - "${PORT:-8098}:${PORT:-8098}"
     volumes:
       - x-music-data:/app/data
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://$(hostname):8098/api/health >/dev/null || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://$(hostname):${PORT:-8098}/api/health >/dev/null || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 5

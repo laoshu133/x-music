@@ -7058,7 +7058,8 @@ test('local emby virtual audio syncs best available fallback quality when reques
     const fallback = rows.find(row => row.quality === '320k')
     assert.equal(flac?.status, 'failed')
     assert.match(flac?.error ?? '', /404/)
-    assert.equal(fallback?.status, 'resolving_url')
+    assert.equal(fallback?.status, 'failed')
+    assert.equal(fallback?.error, 'Redirected to non-encrypted upstream without local cache')
     assert.equal(fallback?.finalPath ?? null, null)
     assert.equal(fallback?.rawPath ?? null, null)
 

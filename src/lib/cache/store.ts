@@ -141,7 +141,41 @@ export const isPlayableAudioPath = (filePath: string): boolean => {
   return isPlayableAudioFileName(filePath) && fs.existsSync(filePath)
 }
 
-export const hasActiveTrackFile = (source: OnlineSource, songmid: string, qualities: MusicQuality[]): boolean => {
+export const hasActiveTrackFile = (
+  source: OnlineSource,
+  songmid: string,
+  qualities: MusicQuality[],
+  options: { staleAfterSeconds?: number } = {},
+): boolean => {
+  if (!qualities.length) return false
+  const staleAfterSeconds = Number.isFinite(options.staleAfterSeconds)
+    ? Math.max(0, Math.trunc(options.staleAfterSeconds ?? 0))
+    : Math.max(0, Math.trunc(Number(process.env.TRACK_FILE_ACTIVE_STALE_SECONDS ?? 15 * 60)))
+  if (staleAfterSeconds > 0) {
+    db.prepare(`
+      UPDATE track_files
+      SET status = 'failed',
+          error = @error,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id IN (
+        SELECT tf.id
+        FROM track_files tf
+        INNER JOIN tracks t ON t.id = tf.track_id
+        WHERE t.source = @source
+          AND t.songmid = @songmid
+          AND tf.quality IN (${qualities.map((_, index) => `@quality${index}`).join(',')})
+          AND tf.status IN ('resolving_url', 'streaming_and_caching')
+          AND julianday(tf.updated_at) < julianday('now', @staleAge)
+      )
+    `).run({
+      source,
+      songmid,
+      ...Object.fromEntries(qualities.map((quality, index) => [`quality${index}`, quality])),
+      staleAge: `-${staleAfterSeconds} seconds`,
+      error: `Recovered stale active track file after ${staleAfterSeconds} seconds`,
+    })
+  }
+
   const rows = db.prepare(`
     SELECT COUNT(*) AS count
     FROM track_files tf
@@ -236,7 +270,11 @@ export const listPlayHistory = (limit = 50): PlayHistoryRecord[] => {
   return rows.map(mapPlayHistory)
 }
 
-export const enqueueTagJob = (trackFile: TrackFileRecord, track: TrackRecord): void => {
+export const enqueueTagJob = (
+  trackFile: TrackFileRecord,
+  track: TrackRecord,
+  options: { qqUin?: string } = {},
+): void => {
   if (!trackFile.rawPath) return
   const existing = db.prepare(`
     SELECT id
@@ -260,6 +298,7 @@ export const enqueueTagJob = (trackFile: TrackFileRecord, track: TrackRecord): v
       artist: track.singer,
       album: track.albumName,
       albumId: track.albumId,
+      qqUin: options.qqUin,
     },
   })
 }

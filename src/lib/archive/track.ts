@@ -10,6 +10,7 @@ export interface ArchiveTrackJobPayload {
   source: 'tx'
   songmid: string
   musicInfo: MusicInfo
+  qqUin?: string
   preferredQuality?: MusicQuality
   reason: 'playback_completed' | 'favorite' | 'manual' | 'background'
   playlistId?: string
@@ -98,7 +99,7 @@ export async function archiveTrack(payload: ArchiveTrackJobPayload): Promise<voi
         resolved.quality,
         new Request('http://x-music.local/internal/archive-track'),
         resolved.ekey,
-        { librarySync: true, client: false },
+        { librarySync: true, client: false, qqUin: payload.qqUin },
       )
       if (!response.ok) throw new Error(`archive upstream returned ${response.status}`)
       await response.arrayBuffer()

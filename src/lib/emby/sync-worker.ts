@@ -112,8 +112,11 @@ async function processClaimedEmbySyncJob(
   try {
     const account = job.payload.qqUin ? getAccountByQQ(job.payload.qqUin) : undefined
     if (!hasAccountUpstreamEmby(account)) {
-      if (!embyConfigForAccount(account).sourceWebdavDsn) {
-        failJob(job.id, 'User Emby server or source WebDAV is not configured')
+      const config = embyConfigForAccount(account)
+      if (!config.sourceWebdavDsn) {
+        const message = embySyncConfigErrorMessage(job.payload, account)
+        console.warn(message)
+        failJob(job.id, message)
         return
       }
     }
@@ -256,6 +259,20 @@ async function processClaimedEmbySyncJob(
     }
     if (behavior.throwOnError) throw error
   }
+}
+
+function embySyncConfigErrorMessage(
+  payload: SyncEmbyTrackJobPayload,
+  account: AccountRecord | undefined,
+): string {
+  return [
+    'User Emby server or source WebDAV is not configured',
+    `song=${payload.source}:${payload.songmid}`,
+    `qqUin=${payload.qqUin ?? '<missing>'}`,
+    `accountFound=${account ? 'yes' : 'no'}`,
+    `hasEmby=${hasAccountUpstreamEmby(account) ? 'yes' : 'no'}`,
+    `hasSourceWebdav=${embyConfigForAccount(account).sourceWebdavDsn ? 'yes' : 'no'}`,
+  ].join('; ')
 }
 
 function recordWebdavSyncEvent(input: {

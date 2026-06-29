@@ -730,6 +730,66 @@ test('archive track job stops after highest reachable quality succeeds', async (
   }
 })
 
+test('archive track job retries stale active track file state', async () => {
+  const originalFetch = globalThis.fetch
+  const originalLxMusicSourceScript = process.env.LX_MUSIC_SOURCE_SCRIPT
+  const originalActiveStaleSeconds = process.env.TRACK_FILE_ACTIVE_STALE_SECONDS
+  const songmid = `ARCHIVE_STALE_ACTIVE_${Date.now()}`
+  const requestedQualities: string[] = []
+  db.prepare("DELETE FROM jobs WHERE type = 'archive_track'").run()
+  try {
+    process.env.TRACK_FILE_ACTIVE_STALE_SECONDS = '1'
+    process.env.LX_MUSIC_SOURCE_SCRIPT = 'https://script.example/script/lxmusic?key=test-key'
+    const musicInfo = {
+      source: 'tx' as const,
+      songmid,
+      name: 'Archive Stale Active',
+      singer: 'Archive Tester',
+      types: [{ type: 'flac' as const, size: '40 MB' }],
+    }
+    const track = ensureTrack(musicInfo)
+    upsertTrackFileStatus(track.id, 'flac', 'resolving_url')
+    db.prepare("UPDATE track_files SET updated_at = datetime('now', '-1 hour') WHERE track_id = ? AND quality = 'flac'")
+      .run(track.id)
+    const created = createJob({
+      type: 'archive_track',
+      payload: { source: 'tx' as const, songmid, musicInfo, reason: 'favorite' as const },
+    })
+
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'script.example') {
+        const body = JSON.parse(String(init?.body ?? '{}')) as { quality?: string }
+        requestedQualities.push(body.quality ?? '')
+        return Response.json({ url: `https://cdn.example/archive-${body.quality}.flac` })
+      }
+      if (requestUrl.hostname === 'cdn.example') {
+        return new Response('archive-audio', { headers: { 'content-type': 'audio/flac' } })
+      }
+      return Response.json({ error: 'unexpected request' }, { status: 500 })
+    }) as typeof fetch
+
+    assert.equal(await processOneArchiveTrackJob(1), true)
+    assert.equal(getJob(created.id)?.status, 'completed')
+    assert.deepEqual(requestedQualities, ['flac'])
+    const row = db.prepare(`
+      SELECT tf.status
+      FROM track_files tf
+      INNER JOIN tracks t ON t.id = tf.track_id
+      WHERE t.source = 'tx' AND t.songmid = ? AND tf.quality = 'flac'
+    `).get(songmid) as { status: string } | undefined
+    assert.match(row?.status ?? '', /^(tagging|ready|cached_raw)$/)
+  } finally {
+    db.prepare("DELETE FROM jobs WHERE type = 'archive_track' AND json_extract(payload_json, '$.songmid') = ?").run(songmid)
+    db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run(songmid)
+    globalThis.fetch = originalFetch
+    if (originalLxMusicSourceScript === undefined) delete process.env.LX_MUSIC_SOURCE_SCRIPT
+    else process.env.LX_MUSIC_SOURCE_SCRIPT = originalLxMusicSourceScript
+    if (originalActiveStaleSeconds === undefined) delete process.env.TRACK_FILE_ACTIVE_STALE_SECONDS
+    else process.env.TRACK_FILE_ACTIVE_STALE_SECONDS = originalActiveStaleSeconds
+  }
+})
+
 test('archive track job downloads from QQ LX even when upstream Emby is configured', async () => {
   const originalFetch = globalThis.fetch
   const originalLxMusicSourceScript = process.env.LX_MUSIC_SOURCE_SCRIPT
@@ -975,6 +1035,29 @@ test('emby sync job fails unsupported audio containers without scanning Emby', a
   } finally {
     rmSync(rawPath, { force: true })
     globalThis.fetch = originalFetch
+  }
+})
+
+test('emby sync job reports missing account context in configuration failures', async () => {
+  const songmid = `SYNC_MISSING_ACCOUNT_CONTEXT_${Date.now()}`
+  db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track'").run()
+  try {
+    const musicInfo = { source: 'tx' as const, songmid, name: 'Missing Account Context', singer: 'Tester' }
+    const created = createJob({
+      type: 'sync_emby_track',
+      payload: { source: 'tx', songmid, musicInfo },
+    })
+
+    assert.equal(await processOneEmbySyncJob(1), true)
+    const job = getJob(created.id)
+    assert.equal(job?.status, 'failed')
+    assert.match(job?.error ?? '', /User Emby server or source WebDAV is not configured/)
+    assert.match(job?.error ?? '', new RegExp(`song=tx:${songmid}`))
+    assert.match(job?.error ?? '', /qqUin=<missing>/)
+    assert.match(job?.error ?? '', /accountFound=no/)
+    assert.match(job?.error ?? '', /hasSourceWebdav=no/)
+  } finally {
+    db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track' AND json_extract(payload_json, '$.songmid') = ?").run(songmid)
   }
 })
 

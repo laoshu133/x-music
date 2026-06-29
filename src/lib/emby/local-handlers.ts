@@ -1888,6 +1888,9 @@ async function resolvePlayableUpstreamResponse(
         return undefined
       }
       if (!isEncryptedQQAudioFileName(resolved.url)) {
+        upsertTrackFileStatus(track.id, resolved.quality, 'failed', {
+          error: 'Redirected to non-encrypted upstream without local cache',
+        })
         return {
           url: resolved.url,
           quality: resolved.quality,
@@ -1901,7 +1904,10 @@ async function resolvePlayableUpstreamResponse(
         resolved.quality,
         request,
         resolved.ekey,
-        { librarySync: shouldSyncResolvedQualityToEmby(musicInfo, preferredQuality, resolved.quality, attempts) },
+        {
+          librarySync: shouldSyncResolvedQualityToEmby(musicInfo, preferredQuality, resolved.quality, attempts),
+          qqUin: authorizedLocalAccount(request)?.qqUin,
+        },
       )
       return {
         url: resolved.url,

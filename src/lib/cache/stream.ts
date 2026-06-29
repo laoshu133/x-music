@@ -18,6 +18,7 @@ interface TeeResult {
 interface UpstreamTeeOptions {
   librarySync?: boolean
   client?: boolean
+  qqUin?: string
 }
 
 interface EncryptedTeeResult {
@@ -109,6 +110,7 @@ export const createUpstreamTeeResponse = async (
       quality,
       librarySync: options.librarySync ?? true,
       client: shouldStreamToClient,
+      qqUin: options.qqUin,
     })
     return createEncryptedUpstreamResponse({
       upstreamBody: upstream.body,
@@ -117,6 +119,7 @@ export const createUpstreamTeeResponse = async (
       ekey,
       librarySync: options.librarySync ?? true,
       client: shouldStreamToClient,
+      qqUin: options.qqUin,
     })
   }
   if (!isPlayableAudioFileName(extension)) {
@@ -142,6 +145,7 @@ export const createUpstreamTeeResponse = async (
     quality,
     librarySync: options.librarySync ?? true,
     client: shouldStreamToClient,
+    qqUin: options.qqUin,
   })
   const headers = buildProxyHeaders(upstream.headers, shouldCache, upstreamUrl)
   return {
@@ -160,6 +164,7 @@ async function createEncryptedUpstreamResponse({
   ekey,
   librarySync,
   client,
+  qqUin,
 }: {
   upstreamBody: ReadableStream<Uint8Array>
   track: TrackRecord
@@ -167,6 +172,7 @@ async function createEncryptedUpstreamResponse({
   ekey: string
   librarySync: boolean
   client: boolean
+  qqUin?: string
 }): Promise<TeeResult> {
   const cacheKey = `${track.source}-${safeFilePart(track.songmid)}-${quality}-${Date.now()}`
   const partPath = path.join(appConfig.stagingDir, `${cacheKey}.part`)
@@ -184,6 +190,7 @@ async function createEncryptedUpstreamResponse({
     decryptor,
     librarySync,
     client,
+    qqUin,
   })
   return {
     response: new Response(body, {
@@ -205,6 +212,7 @@ async function createPossiblyPlainEncryptedUpstreamResponse({
   quality,
   librarySync,
   client,
+  qqUin,
 }: {
   upstreamBody: ReadableStream<Uint8Array>
   fallbackExtension: string
@@ -212,6 +220,7 @@ async function createPossiblyPlainEncryptedUpstreamResponse({
   quality: MusicQuality
   librarySync: boolean
   client: boolean
+  qqUin?: string
 }): Promise<TeeResult> {
   const cacheKey = `${track.source}-${safeFilePart(track.songmid)}-${quality}-${Date.now()}`
   const partPath = path.join(appConfig.stagingDir, `${cacheKey}.part`)
@@ -233,6 +242,7 @@ async function createPossiblyPlainEncryptedUpstreamResponse({
     quality,
     librarySync,
     client,
+    qqUin,
   })
 
   return {
@@ -259,6 +269,7 @@ const teeUpstreamToClientAndCache = ({
   quality,
   librarySync,
   client,
+  qqUin,
 }: {
   upstreamBody?: ReadableStream<Uint8Array>
   reader?: ReadableStreamDefaultReader<Uint8Array>
@@ -270,6 +281,7 @@ const teeUpstreamToClientAndCache = ({
   quality: MusicQuality
   librarySync: boolean
   client: boolean
+  qqUin?: string
 }): { body: ReadableStream<Uint8Array>; completion: Promise<void> } => {
   const reader = providedReader ?? upstreamBody?.getReader()
   if (!reader) throw new Error('upstream reader was not provided')
@@ -309,7 +321,7 @@ const teeUpstreamToClientAndCache = ({
         sha256: hash.digest('hex'),
       })
       if (librarySync) {
-        enqueueTagJob(completedFile, track)
+        enqueueTagJob(completedFile, track, { qqUin })
         triggerInlineTagging()
       }
       resolveCompletion()
@@ -384,6 +396,7 @@ const teeEncryptedUpstreamToClientAndCache = ({
   decryptor,
   librarySync,
   client,
+  qqUin,
 }: {
   upstreamBody: ReadableStream<Uint8Array>
   partPath: string
@@ -393,6 +406,7 @@ const teeEncryptedUpstreamToClientAndCache = ({
   decryptor: { decrypt(buffer: Uint8Array, offset: number): void }
   librarySync: boolean
   client: boolean
+  qqUin?: string
 }): EncryptedTeeResult => {
   const reader = upstreamBody.getReader()
   const hash = crypto.createHash('sha256')
@@ -439,7 +453,7 @@ const teeEncryptedUpstreamToClientAndCache = ({
         sha256: hash.digest('hex'),
       })
       if (librarySync) {
-        enqueueTagJob(completedFile, track)
+        enqueueTagJob(completedFile, track, { qqUin })
         triggerInlineTagging()
       }
       resolveCompletion()

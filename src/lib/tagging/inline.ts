@@ -32,6 +32,7 @@ async function drainTaggingJobs(): Promise<void> {
           albumName: job.payload.album,
           albumId: job.payload.albumId,
         },
+        qqUin: job.payload.qqUin,
       })
       completeJob(job.id)
       await processOneEmbySyncJob().catch((error: unknown) => {
