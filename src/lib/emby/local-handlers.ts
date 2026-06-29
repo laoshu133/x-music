@@ -2711,12 +2711,29 @@ function sortLocalLibraryItems(items: any[], url: URL): any[] {
   const result = [...items]
   if (sortKeys.includes('random')) return randomShuffle(result)
   if (sortKeys.includes('dateplayed') || sortKeys.includes('playcount')) return sortPlayedItems(result, sortKeys.join(','))
-  if (sortKeys.includes('datecreated')) {
-    result.sort((a, b) => parseTimeMs(String(b?.DateCreated ?? b?.PremiereDate ?? '')) - parseTimeMs(String(a?.DateCreated ?? a?.PremiereDate ?? '')) || compareItemName(a, b))
+  if (sortKeys.length === 0 || sortKeys.includes('datecreated')) {
+    result.sort(compareItemCreatedDescending)
     return result
   }
   result.sort(compareItemName)
   return result
+}
+
+function compareItemCreatedDescending(a: any, b: any): number {
+  return itemCreatedTimeMs(b) - itemCreatedTimeMs(a) || compareItemName(a, b)
+}
+
+function itemCreatedTimeMs(item: any): number {
+  for (const value of [
+    item?.DateCreated,
+    item?.PremiereDate,
+    item?.DateLastMediaAdded,
+    item?.[FAVORITE_SORT_TIME],
+  ]) {
+    const time = parseTimeMs(value)
+    if (time > 0) return time
+  }
+  return 0
 }
 
 function compareItemName(a: any, b: any): number {

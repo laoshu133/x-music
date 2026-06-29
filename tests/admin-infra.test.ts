@@ -7895,6 +7895,82 @@ test('local emby root library reads cached QQ favorites and playlists without up
   }
 })
 
+test('local emby root audio defaults to created time descending without upstream sort params', async () => {
+  const originalFetch = globalThis.fetch
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999121')
+    saveQQLoginCookie('uin=o999121; euin=encrypted999121; qm_keyst=test-key')
+    const account = getAccountByQQ('999121')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+    const authHeader = `MediaBrowser Client="ampcast", Version="0.9.28", Device="PC", Token="${authPayload.AccessToken}"`
+
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'u.y.qq.com' && requestUrl.pathname.includes('/cgi-bin/musics.fcg')) {
+        const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {}
+        assert.equal(body.req?.method, 'CgiGetDiss')
+        return Response.json({
+          code: 0,
+          req: {
+            code: 0,
+            data: {
+              songlist: [{
+                id: 1201,
+                mid: 'qq-default-sort-old',
+                title: 'A Older Favorite',
+                interval: 180,
+                favoriteTime: '2025-01-01T00:00:00.000Z',
+                singer: [{ name: 'Sort Artist', mid: 'sort-artist-1' }],
+                album: { name: 'Sort Album', mid: 'sort-album-1', time_public: '2025-01-02' },
+                file: { media_mid: 'sort-media-1', size_320mp3: 2048 },
+              }, {
+                id: 1202,
+                mid: 'qq-default-sort-new',
+                title: 'Z Newer Favorite',
+                interval: 180,
+                favoriteTime: '2025-02-01T00:00:00.000Z',
+                singer: [{ name: 'Sort Artist', mid: 'sort-artist-1' }],
+                album: { name: 'Sort Album', mid: 'sort-album-1', time_public: '2025-01-02' },
+                file: { media_mid: 'sort-media-2', size_320mp3: 2048 },
+              }],
+              total_song_num: 2,
+            },
+          },
+        })
+      }
+
+      return Response.json({ error: 'unexpected request' }, { status: 500 })
+    }) as typeof fetch
+
+    const audioPath = `/emby/Users/${authPayload.User.Id}/Items`
+    const response = await dispatchEmbyRequest(
+      new Request(`http://local${audioPath}?StartIndex=0&Limit=10&IncludeItemTypes=Audio&Recursive=true&ParentId=x-music-music`, {
+        headers: { 'X-Emby-Authorization': authHeader },
+      }),
+      stripOptionalEmbyPrefix(audioPath),
+    )
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    assert.equal(payload.TotalRecordCount, 2)
+    assert.deepEqual(payload.Items.map((item: { Name: string }) => item.Name), [
+      'Z Newer Favorite',
+      'A Older Favorite',
+    ])
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999121')
+    clearQQLoginCookie()
+    db.prepare("DELETE FROM app_settings WHERE key IN ('virtual.song.qq-default-sort-old', 'virtual.song.qq-default-sort-new')").run()
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('local emby random root library order reshuffles cached QQ items per request', async () => {
   const originalFetch = globalThis.fetch
   try {
