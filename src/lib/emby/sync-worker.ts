@@ -84,6 +84,7 @@ export async function processEmbySyncJobById(
   const job = claimJobById<SyncEmbyTrackJobPayload>({
     id: jobId,
     type: 'sync_emby_track',
+    maxAttempts: resolvedOptions.maxAttempts,
   })
   if (!job) return
 
@@ -255,7 +256,7 @@ async function processClaimedEmbySyncJob(
     if (job.attempts >= options.maxAttempts) {
       failJob(job.id, error)
     } else {
-      requeueJob(job.id, error)
+      requeueJob(job.id, error, options.maxAttempts)
     }
     if (behavior.throwOnError) throw error
   }

@@ -43,7 +43,7 @@ async function drainTaggingJobs(): Promise<void> {
         failTagTrackFile(job.payload, error)
         failJob(job.id, error)
       } else {
-        requeueJob(job.id, error)
+        requeueJob(job.id, error, 3)
       }
     }
   }

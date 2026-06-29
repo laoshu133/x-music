@@ -9,6 +9,7 @@ import {
   completeJob,
   ensureJobsTable,
   failJob,
+  failExhaustedQueuedJobs,
   clearStaleRunningJobs,
   requeueJob,
 } from '@/lib/jobs'
@@ -95,7 +96,7 @@ async function processTagJob(): Promise<boolean> {
       failJob(job.id, error)
       console.error(`failed tag job ${job.id}`, error)
     } else {
-      requeueJob(job.id, error)
+      requeueJob(job.id, error, maxAttempts)
       console.warn(`requeued tag job ${job.id}`, error)
     }
   }
@@ -166,12 +167,16 @@ async function main(): Promise<void> {
     olderThanSeconds: staleRunningJobSeconds,
     maxAttempts,
   })
+  const exhausted = failExhaustedQueuedJobs(maxAttempts)
 
   console.log('XMusic worker started')
   console.log(`data dir: ${appConfig.dataDir}`)
   console.log(`poll interval: ${pollIntervalMs}ms`)
   if (cleared.requeued || cleared.failed) {
     console.log(`recovered stale running jobs: requeued ${cleared.requeued}, failed ${cleared.failed}`)
+  }
+  if (exhausted.failed) {
+    console.log(`failed exhausted queued jobs: ${exhausted.failed}`)
   }
 
   while (!stopping) {

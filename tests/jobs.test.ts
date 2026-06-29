@@ -12,7 +12,18 @@ import { processOneArchiveTrackJob } from '@/lib/archive/track'
 import { enqueueRefreshUmCryptoJob } from '@/lib/cache/um-crypto-job'
 import { cleanupTrackCache } from '@/lib/cache/track-cache-cleanup'
 import { getRemoteMapping, getRemoteMappingByRemote, upsertRemoteMapping } from '@/lib/db/remote-mappings'
-import { claimNextJob, clearJobsByStatus, clearStaleRunningJobs, completeJob, createJob, failJob, getJob, requeueJob } from '@/lib/jobs'
+import {
+  claimJobById,
+  claimNextJob,
+  clearJobsByStatus,
+  clearStaleRunningJobs,
+  completeJob,
+  createJob,
+  failJob,
+  failExhaustedQueuedJobs,
+  getJob,
+  requeueJob,
+} from '@/lib/jobs'
 import { getJobSummary, listJobs } from '@/lib/jobs/status'
 import { processWorkerTick } from '@/worker/index'
 import { saveQQLoginCookie } from '@/lib/db/qq-session'
@@ -89,6 +100,54 @@ test('job lifecycle claim complete and retry states', () => {
   completeJob(created.id)
   assert.equal(getJob(created.id)?.status, 'completed')
   assert.equal(getJob(created.id)?.error, null)
+})
+
+test('job retry helpers do not leave exhausted queued jobs claimable', () => {
+  db.prepare("DELETE FROM jobs WHERE type = 'tag_track_file'").run()
+
+  const created = createJob({
+    type: 'tag_track_file',
+    payload: { trackFileId: Date.now(), rawPath: '/tmp/exhausted.flac' },
+  })
+  db.prepare("UPDATE jobs SET attempts = 3 WHERE id = ?").run(created.id)
+
+  assert.equal(claimNextJob({ type: 'tag_track_file', maxAttempts: 3 }), null)
+  assert.equal(claimNextJob({ type: 'tag_track_file', maxAttempts: 4 })?.id, created.id)
+
+  requeueJob(created.id, 'exhausted', 4)
+  const exhausted = getJob(created.id)
+  assert.equal(exhausted?.status, 'failed')
+  assert.equal(exhausted?.error, 'exhausted')
+
+  const manual = createJob({
+    type: 'tag_track_file',
+    payload: { trackFileId: Date.now(), rawPath: '/tmp/manual-exhausted.flac' },
+  })
+  db.prepare("UPDATE jobs SET attempts = 3 WHERE id = ?").run(manual.id)
+  assert.equal(claimNextJob({ type: 'tag_track_file', maxAttempts: 3 }), null)
+  assert.equal(claimJobById({ id: manual.id, type: 'tag_track_file', maxAttempts: 3 }), null)
+  db.prepare("DELETE FROM jobs WHERE type = 'tag_track_file'").run()
+})
+
+test('exhausted queued jobs are failed during queue maintenance', () => {
+  db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track'").run()
+
+  const exhausted = createJob({
+    type: 'sync_emby_track',
+    payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid: `EXHAUSTED_QUEUED_${Date.now()}`, musicInfo: { source: 'tx', songmid: 'a', name: 'A', singer: 'B' } },
+  })
+  const retryable = createJob({
+    type: 'sync_emby_track',
+    payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid: `RETRYABLE_QUEUED_${Date.now()}`, musicInfo: { source: 'tx', songmid: 'b', name: 'B', singer: 'C' } },
+  })
+  db.prepare("UPDATE jobs SET attempts = 3, next_run_at = datetime('now', '-1 minute'), error = 'Recovered stale running job' WHERE id = ?").run(exhausted.id)
+  db.prepare("UPDATE jobs SET attempts = 2, next_run_at = datetime('now', '-1 minute') WHERE id = ?").run(retryable.id)
+
+  assert.deepEqual(failExhaustedQueuedJobs(3), { failed: 1 })
+  assert.equal(getJob(exhausted.id)?.status, 'failed')
+  assert.equal(getJob(exhausted.id)?.error, 'Recovered stale running job')
+  assert.equal(getJob(exhausted.id)?.nextRunAt, null)
+  assert.equal(getJob(retryable.id)?.status, 'queued')
 })
 
 test('remote emby mappings are isolated by QQ user', () => {

@@ -42,7 +42,7 @@ export async function processOneCleanupResourceCacheJob(maxAttempts = 3): Promis
       failJob(job.id, error)
       console.error(`failed resource cache cleanup job ${job.id}`, error)
     } else {
-      requeueJob(job.id, error)
+      requeueJob(job.id, error, maxAttempts)
       console.warn(`requeued resource cache cleanup job ${job.id}`, error)
     }
   }
@@ -55,6 +55,7 @@ export async function processCleanupResourceCacheJobById(jobId: number): Promise
   const job = claimJobById<CleanupResourceCacheJobPayload>({
     id: jobId,
     type: 'cleanup_resource_cache',
+    maxAttempts,
   })
   if (!job) return
 
@@ -66,7 +67,7 @@ export async function processCleanupResourceCacheJobById(jobId: number): Promise
     if (job.attempts >= maxAttempts) {
       failJob(job.id, error)
     } else {
-      requeueJob(job.id, error)
+      requeueJob(job.id, error, maxAttempts)
     }
     throw error
   }

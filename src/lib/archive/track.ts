@@ -51,7 +51,7 @@ export async function processOneArchiveTrackJob(maxAttempts = 3): Promise<boolea
     if (job.attempts >= maxAttempts) {
       failJob(job.id, error)
     } else {
-      requeueJob(job.id, error)
+      requeueJob(job.id, error, maxAttempts)
     }
   }
   return true
@@ -62,6 +62,7 @@ export async function processArchiveTrackJobById(jobId: number): Promise<void> {
   const job = claimJobById<ArchiveTrackJobPayload>({
     id: jobId,
     type: 'archive_track',
+    maxAttempts,
   })
   if (!job) return
 
@@ -72,7 +73,7 @@ export async function processArchiveTrackJobById(jobId: number): Promise<void> {
     if (job.attempts >= maxAttempts) {
       failJob(job.id, error)
     } else {
-      requeueJob(job.id, error)
+      requeueJob(job.id, error, maxAttempts)
     }
     throw error
   }

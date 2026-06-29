@@ -42,6 +42,7 @@ export interface ClaimJobOptions {
 export interface ClaimJobByIdOptions {
   id: number
   type?: JobType
+  maxAttempts?: number
 }
 
 export interface ClearStaleJobsOptions {
@@ -51,6 +52,10 @@ export interface ClearStaleJobsOptions {
 
 export interface StaleRunningJobsResult {
   requeued: number
+  failed: number
+}
+
+export interface ExhaustedQueuedJobsResult {
   failed: number
 }
 
@@ -153,6 +158,7 @@ export function claimJobById<TPayload = unknown>(
   options: ClaimJobByIdOptions,
 ): JobRow<TPayload> | null {
   ensureJobsTable()
+  const maxAttempts = options.maxAttempts ?? Number.MAX_SAFE_INTEGER
 
   const record = db.prepare(`
     UPDATE jobs
@@ -163,11 +169,13 @@ export function claimJobById<TPayload = unknown>(
         updated_at = CURRENT_TIMESTAMP
     WHERE id = @id
       AND status = 'queued'
+      AND attempts < @maxAttempts
       AND (@type IS NULL OR type = @type)
     RETURNING *
   `).get({
     id: options.id,
     type: options.type ?? null,
+    maxAttempts,
   }) as JobRecord | undefined
 
   return record ? parseJobRecord<TPayload>(record) : null
@@ -202,10 +210,14 @@ export function failJob(id: number, error: unknown): void {
   })
 }
 
-export function requeueJob(id: number, error: unknown): void {
+export function requeueJob(id: number, error: unknown, maxAttempts?: number): void {
   ensureJobsTable()
 
   const job = getJob(id)
+  if (maxAttempts !== undefined && (job?.attempts ?? 0) >= maxAttempts) {
+    failJob(id, error)
+    return
+  }
   const nextRunAt = retryDelaySql(job?.attempts ?? 1)
 
   db.prepare(`
@@ -259,6 +271,24 @@ export function clearStaleRunningJobs(options: ClearStaleJobsOptions): StaleRunn
   })
 
   return { requeued: requeued.changes, failed: failed.changes }
+}
+
+export function failExhaustedQueuedJobs(maxAttempts = 3): ExhaustedQueuedJobsResult {
+  ensureJobsTable()
+
+  const failed = db.prepare(`
+    UPDATE jobs
+    SET status = 'failed',
+        error = COALESCE(error, 'Queued job exhausted max attempts'),
+        next_run_at = NULL,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE status = 'queued'
+      AND attempts >= @maxAttempts
+  `).run({
+    maxAttempts,
+  })
+
+  return { failed: failed.changes }
 }
 
 export function clearJobsByStatus(status: Extract<JobStatus, 'completed' | 'failed'>): number {

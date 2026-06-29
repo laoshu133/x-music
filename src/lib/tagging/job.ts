@@ -56,6 +56,7 @@ export async function processTagTrackFileJobById(jobId: number): Promise<void> {
   const job = claimJobById<TagTrackFileJobPayload>({
     id: jobId,
     type: 'tag_track_file',
+    maxAttempts,
   })
   if (!job) return
 
@@ -72,6 +73,7 @@ export async function processTagTrackFileJobById(jobId: number): Promise<void> {
         albumName: job.payload.album,
         albumId: job.payload.albumId,
       },
+      qqUin: job.payload.qqUin,
     })
     completeJob(job.id)
   } catch (error) {
@@ -79,7 +81,7 @@ export async function processTagTrackFileJobById(jobId: number): Promise<void> {
       failTagTrackFile(job.payload, error)
       failJob(job.id, error)
     } else {
-      requeueJob(job.id, error)
+      requeueJob(job.id, error, maxAttempts)
     }
     throw error
   }

@@ -42,7 +42,7 @@ export async function processOneCleanupTrackCacheJob(maxAttempts = 3): Promise<b
       failJob(job.id, error)
       console.error(`failed track cache cleanup job ${job.id}`, error)
     } else {
-      requeueJob(job.id, error)
+      requeueJob(job.id, error, maxAttempts)
       console.warn(`requeued track cache cleanup job ${job.id}`, error)
     }
   }
@@ -55,6 +55,7 @@ export async function processCleanupTrackCacheJobById(jobId: number): Promise<vo
   const job = claimJobById<CleanupTrackCacheJobPayload>({
     id: jobId,
     type: 'cleanup_track_cache',
+    maxAttempts,
   })
   if (!job) return
 
@@ -66,7 +67,7 @@ export async function processCleanupTrackCacheJobById(jobId: number): Promise<vo
     if (job.attempts >= maxAttempts) {
       failJob(job.id, error)
     } else {
-      requeueJob(job.id, error)
+      requeueJob(job.id, error, maxAttempts)
     }
     throw error
   }

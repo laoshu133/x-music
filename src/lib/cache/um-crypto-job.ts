@@ -49,7 +49,7 @@ export async function processOneRefreshUmCryptoJob(maxAttempts: number): Promise
       failJob(job.id, error)
       console.error(`failed UM crypto refresh job ${job.id}`, error)
     } else {
-      requeueJob(job.id, error)
+      requeueJob(job.id, error, maxAttempts)
       console.warn(`requeued UM crypto refresh job ${job.id}`, error)
     }
   }
@@ -62,6 +62,7 @@ export async function processRefreshUmCryptoJobById(jobId: number): Promise<void
   const job = claimJobById<RefreshUmCryptoJobPayload>({
     id: jobId,
     type: 'refresh_um_crypto',
+    maxAttempts,
   })
   if (!job) return
 
@@ -73,7 +74,7 @@ export async function processRefreshUmCryptoJobById(jobId: number): Promise<void
     if (job.attempts >= maxAttempts) {
       failJob(job.id, error)
     } else {
-      requeueJob(job.id, error)
+      requeueJob(job.id, error, maxAttempts)
     }
     throw error
   }
