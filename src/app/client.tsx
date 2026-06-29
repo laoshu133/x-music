@@ -2114,14 +2114,22 @@ function formatOptionalDateTime(value?: string): string {
 }
 
 function formatDateTime(value: string): string {
-  const date = new Date(value)
+  const date = new Date(normalizeDateTimeInput(value))
   if (Number.isNaN(date.getTime())) return value
   return date.toLocaleString('zh-CN', {
+    timeZone: 'Asia/Shanghai',
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
   })
+}
+
+function normalizeDateTimeInput(value: string): string {
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(value)) {
+    return `${value.replace(' ', 'T')}Z`
+  }
+  return value
 }
 
 function formatBytes(value: number): string {

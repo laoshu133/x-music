@@ -14,7 +14,9 @@ RUN DATABASE_URL=file:/tmp/x-music-build.sqlite \
 
 FROM node:24-alpine AS runner
 WORKDIR /app
+RUN apk add --no-cache tzdata
 ENV NODE_ENV=production
+ENV TZ=Asia/Shanghai
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/node_modules ./node_modules

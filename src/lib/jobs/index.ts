@@ -1,4 +1,5 @@
 import { db } from '@/lib/db'
+import { normalizeDbDateTime, normalizeNullableDbDateTime } from '@/lib/db/time'
 
 export type JobStatus = 'queued' | 'running' | 'completed' | 'failed'
 
@@ -68,9 +69,9 @@ const parseJobRecord = <TPayload>(record: JobRecord): JobRow<TPayload> => ({
   payload: JSON.parse(record.payload_json) as TPayload,
   attempts: record.attempts,
   error: record.error,
-  nextRunAt: record.next_run_at,
-  createdAt: record.created_at,
-  updatedAt: record.updated_at,
+  nextRunAt: normalizeNullableDbDateTime(record.next_run_at),
+  createdAt: normalizeDbDateTime(record.created_at),
+  updatedAt: normalizeDbDateTime(record.updated_at),
 })
 
 export function ensureJobsTable(): void {

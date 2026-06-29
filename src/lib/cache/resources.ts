@@ -5,6 +5,7 @@ import path from 'node:path'
 import { Readable } from 'node:stream'
 import { appConfig } from '@/lib/config'
 import { db } from '@/lib/db'
+import { normalizeDbDateTime } from '@/lib/db/time'
 
 export type CachedResourceType = 'image' | 'lyrics' | 'metadata' | 'lx-script'
 
@@ -623,8 +624,8 @@ function mapResource(row: ResourceCacheRow): CachedResourceRecord {
     filePath: row.file_path,
     contentType: row.content_type ?? undefined,
     sizeBytes: row.size_bytes ?? undefined,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    lastAccessedAt: row.last_accessed_at,
+    createdAt: normalizeDbDateTime(row.created_at),
+    updatedAt: normalizeDbDateTime(row.updated_at),
+    lastAccessedAt: normalizeDbDateTime(row.last_accessed_at),
   }
 }

@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { db } from '@/lib/db'
+import { normalizeDbDateTime, normalizeOptionalDbDateTime } from '@/lib/db/time'
 import { createJob } from '@/lib/jobs'
 import type { MusicInfo, MusicQuality, OnlineSource, PlayHistoryRecord, TrackFileRecord, TrackFileStatus, TrackRecord } from '@/lib/types'
 
@@ -347,7 +348,7 @@ const mapTrackFile = (row: TrackFileRow): TrackFileRecord => ({
   coverPath: row.cover_path ?? undefined,
   sizeBytes: row.size_bytes ?? undefined,
   sha256: row.sha256 ?? undefined,
-  taggedAt: row.tagged_at ?? undefined,
+  taggedAt: normalizeOptionalDbDateTime(row.tagged_at),
   error: row.error ?? undefined,
 })
 
@@ -365,7 +366,7 @@ const mapPlayHistory = (row: PlayHistoryRow): PlayHistoryRecord => {
     raw: parseRawJson(track.rawJson),
     playEventId: row.play_event_id,
     quality: row.quality,
-    playedAt: row.played_at,
+    playedAt: normalizeDbDateTime(row.played_at),
   }
 }
 

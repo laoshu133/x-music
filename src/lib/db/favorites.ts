@@ -1,4 +1,5 @@
 import { db } from '@/lib/db'
+import { normalizeDbDateTime } from '@/lib/db/time'
 import { ensureTrack } from '@/lib/cache/store'
 import type { MusicInfo, OnlineSource } from '@/lib/types'
 
@@ -347,7 +348,7 @@ const mapFavorite = (row: FavoriteRow): FavoriteRecord => ({
   desiredState: row.desired_state,
   syncState: row.sync_state,
   error: row.error ?? undefined,
-  updatedAt: row.updated_at,
+  updatedAt: normalizeDbDateTime(row.updated_at),
   raw: parseRawJson(row.raw_json),
 })
 

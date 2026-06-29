@@ -1,5 +1,6 @@
 import crypto from 'node:crypto'
 import { db } from '@/lib/db'
+import { normalizeDbDateTime, normalizeOptionalDbDateTime } from '@/lib/db/time'
 import { buildQQLoginState, parseQQAccessTokenExpiresAt, summarizeQQLoginState, type QQLoginState } from '@/lib/qq/account'
 import { appConfig } from '@/lib/config'
 import { getQQFavoriteSongs } from '@/lib/qq/favorites'
@@ -541,7 +542,7 @@ function rowToAccount(row: AccountRow): AccountRecord {
     encryptedUin: row.encrypted_uin ?? undefined,
     qqmusicKey: row.qqmusic_key ?? undefined,
     qqAuthState: row.qq_auth_state === 'expired' ? 'expired' : 'active',
-    qqAuthCheckedAt: row.qq_auth_checked_at ?? undefined,
+    qqAuthCheckedAt: normalizeOptionalDbDateTime(row.qq_auth_checked_at),
     qqAuthError: row.qq_auth_error ?? undefined,
     embyUserId: row.emby_user_id ?? undefined,
     embyUsername: row.emby_username,
@@ -550,11 +551,11 @@ function rowToAccount(row: AccountRow): AccountRecord {
     embyDsn: row.emby_dsn ?? undefined,
     embySourceWebdavDsn: row.emby_source_webdav_dsn ?? undefined,
     embyProxyTimeoutMs: row.emby_proxy_timeout_ms ?? undefined,
-    lastLoginAt: row.last_login_at ?? undefined,
+    lastLoginAt: normalizeOptionalDbDateTime(row.last_login_at),
     lastLoginIp: row.last_login_ip ?? undefined,
-    lastActiveAt: row.last_active_at ?? undefined,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
+    lastActiveAt: normalizeOptionalDbDateTime(row.last_active_at),
+    createdAt: normalizeDbDateTime(row.created_at),
+    updatedAt: normalizeDbDateTime(row.updated_at),
   }
 }
 
@@ -668,7 +669,7 @@ function listAccountLocalFavorites(qqUin: string, page: number, limit: number): 
     interval: row.interval ?? undefined,
     img: row.image_url ?? undefined,
     raw: parseRawJson(row.raw_json),
-    favoriteUpdatedAt: row.favorite_updated_at,
+    favoriteUpdatedAt: normalizeDbDateTime(row.favorite_updated_at),
     syncState: row.sync_state,
   }))
 }
@@ -721,7 +722,7 @@ function listAccountRecentPlays(qqUin: string, page: number, limit: number): Acc
     img: row.image_url ?? undefined,
     raw: parseRawJson(row.raw_json),
     quality: row.quality,
-    playedAt: row.played_at,
+    playedAt: normalizeDbDateTime(row.played_at),
   }))
 }
 

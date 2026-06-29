@@ -8,6 +8,8 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
     ports:
       - "${PORT:-8098}:${PORT:-8098}"
     volumes:
@@ -28,6 +30,8 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
     volumes:
       - x-music-data:/app/data
 

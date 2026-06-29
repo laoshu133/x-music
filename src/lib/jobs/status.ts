@@ -1,4 +1,5 @@
 import { db } from '@/lib/db'
+import { normalizeDbDateTime, normalizeNullableDbDateTime } from '@/lib/db/time'
 import type { JobRow, JobStatus } from '@/lib/jobs'
 
 interface JobRecord {
@@ -107,8 +108,8 @@ function parseJobRecord(record: JobRecord): JobRow {
     payload: JSON.parse(record.payload_json) as unknown,
     attempts: record.attempts,
     error: record.error,
-    nextRunAt: record.next_run_at,
-    createdAt: record.created_at,
-    updatedAt: record.updated_at,
+    nextRunAt: normalizeNullableDbDateTime(record.next_run_at),
+    createdAt: normalizeDbDateTime(record.created_at),
+    updatedAt: normalizeDbDateTime(record.updated_at),
   }
 }

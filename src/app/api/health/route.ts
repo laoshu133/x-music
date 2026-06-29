@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server'
 import { appConfig } from '@/lib/config'
 import { listResourceCacheSummary } from '@/lib/cache/resources'
 import { db } from '@/lib/db'
+import { normalizeDbDateTime } from '@/lib/db/time'
 import { getFavoriteSummary } from '@/lib/db/favorites'
 import { getJobSummary } from '@/lib/jobs/status'
 import { getCurrentAccount } from '@/lib/session'
@@ -284,7 +285,7 @@ const recentJobFailures = (account: AccountRecord | undefined) => {
     id: row.id,
     type: row.type,
     error: row.error ?? '',
-    updatedAt: row.updatedAt,
+    updatedAt: normalizeDbDateTime(row.updatedAt),
   }))
 }
 

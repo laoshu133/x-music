@@ -1,4 +1,5 @@
 import { db } from './index'
+import { normalizeDbDateTime } from './time'
 
 export interface RemoteMappingRecord {
   id: number
@@ -63,7 +64,7 @@ export function upsertRemoteMapping(input: {
       AND local_type = @localType AND local_key = @localKey AND remote = @remote
   `).get(params) as RemoteMappingRecord | undefined
   if (!row) throw new Error('Failed to load remote mapping')
-  return row
+  return normalizeRemoteMapping(row)
 }
 
 export function getRemoteMapping(input: {
@@ -72,7 +73,7 @@ export function getRemoteMapping(input: {
   localKey: string
   remote: string
 }): RemoteMappingRecord | undefined {
-  return db.prepare(`
+  const row = db.prepare(`
     SELECT
       id,
       qq_uin AS qqUin,
@@ -95,6 +96,7 @@ export function getRemoteMapping(input: {
     ...input,
     qqUin: input.qqUin ?? null,
   }) as RemoteMappingRecord | undefined
+  return row ? normalizeRemoteMapping(row) : undefined
 }
 
 export function getRemoteMappingByRemote(input: {
@@ -102,7 +104,7 @@ export function getRemoteMappingByRemote(input: {
   remote: string
   remoteId: string
 }): RemoteMappingRecord | undefined {
-  return db.prepare(`
+  const row = db.prepare(`
     SELECT
       id,
       qq_uin AS qqUin,
@@ -125,6 +127,7 @@ export function getRemoteMappingByRemote(input: {
     ...input,
     qqUin: input.qqUin ?? null,
   }) as RemoteMappingRecord | undefined
+  return row ? normalizeRemoteMapping(row) : undefined
 }
 
 export function deleteRemoteMapping(input: {
@@ -144,4 +147,12 @@ export function deleteRemoteMapping(input: {
     qqUin: input.qqUin ?? null,
     remoteId: input.remoteId ?? null,
   })
+}
+
+function normalizeRemoteMapping(row: RemoteMappingRecord): RemoteMappingRecord {
+  return {
+    ...row,
+    createdAt: normalizeDbDateTime(row.createdAt),
+    updatedAt: normalizeDbDateTime(row.updatedAt),
+  }
 }
