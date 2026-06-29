@@ -719,7 +719,8 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
   }, [loginQr.data, loginQrPhase])
 
   useEffect(() => {
-    if (!loginQr.data || loginQrPhase !== 'active' || account.data?.loggedIn) return
+    const shouldPollQr = loginQrPhase === 'active' || loginQrPhase === 'scanned'
+    if (!loginQr.data || !shouldPollQr || account.data?.loggedIn) return
 
     const timer = window.setInterval(() => {
       void checkLoginQr()
