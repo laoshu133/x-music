@@ -11,12 +11,7 @@ export async function getCurrentAccount(options: { verifyQQ?: boolean } = {}): P
   markAccountActive(qqUin)
   const account = getAccountByQQ(qqUin)
   if (!account || options.verifyQQ === false) return account
-  try {
-    return await requireActiveQQAccount(account)
-  } catch (error) {
-    if (error instanceof QQAuthExpiredError) await clearCurrentAccount()
-    throw error
-  }
+  return await requireActiveQQAccount(account)
 }
 
 export async function setCurrentAccount(qqUin: string): Promise<void> {
@@ -33,4 +28,8 @@ export async function setCurrentAccount(qqUin: string): Promise<void> {
 export async function clearCurrentAccount(): Promise<void> {
   const store = await cookies()
   store.delete(sessionCookieName)
+}
+
+export async function clearCurrentAccountIfQQAuthExpired(error: unknown): Promise<void> {
+  if (error instanceof QQAuthExpiredError) await clearCurrentAccount()
 }

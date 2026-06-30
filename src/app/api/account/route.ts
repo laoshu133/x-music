@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { qqMusicErrorResponse } from '@/lib/qq'
 import { summarizeAccount } from '@/lib/db/accounts'
-import { clearCurrentAccount, getCurrentAccount } from '@/lib/session'
+import { clearCurrentAccount, clearCurrentAccountIfQQAuthExpired, getCurrentAccount } from '@/lib/session'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -16,6 +16,7 @@ export async function GET() {
       actionable: 'Scan the QQ login QR code or POST a QQ Music Cookie header string to /api/account/import.',
     })
   } catch (error) {
+    await clearCurrentAccountIfQQAuthExpired(error)
     return qqMusicErrorResponse(error)
   }
 }
