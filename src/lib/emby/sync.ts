@@ -8,6 +8,7 @@ export interface SyncEmbyTrackJobPayload {
   playlistId?: string
   musicInfo: MusicInfo
   qqUin?: string
+  allowCachedQualityFallback?: boolean
 }
 
 export function enqueueEmbyTrackSync(input: SyncEmbyTrackJobPayload): void {

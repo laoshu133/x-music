@@ -7,6 +7,7 @@ import type { MusicInfo } from '@/lib/types'
 import { getCurrentAccount } from '@/lib/session'
 import { pullEmbyFavorites, pushLocalFavoritesToEmby, syncEmbyFavoritesFromQQList, syncMappedEmbyFavoriteBestEffort } from '@/lib/emby/favorites'
 import { enqueueTrackArchive } from '@/lib/archive/track'
+import type { AccountRecord } from '@/lib/db/accounts'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -162,7 +163,7 @@ export async function POST(request: Request) {
     }
 
     let record = setLocalFavorite(musicInfo, body.favorite, account?.qqUin)
-    if (body.favorite) enqueueFavoriteArchive(musicInfo)
+    if (body.favorite) enqueueFavoriteArchive(musicInfo, account)
     let remoteSynced = false
     let remoteError: string | undefined
     let remotePayload: unknown
@@ -210,7 +211,7 @@ export async function POST(request: Request) {
 
   try {
     const musicInfo = parseMusicInfo(body)
-    if (favorited && musicInfo) enqueueFavoriteArchive(musicInfo)
+    if (favorited && musicInfo) enqueueFavoriteArchive(musicInfo, account)
     return NextResponse.json(await setQQFavoriteSong({
       cookie,
       songmid: body.songmid,
@@ -297,11 +298,12 @@ export async function DELETE(request: Request) {
   }
 }
 
-function enqueueFavoriteArchive(musicInfo: MusicInfo): void {
+function enqueueFavoriteArchive(musicInfo: MusicInfo, account?: AccountRecord): void {
   enqueueTrackArchive({
     source: musicInfo.source,
     songmid: musicInfo.songmid,
     musicInfo,
+    qqUin: account?.qqUin,
     reason: 'favorite',
   })
 }

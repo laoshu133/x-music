@@ -511,6 +511,116 @@ test('emby sync job does not sync low quality when highest quality is missing', 
   }
 })
 
+test('emby sync job can use cached fallback quality when explicitly allowed', async () => {
+  const originalFetch = globalThis.fetch
+  const songmid = `SYNC_ALLOWED_FALLBACK_${Date.now()}`
+  const lowPath = path.join(appConfig.musicDir, 'Tester', 'Unknown Album', `Tester - ${songmid}.mp3`)
+  const requestedPaths: string[] = []
+
+  db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track'").run()
+  mkdirSync(path.dirname(lowPath), { recursive: true })
+  writeFileSync(lowPath, 'mp3 audio')
+  configureTestAccountEmby()
+  try {
+    const musicInfo = {
+      source: 'tx' as const,
+      songmid,
+      name: 'Allowed Fallback Sync',
+      singer: 'Tester',
+      types: [{ type: 'flac' as const, size: '49 MB' }, { type: '320k' as const, size: '5 MB' }],
+    }
+    const track = ensureTrack(musicInfo)
+    upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath: lowPath, sizeBytes: 5_000_000 })
+    const created = createJob({
+      type: 'sync_emby_track',
+      payload: {
+        source: 'tx',
+        qqUin: TEST_EMBY_QQ_UIN,
+        songmid,
+        musicInfo,
+        allowCachedQualityFallback: true,
+      },
+    })
+
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const requestUrl = new URL(String(url))
+      requestedPaths.push(requestUrl.pathname)
+      if (requestUrl.pathname.endsWith('/Library/Media/Updated')) return new Response(null, { status: 204 })
+      if (requestUrl.pathname.endsWith('/Items')) {
+        return Response.json({ Items: [{ Id: 'emby-allowed-fallback-song', Name: 'Allowed Fallback Sync', Artists: ['Tester'] }] })
+      }
+      return Response.json({}, { status: 404 })
+    }) as typeof fetch
+
+    assert.equal(await processOneEmbySyncJob({
+      maxAttempts: 1,
+      cacheWaitMs: 0,
+      scanWaitMs: 0,
+    }), true)
+    assert.equal(getJob(created.id)?.status, 'completed')
+    assert.ok(requestedPaths.some(requestPath => requestPath.endsWith('/Library/Media/Updated')))
+    assert.ok(requestedPaths.some(requestPath => requestPath.endsWith('/Items')))
+  } finally {
+    rmSync(lowPath, { force: true })
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('emby sync job recovers failed rows that still have playable files', async () => {
+  const originalFetch = globalThis.fetch
+  const songmid = `SYNC_FAILED_ROW_RECOVERY_${Date.now()}`
+  const finalPath = path.join(appConfig.musicDir, 'Tester', 'Unknown Album', `Tester - ${songmid}.flac`)
+  const requestedPaths: string[] = []
+
+  db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track'").run()
+  mkdirSync(path.dirname(finalPath), { recursive: true })
+  writeFileSync(finalPath, 'flac audio')
+  configureTestAccountEmby()
+  try {
+    const musicInfo = {
+      source: 'tx' as const,
+      songmid,
+      name: 'Failed Row Recovery Sync',
+      singer: 'Tester',
+      types: [{ type: 'flac' as const, size: '49 MB' }],
+    }
+    const track = ensureTrack(musicInfo)
+    const file = upsertTrackFileStatus(track.id, 'flac', 'failed', {
+      finalPath,
+      sizeBytes: 49_000_000,
+      error: 'Redirected to non-encrypted upstream without local cache',
+    })
+    const created = createJob({
+      type: 'sync_emby_track',
+      payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid, musicInfo },
+    })
+
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const requestUrl = new URL(String(url))
+      requestedPaths.push(requestUrl.pathname)
+      if (requestUrl.pathname.endsWith('/Library/Media/Updated')) return new Response(null, { status: 204 })
+      if (requestUrl.pathname.endsWith('/Items')) {
+        return Response.json({ Items: [{ Id: 'emby-failed-row-recovery-song', Name: 'Failed Row Recovery Sync', Artists: ['Tester'] }] })
+      }
+      return Response.json({}, { status: 404 })
+    }) as typeof fetch
+
+    assert.equal(await processOneEmbySyncJob({
+      maxAttempts: 1,
+      cacheWaitMs: 0,
+      scanWaitMs: 0,
+    }), true)
+    assert.equal(getJob(created.id)?.status, 'completed')
+    const recovered = db.prepare('SELECT status, error FROM track_files WHERE id = ?').get(file.id) as { status: string; error: string | null }
+    assert.equal(recovered.status, 'ready')
+    assert.equal(recovered.error, null)
+    assert.ok(requestedPaths.some(requestPath => requestPath.endsWith('/Library/Media/Updated')))
+  } finally {
+    rmSync(finalPath, { force: true })
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('worker tick gives emby sync a turn when tag processing did work', async () => {
   const calls: string[] = []
   const didWork = await processWorkerTick({

@@ -1216,6 +1216,7 @@ function enqueueArchiveAndSyncForSong(
     source: musicInfo.source,
     songmid: musicInfo.songmid,
     musicInfo,
+    qqUin: account?.qqUin,
     reason,
     playlistId,
   })
@@ -1225,6 +1226,7 @@ function enqueueArchiveAndSyncForSong(
     playlistId,
     musicInfo,
     qqUin: account?.qqUin,
+    allowCachedQualityFallback: true,
   })
 }
 

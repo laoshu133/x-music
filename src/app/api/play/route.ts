@@ -6,6 +6,8 @@ import { isMusicUrlUnavailableMessage, MusicUrlConfigError, MusicUrlResolveError
 import { isHighestAvailableQuality } from '@/lib/quality'
 import { syncQQPlayHistoryBestEffort } from '@/lib/qq'
 import { logCompletedRequest, logFailedRequest, markRequestSource } from '@/lib/request-log'
+import { getCurrentAccount } from '@/lib/session'
+import type { AccountRecord } from '@/lib/db/accounts'
 import type { MusicInfo, MusicQuality, OnlineSource } from '@/lib/types'
 
 export const runtime = 'nodejs'
@@ -55,12 +57,13 @@ const handlePlayRequest = async (request: Request, input: PlayRequest): Promise<
   const requestedQuality = parseRequestedQuality(input.quality)
   const preferredQuality = requestedQuality ?? 'flac'
   const shouldRecordPlayback = isPlaybackStartRequest(request)
+  const account = await getCurrentAccount({ verifyQQ: false }).catch(() => undefined)
 
   const track = ensureTrack(musicInfo)
   try {
-    const resolved = await resolvePlayableUpstreamResponse(musicInfo, preferredQuality, track, request)
+    const resolved = await resolvePlayableUpstreamResponse(musicInfo, preferredQuality, track, request, account)
     if (shouldRecordPlayback) {
-      insertPlayEvent(track.id, resolved.quality)
+      insertPlayEvent(track.id, resolved.quality, account?.qqUin)
       syncQQPlayHistoryBestEffort({
         cookie: request.headers.get('x-qq-music-cookie') ?? undefined,
         musicInfo,
@@ -93,6 +96,7 @@ const resolvePlayableUpstreamResponse = async (
   preferredQuality: MusicQuality,
   track: ReturnType<typeof ensureTrack>,
   request: Request,
+  account?: AccountRecord,
 ): Promise<{
   url: string
   quality: MusicQuality
@@ -129,7 +133,10 @@ const resolvePlayableUpstreamResponse = async (
         resolved.quality,
         request,
         resolved.ekey,
-        { librarySync: isHighestAvailableQuality(musicInfo, resolved.quality) },
+        {
+          librarySync: isHighestAvailableQuality(musicInfo, resolved.quality),
+          qqUin: account?.qqUin,
+        },
       )
       return {
         url: resolved.url,

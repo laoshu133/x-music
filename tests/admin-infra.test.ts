@@ -6256,8 +6256,9 @@ test('virtual favorite add enqueues track archive job', async () => {
         AND json_extract(payload_json, '$.songmid') = ?
       LIMIT 1
     `).get(songmid) as { payloadJson: string } | undefined
-    const archivePayload = JSON.parse(archiveJob?.payloadJson ?? '{}') as { reason?: string; playlistId?: string }
+    const archivePayload = JSON.parse(archiveJob?.payloadJson ?? '{}') as { reason?: string; playlistId?: string; qqUin?: string }
     assert.equal(archivePayload.reason, 'favorite')
+    assert.equal(archivePayload.qqUin, '999902')
 
     const syncJob = db.prepare(`
       SELECT payload_json AS payloadJson
@@ -6393,7 +6394,9 @@ test('virtual playback stopped report enqueues track archive and sync jobs when 
         AND json_extract(payload_json, '$.songmid') = ?
       LIMIT 1
     `).get(songmid) as { payloadJson: string } | undefined
-    assert.equal(JSON.parse(archiveJob?.payloadJson ?? '{}').reason, 'playback_completed')
+    const archivePayload = JSON.parse(archiveJob?.payloadJson ?? '{}') as { reason?: string; qqUin?: string }
+    assert.equal(archivePayload.reason, 'playback_completed')
+    assert.equal(archivePayload.qqUin, '999903')
 
     const syncJob = db.prepare(`
       SELECT payload_json AS payloadJson
@@ -6402,7 +6405,9 @@ test('virtual playback stopped report enqueues track archive and sync jobs when 
         AND json_extract(payload_json, '$.songmid') = ?
       LIMIT 1
     `).get(songmid) as { payloadJson: string } | undefined
-    assert.equal(JSON.parse(syncJob?.payloadJson ?? '{}').qqUin, '999903')
+    const syncPayload = JSON.parse(syncJob?.payloadJson ?? '{}') as { qqUin?: string; allowCachedQualityFallback?: boolean }
+    assert.equal(syncPayload.qqUin, '999903')
+    assert.equal(syncPayload.allowCachedQualityFallback, true)
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999903')
     db.prepare("DELETE FROM app_settings WHERE key = ?").run(`virtual.song.${songmid}`)
@@ -6485,12 +6490,12 @@ test('virtual favorite and playback enqueue archive jobs with WebDAV-only Emby s
     `).all(favoriteSongmid, stoppedSongmid) as Array<{ payloadJson: string }>
     assert.deepEqual(
       archiveJobs.map(job => {
-        const payload = JSON.parse(job.payloadJson) as { songmid: string; reason: string }
-        return [payload.songmid, payload.reason]
+        const payload = JSON.parse(job.payloadJson) as { songmid: string; reason: string; qqUin?: string }
+        return [payload.songmid, payload.reason, payload.qqUin]
       }),
       [
-        [favoriteSongmid, 'favorite'],
-        [stoppedSongmid, 'playback_completed'],
+        [favoriteSongmid, 'favorite', '999904'],
+        [stoppedSongmid, 'playback_completed', '999904'],
       ],
     )
     const syncJobs = db.prepare(`

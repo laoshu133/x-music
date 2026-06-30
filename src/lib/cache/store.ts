@@ -109,8 +109,14 @@ export const getPlayableTrackFile = (source: OnlineSource, songmid: string, qual
   `).get(source, songmid, quality) as TrackFileRow | undefined
 
   const record = row ? mapTrackFile(row) : undefined
-  if (record?.finalPath && isPlayableAudioPath(record.finalPath)) return record
-  if (record?.rawPath && isPlayableAudioPath(record.rawPath)) return record
+  if (record?.finalPath && isPlayableAudioPath(record.finalPath)) {
+    if (record.status !== 'ready') return upsertTrackFileStatus(record.trackId, record.quality, 'ready', { finalPath: record.finalPath })
+    return record
+  }
+  if (record?.rawPath && isPlayableAudioPath(record.rawPath)) {
+    if (record.status !== 'ready') return upsertTrackFileStatus(record.trackId, record.quality, 'ready', { rawPath: record.rawPath })
+    return record
+  }
   if (record && (record.finalPath || record.rawPath)) {
     markMissingTrackFile(record.id, `Cached file is missing or not playable: ${record.finalPath ?? record.rawPath}`)
   }

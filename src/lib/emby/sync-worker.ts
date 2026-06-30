@@ -1,5 +1,5 @@
 import { db } from '@/lib/db'
-import { isPlayableAudioFileName, isPlayableAudioPath, markMissingTrackFile } from '@/lib/cache/store'
+import { getPlayableTrackFile, isPlayableAudioFileName, isPlayableAudioPath, markMissingTrackFile } from '@/lib/cache/store'
 import { deleteCachedResourcesForTrack } from '@/lib/cache/resources'
 import { appConfig } from '@/lib/config'
 import { getAccountByQQ, type AccountRecord } from '@/lib/db/accounts'
@@ -411,7 +411,7 @@ function preferredSyncQuality(payload: SyncEmbyTrackJobPayload): MusicQuality {
 function syncQualityFallbacks(payload: SyncEmbyTrackJobPayload): MusicQuality[] {
   const hasDeclaredQuality = (payload.musicInfo.types ?? [])
     .some(item => item.type === 'flac' || item.type === '320k' || item.type === '128k')
-  if (hasDeclaredQuality) return [preferredSyncQuality(payload)]
+  if (hasDeclaredQuality && !payload.allowCachedQualityFallback) return [preferredSyncQuality(payload)]
   return qualityFallbacks(preferredSyncQuality(payload))
 }
 
@@ -455,6 +455,24 @@ function getCachedMedia(payload: SyncEmbyTrackJobPayload, qualities: MusicQualit
     songmid: payload.songmid,
     ...qualityParams,
   }) as CachedMediaRow[]
+
+  if (!rows.length) {
+    for (const quality of qualities) {
+      const file = getPlayableTrackFile(payload.source, payload.songmid, quality)
+      const mediaPath = file?.finalPath ?? file?.rawPath
+      if (!file || !mediaPath) continue
+      return {
+        id: file.id,
+        quality: file.quality,
+        finalPath: file.finalPath,
+        rawPath: file.rawPath,
+        lyricsPath: file.lyricsPath,
+        coverPath: file.coverPath,
+        status: file.status,
+        unsupportedPath: isPlayableAudioFileName(mediaPath) ? undefined : mediaPath,
+      }
+    }
+  }
 
   for (const row of rows) {
     const mediaPath = row.finalPath ?? row.rawPath
