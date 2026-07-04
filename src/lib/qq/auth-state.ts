@@ -3,6 +3,7 @@ import {
   markAccountQQAuthExpired,
   type AccountRecord,
 } from '@/lib/db/accounts'
+import { logServiceEvent } from '@/lib/request-log'
 import { getQQUserProfile } from './user'
 import { QQMusicError } from './http'
 import { refreshAccountQQAuthorizationIfNeeded } from './auth-refresh'
@@ -35,17 +36,39 @@ export async function requireActiveQQAccount<T extends AccountRecord | undefined
   try {
     await getQQUserProfile({ uin: currentAccount.qqUin, cookie: currentAccount.qqCookie })
     markAccountQQAuthChecked(currentAccount.qqUin)
+    if (refreshed.attempted) {
+      logServiceEvent('qq_auth_check_after_refresh_success', {
+        qqUin: currentAccount.qqUin,
+        refreshed: refreshed.refreshed,
+      })
+    }
     return currentAccount as T
   } catch (error) {
     if (isQQAuthExpiredError(error)) {
+      logServiceEvent('qq_auth_check_rejected', {
+        qqUin: currentAccount.qqUin,
+        error: error instanceof Error ? error.message : String(error),
+        status: error instanceof QQMusicError ? error.status : undefined,
+        willRetryRefresh: true,
+      }, 'error')
       try {
         const retry = await refreshAccountQQAuthorizationIfNeeded(currentAccount, { force: true })
         await getQQUserProfile({ uin: retry.account.qqUin, cookie: retry.account.qqCookie })
         markAccountQQAuthChecked(retry.account.qqUin)
+        logServiceEvent('qq_auth_check_retry_success', {
+          qqUin: retry.account.qqUin,
+          refreshed: retry.refreshed,
+        })
         return retry.account as T
-      } catch {
+      } catch (retryError) {
         const message = error instanceof Error ? error.message : String(error)
         markAccountQQAuthExpired(currentAccount.qqUin, message)
+        logServiceEvent('qq_auth_marked_expired', {
+          qqUin: currentAccount.qqUin,
+          originalError: message,
+          retryError: retryError instanceof Error ? retryError.message : String(retryError),
+          retryStatus: retryError instanceof QQMusicError ? retryError.status : undefined,
+        }, 'error')
         throw new QQAuthExpiredError(message)
       }
     }

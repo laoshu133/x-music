@@ -4,12 +4,14 @@ import {
   type AccountRecord,
 } from '@/lib/db/accounts'
 import { getStoredQQLoginState, updateStoredQQLoginCookie } from '@/lib/db/qq-session'
-import { parseQQAccessTokenExpiresAt } from './account'
+import { logServiceEvent } from '@/lib/request-log'
+import { parseQQAccessTokenExpiresAt, parseQQMusickeyCreatedAt } from './account'
 import { QQMusicError } from './http'
 import { refreshQQMusickey, type QQMusickeyRefreshResult } from './session-refresh'
 
 const defaultRefreshWindowMs = Number(process.env.QQ_AUTH_AUTO_REFRESH_WINDOW_MS ?? 7 * 24 * 60 * 60 * 1000)
 const defaultRefreshMinIntervalMs = Number(process.env.QQ_AUTH_AUTO_REFRESH_MIN_INTERVAL_MS ?? 6 * 60 * 60 * 1000)
+const defaultRefreshMaxAgeMs = Number(process.env.QQ_AUTH_AUTO_REFRESH_MAX_AGE_MS ?? 24 * 60 * 60 * 1000)
 const lastRefreshAttemptByUin = new Map<string, number>()
 
 export interface QQAuthorizationRefreshResult {
@@ -36,6 +38,16 @@ export async function refreshAccountQQAuthorization(
   }
   updateStoredSessionIfCurrentAccount(result.uin, result.cookie)
   const refreshedAccount = updateAccountQQCookie(result.cookie) ?? getAccountByQQ(result.uin) ?? account
+  logServiceEvent('qq_auth_refresh_success', {
+    qqUin: result.uin,
+    changed: result.changed,
+    keyRefreshed: result.keyRefreshed,
+    tokenRefreshed: result.tokenRefreshed,
+    upstreamCode: result.upstreamCode,
+    traceid: result.traceid,
+    accessTokenExpiresAt: parseQQAccessTokenExpiresAt(result.cookie),
+    musickeyCreatedAt: parseQQMusickeyCreatedAt(result.cookie),
+  })
   return {
     account: refreshedAccount,
     result,
@@ -48,13 +60,25 @@ export async function refreshAccountQQAuthorizationIfNeeded(
     force?: boolean
     refreshWindowMs?: number
     minIntervalMs?: number
+    maxAgeMs?: number
   } = {},
 ): Promise<QQAuthorizationRefreshResult> {
-  if (!shouldRefreshAccountQQAuthorization(account, options)) {
+  const decision = getAccountQQAuthorizationRefreshDecision(account, options)
+  if (!decision.shouldRefresh) {
+    logRefreshSkipped(account, decision)
     return { account, attempted: false, refreshed: false }
   }
 
   lastRefreshAttemptByUin.set(account.qqUin, Date.now())
+  logServiceEvent('qq_auth_refresh_attempt', {
+    qqUin: account.qqUin,
+    reason: decision.reason,
+    accessTokenExpiresAt: decision.accessTokenExpiresAt,
+    musickeyCreatedAt: decision.musickeyCreatedAt,
+    ageBasis: decision.ageBasis,
+    ageMs: decision.ageMs,
+    msUntilExpiry: decision.msUntilExpiry,
+  })
   try {
     const refreshed = await refreshAccountQQAuthorization(account)
     return {
@@ -64,6 +88,13 @@ export async function refreshAccountQQAuthorizationIfNeeded(
     }
   } catch (error) {
     if (options.force) throw error
+    logServiceEvent('qq_auth_refresh_failed', {
+      qqUin: account.qqUin,
+      reason: decision.reason,
+      error: error instanceof Error ? error.message : String(error),
+      status: error instanceof QQMusicError ? error.status : undefined,
+      payload: summarizeRefreshErrorPayload(error),
+    }, 'error')
     return {
       account,
       attempted: true,
@@ -79,27 +110,150 @@ export function shouldRefreshAccountQQAuthorization(
     force?: boolean
     refreshWindowMs?: number
     minIntervalMs?: number
+    maxAgeMs?: number
   } = {},
 ): boolean {
-  if (options.force) return true
-  if (account.qqAuthState === 'expired') return false
+  return getAccountQQAuthorizationRefreshDecision(account, options).shouldRefresh
+}
 
-  const expiresAt = parseQQAccessTokenExpiresAt(account.qqCookie)
-  if (!expiresAt) return false
+export interface QQAuthorizationRefreshDecision {
+  shouldRefresh: boolean
+  reason:
+    | 'force'
+    | 'expired'
+    | 'missing-musickey'
+    | 'near-access-token-expiry'
+    | 'session-age'
+    | 'outside-refresh-window'
+    | 'recently-attempted'
+    | 'fresh-session'
+  accessTokenExpiresAt?: string
+  musickeyCreatedAt?: string
+  ageBasis?: 'musickey-created-at' | 'last-login-at' | 'updated-at' | 'created-at'
+  ageMs?: number
+  msUntilExpiry?: number
+  nextAllowedAt?: string
+}
 
-  const expiresAtMs = Date.parse(expiresAt)
-  if (!Number.isFinite(expiresAtMs)) return false
+export function getAccountQQAuthorizationRefreshDecision(
+  account: AccountRecord,
+  options: {
+    force?: boolean
+    refreshWindowMs?: number
+    minIntervalMs?: number
+    maxAgeMs?: number
+  } = {},
+): QQAuthorizationRefreshDecision {
+  if (options.force) return { shouldRefresh: true, reason: 'force' }
+  if (account.qqAuthState === 'expired') return { shouldRefresh: false, reason: 'expired' }
+  if (!account.qqmusicKey) return { shouldRefresh: false, reason: 'missing-musickey' }
 
   const now = Date.now()
-  const refreshWindowMs = options.refreshWindowMs ?? defaultRefreshWindowMs
-  if (expiresAtMs - now > refreshWindowMs) return false
-
   const minIntervalMs = options.minIntervalMs ?? defaultRefreshMinIntervalMs
   const lastAttemptAt = lastRefreshAttemptByUin.get(account.qqUin)
-  return !lastAttemptAt || now - lastAttemptAt >= minIntervalMs
+  if (lastAttemptAt && now - lastAttemptAt < minIntervalMs) {
+    return {
+      shouldRefresh: false,
+      reason: 'recently-attempted',
+      nextAllowedAt: new Date(lastAttemptAt + minIntervalMs).toISOString(),
+    }
+  }
+
+  const expiresAt = parseQQAccessTokenExpiresAt(account.qqCookie)
+  const expiresAtMs = expiresAt ? Date.parse(expiresAt) : NaN
+  const refreshWindowMs = options.refreshWindowMs ?? defaultRefreshWindowMs
+  if (Number.isFinite(expiresAtMs)) {
+    const msUntilExpiry = expiresAtMs - now
+    if (msUntilExpiry <= refreshWindowMs) {
+      return {
+        shouldRefresh: true,
+        reason: 'near-access-token-expiry',
+        accessTokenExpiresAt: expiresAt,
+        msUntilExpiry,
+      }
+    }
+
+    return {
+      shouldRefresh: false,
+      reason: 'outside-refresh-window',
+      accessTokenExpiresAt: expiresAt,
+      msUntilExpiry,
+    }
+  }
+
+  const age = getAccountQQAuthorizationAge(account, now)
+  const maxAgeMs = options.maxAgeMs ?? defaultRefreshMaxAgeMs
+  if (age && age.ageMs >= maxAgeMs) {
+    return {
+      shouldRefresh: true,
+      reason: 'session-age',
+      musickeyCreatedAt: age.musickeyCreatedAt,
+      ageBasis: age.basis,
+      ageMs: age.ageMs,
+    }
+  }
+
+  return {
+    shouldRefresh: false,
+    reason: 'fresh-session',
+    musickeyCreatedAt: age?.musickeyCreatedAt,
+    ageBasis: age?.basis,
+    ageMs: age?.ageMs,
+  }
 }
 
 function updateStoredSessionIfCurrentAccount(uin: string, cookie: string): void {
   const stored = getStoredQQLoginState()
   if (stored?.uin === uin) updateStoredQQLoginCookie(cookie)
+}
+
+function logRefreshSkipped(account: AccountRecord, decision: QQAuthorizationRefreshDecision): void {
+  if (!['1', 'true', 'on', 'yes'].includes(process.env.X_MUSIC_QQ_AUTH_REFRESH_LOG_SKIPS?.trim().toLowerCase() ?? '')) return
+  logServiceEvent('qq_auth_refresh_skipped', {
+    qqUin: account.qqUin,
+    reason: decision.reason,
+    accessTokenExpiresAt: decision.accessTokenExpiresAt,
+    musickeyCreatedAt: decision.musickeyCreatedAt,
+    ageBasis: decision.ageBasis,
+    ageMs: decision.ageMs,
+    msUntilExpiry: decision.msUntilExpiry,
+    nextAllowedAt: decision.nextAllowedAt,
+  })
+}
+
+function getAccountQQAuthorizationAge(account: AccountRecord, now: number): {
+  basis: QQAuthorizationRefreshDecision['ageBasis']
+  ageMs: number
+  musickeyCreatedAt?: string
+} | undefined {
+  const musickeyCreatedAt = parseQQMusickeyCreatedAt(account.qqCookie)
+  const candidates: Array<{ basis: NonNullable<QQAuthorizationRefreshDecision['ageBasis']>; value?: string }> = [
+    { basis: 'musickey-created-at', value: musickeyCreatedAt },
+    { basis: 'last-login-at', value: account.lastLoginAt },
+    { basis: 'updated-at', value: account.updatedAt },
+    { basis: 'created-at', value: account.createdAt },
+  ]
+
+  for (const candidate of candidates) {
+    if (!candidate.value) continue
+    const time = Date.parse(candidate.value)
+    if (!Number.isFinite(time)) continue
+    return {
+      basis: candidate.basis,
+      ageMs: Math.max(0, now - time),
+      musickeyCreatedAt,
+    }
+  }
+
+  return undefined
+}
+
+function summarizeRefreshErrorPayload(error: unknown): unknown {
+  if (!(error instanceof QQMusicError) || !error.payload || typeof error.payload !== 'object') return undefined
+  const payload = error.payload as Record<string, unknown>
+  return {
+    code: payload.code,
+    actionable: payload.actionable,
+    traceid: payload.traceid,
+  }
 }

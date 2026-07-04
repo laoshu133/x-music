@@ -154,6 +154,10 @@ export function parseQQAccessTokenExpiresAt(cookieText: string): string | undefi
   return parseCookieEpochSecondsValue(parseQQCookieText(sanitizeCookieText(cookieText)).get('psrf_access_token_expiresAt'))
 }
 
+export function parseQQMusickeyCreatedAt(cookieText: string): string | undefined {
+  return parseCookieEpochSecondsValue(parseQQCookieText(sanitizeCookieText(cookieText)).get('psrf_musickey_createtime'))
+}
+
 function parseCookieEpochSecondsValue(value: string | undefined): string | undefined {
   if (!value) return undefined
   const seconds = Number(value)

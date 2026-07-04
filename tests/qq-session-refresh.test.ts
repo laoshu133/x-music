@@ -3,8 +3,8 @@ import test from 'node:test'
 import { db } from '@/lib/db'
 import { getAccountByQQ, type AccountRecord } from '@/lib/db/accounts'
 import { clearQQLoginCookie, getStoredQQLoginState, saveQQLoginCookie } from '@/lib/db/qq-session'
-import { buildQQLoginState, parseQQAccessTokenExpiresAt, replaceQQCookieValues } from '@/lib/qq/account'
-import { refreshAccountQQAuthorization, refreshAccountQQAuthorizationIfNeeded } from '@/lib/qq/auth-refresh'
+import { buildQQLoginState, parseQQAccessTokenExpiresAt, parseQQMusickeyCreatedAt, replaceQQCookieValues } from '@/lib/qq/account'
+import { getAccountQQAuthorizationRefreshDecision, refreshAccountQQAuthorization, refreshAccountQQAuthorizationIfNeeded } from '@/lib/qq/auth-refresh'
 import { requireActiveQQAccount } from '@/lib/qq/auth-state'
 import { refreshQQMusickey } from '@/lib/qq/session-refresh'
 
@@ -32,6 +32,13 @@ test('QQ login state exposes access token expiration from cookie', () => {
 
   assert.equal(expiresAt, '2026-08-27T17:03:30.000Z')
   assert.equal(state.accessTokenExpiresAt, expiresAt)
+})
+
+test('QQ login state exposes musickey creation time from cookie', () => {
+  assert.equal(
+    parseQQMusickeyCreatedAt('uin=o123456; qm_keyst=key; psrf_musickey_createtime=1782666210'),
+    '2026-06-28T17:03:30.000Z',
+  )
 })
 
 test('refreshQQMusickey exchanges current musickey for a new one', async () => {
@@ -149,6 +156,88 @@ test('refreshAccountQQAuthorizationIfNeeded refreshes near-expiring account cook
     assert.equal(refreshRequests, 1)
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('123457')
+  }
+})
+
+test('refreshAccountQQAuthorizationIfNeeded refreshes aged account cookies without token expiry', async () => {
+  db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('123463')
+  saveQQLoginCookie('uin=o123463; qm_keyst=old-key; qqmusic_key=old-key')
+  db.prepare(`
+    UPDATE accounts
+    SET
+      last_login_at = datetime('now', '-3 days'),
+      updated_at = datetime('now', '-3 days')
+    WHERE qq_uin = ?
+  `).run('123463')
+  const account = getAccountByQQ('123463')
+  assert.ok(account)
+
+  let refreshRequests = 0
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    assert.match(String(url), /^https:\/\/u6\.y\.qq\.com\/cgi-bin\/musics\.fcg\?sign=/)
+    refreshRequests += 1
+    return Response.json({
+      code: 0,
+      'music.login.LoginServer.Login': {
+        code: 1000,
+        data: { musickey: 'aged-next-key' },
+      },
+    })
+  }) as typeof fetch
+
+  try {
+    const decision = getAccountQQAuthorizationRefreshDecision(account, {
+      maxAgeMs: 24 * 60 * 60 * 1000,
+      minIntervalMs: 0,
+    })
+    assert.equal(decision.shouldRefresh, true)
+    assert.equal(decision.reason, 'session-age')
+    assert.equal(decision.ageBasis, 'last-login-at')
+
+    const result = await refreshAccountQQAuthorizationIfNeeded(account, {
+      maxAgeMs: 24 * 60 * 60 * 1000,
+      minIntervalMs: 0,
+    })
+
+    assert.equal(result.attempted, true)
+    assert.equal(result.refreshed, true)
+    assert.equal(result.account.qqmusicKey, 'aged-next-key')
+    assert.equal(refreshRequests, 1)
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('123463')
+  }
+})
+
+test('refreshAccountQQAuthorizationIfNeeded skips fresh account cookies without token expiry', async () => {
+  db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('123464')
+  saveQQLoginCookie('uin=o123464; qm_keyst=old-key; qqmusic_key=old-key')
+  const account = getAccountByQQ('123464')
+  assert.ok(account)
+
+  let refreshRequests = 0
+  globalThis.fetch = (async () => {
+    refreshRequests += 1
+    return Response.json({ code: 0 })
+  }) as typeof fetch
+
+  try {
+    const decision = getAccountQQAuthorizationRefreshDecision(account, {
+      maxAgeMs: 24 * 60 * 60 * 1000,
+      minIntervalMs: 0,
+    })
+    assert.equal(decision.shouldRefresh, false)
+    assert.equal(decision.reason, 'fresh-session')
+
+    const result = await refreshAccountQQAuthorizationIfNeeded(account, {
+      maxAgeMs: 24 * 60 * 60 * 1000,
+      minIntervalMs: 0,
+    })
+
+    assert.equal(result.attempted, false)
+    assert.equal(result.account.qqmusicKey, 'old-key')
+    assert.equal(refreshRequests, 0)
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('123464')
   }
 })
 
