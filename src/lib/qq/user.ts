@@ -57,6 +57,7 @@ type UserPlaylistRaw = {
 }
 
 const REQUEST_TIMEOUT_MS = 10000
+const QQ_HOMEPAGE_SUCCESS_CODES = new Set([0, 1000])
 
 function hash33(value: string): number {
   let hash = 0
@@ -476,7 +477,7 @@ async function fetchQQUserHomepage(uin: string, cookie?: string): Promise<Record
     })
   }) as Record<string, any>
 
-  if (typeof payload.code === 'number' && payload.code !== 0) {
+  if (typeof payload.code === 'number' && !QQ_HOMEPAGE_SUCCESS_CODES.has(payload.code)) {
     throw new QQMusicError('QQ user playlists request was rejected', 502, payload)
   }
 

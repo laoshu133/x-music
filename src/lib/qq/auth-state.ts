@@ -1,9 +1,11 @@
 import {
+  getAccountByQQ,
   markAccountQQAuthChecked,
   markAccountQQAuthExpired,
   type AccountRecord,
 } from '@/lib/db/accounts'
 import { logServiceEvent } from '@/lib/request-log'
+import { parseQQAccessTokenExpiresAt } from './account'
 import { getQQUserProfile } from './user'
 import { QQMusicError } from './http'
 import { refreshAccountQQAuthorizationIfNeeded } from './auth-refresh'
@@ -27,11 +29,20 @@ export async function requireActiveQQAccount<T extends AccountRecord | undefined
 ): Promise<T> {
   if (!account) return account
   if (account.qqAuthState === 'expired') {
-    throw new QQAuthExpiredError(account.qqAuthError ?? undefined)
+    if (!shouldRecheckExpiredAccount(account, options)) {
+      throw new QQAuthExpiredError(account.qqAuthError ?? undefined)
+    }
+    logServiceEvent('qq_auth_expired_recheck_attempt', {
+      qqUin: account.qqUin,
+      authError: account.qqAuthError,
+      accessTokenExpiresAt: parseQQAccessTokenExpiresAt(account.qqCookie),
+    })
   }
   const refreshed = await refreshAccountQQAuthorizationIfNeeded(account)
   const currentAccount = refreshed.account
-  if (!options.force && isRecentlyChecked(currentAccount.qqAuthCheckedAt)) return currentAccount as T
+  if (currentAccount.qqAuthState !== 'expired' && !options.force && isRecentlyChecked(currentAccount.qqAuthCheckedAt)) {
+    return currentAccount as T
+  }
 
   try {
     await getQQUserProfile({ uin: currentAccount.qqUin, cookie: currentAccount.qqCookie })
@@ -42,13 +53,14 @@ export async function requireActiveQQAccount<T extends AccountRecord | undefined
         refreshed: refreshed.refreshed,
       })
     }
-    return currentAccount as T
+    return (getAccountByQQ(currentAccount.qqUin) ?? currentAccount) as T
   } catch (error) {
     if (isQQAuthExpiredError(error)) {
       logServiceEvent('qq_auth_check_rejected', {
         qqUin: currentAccount.qqUin,
         error: error instanceof Error ? error.message : String(error),
         status: error instanceof QQMusicError ? error.status : undefined,
+        payload: summarizeQQAuthErrorPayload(error),
         willRetryRefresh: true,
       }, 'error')
       try {
@@ -59,21 +71,31 @@ export async function requireActiveQQAccount<T extends AccountRecord | undefined
           qqUin: retry.account.qqUin,
           refreshed: retry.refreshed,
         })
-        return retry.account as T
+        return (getAccountByQQ(retry.account.qqUin) ?? retry.account) as T
       } catch (retryError) {
         const message = error instanceof Error ? error.message : String(error)
         markAccountQQAuthExpired(currentAccount.qqUin, message)
         logServiceEvent('qq_auth_marked_expired', {
           qqUin: currentAccount.qqUin,
           originalError: message,
+          originalPayload: summarizeQQAuthErrorPayload(error),
           retryError: retryError instanceof Error ? retryError.message : String(retryError),
           retryStatus: retryError instanceof QQMusicError ? retryError.status : undefined,
+          retryPayload: summarizeQQAuthErrorPayload(retryError),
         }, 'error')
         throw new QQAuthExpiredError(message)
       }
     }
     throw error
   }
+}
+
+function shouldRecheckExpiredAccount(account: AccountRecord, options: { force?: boolean }): boolean {
+  if (options.force) return true
+  const accessTokenExpiresAt = parseQQAccessTokenExpiresAt(account.qqCookie)
+  if (!accessTokenExpiresAt) return false
+  const expiresAtMs = Date.parse(accessTokenExpiresAt)
+  return Number.isFinite(expiresAtMs) && expiresAtMs > Date.now()
 }
 
 export function isQQAuthExpiredError(error: unknown): boolean {
@@ -92,7 +114,6 @@ function isQQAuthExpiredMessage(value: string): boolean {
     || message.includes('authorization')
     || message.includes('auth expired')
     || message.includes('not logged in')
-    || message.includes('qq user playlists request was rejected')
     || message.includes('请登录')
     || message.includes('登录')
 }
@@ -118,6 +139,8 @@ function isQQAuthExpiredPayload(payload: unknown): boolean {
   const record = payload as Record<string, unknown>
   const code = record.code
   if (code === 401 || code === '401') return true
+  if (typeof code === 'number' && code < 0) return true
+  if (typeof code === 'string' && /^-\d+$/.test(code)) return true
 
   for (const key of ['message', 'msg', 'error', 'errMsg', 'desc', 'actionable']) {
     const value = record[key]
@@ -125,4 +148,18 @@ function isQQAuthExpiredPayload(payload: unknown): boolean {
   }
 
   return false
+}
+
+function summarizeQQAuthErrorPayload(error: unknown): unknown {
+  if (!(error instanceof QQMusicError) || !error.payload || typeof error.payload !== 'object') return undefined
+  const payload = error.payload as Record<string, unknown>
+  return {
+    code: payload.code,
+    subcode: payload.subcode,
+    message: firstString(payload.message, payload.msg, payload.error, payload.errMsg, payload.desc),
+  }
+}
+
+function firstString(...values: unknown[]): string | undefined {
+  return values.find((value): value is string => typeof value === 'string' && value.trim() !== '')
 }

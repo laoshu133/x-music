@@ -6,6 +6,7 @@ import { clearQQLoginCookie, getStoredQQLoginState, saveQQLoginCookie } from '@/
 import { buildQQLoginState, parseQQAccessTokenExpiresAt, parseQQMusickeyCreatedAt, replaceQQCookieValues } from '@/lib/qq/account'
 import { getAccountQQAuthorizationRefreshDecision, refreshAccountQQAuthorization, refreshAccountQQAuthorizationIfNeeded } from '@/lib/qq/auth-refresh'
 import { requireActiveQQAccount } from '@/lib/qq/auth-state'
+import { getQQUserProfile } from '@/lib/qq/user'
 import { refreshQQMusickey } from '@/lib/qq/session-refresh'
 
 const originalFetch = globalThis.fetch
@@ -238,6 +239,96 @@ test('refreshAccountQQAuthorizationIfNeeded skips fresh account cookies without 
     assert.equal(refreshRequests, 0)
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('123464')
+  }
+})
+
+test('getQQUserProfile accepts QQ homepage success code 1000', async () => {
+  let profileRequests = 0
+  globalThis.fetch = (async () => {
+    profileRequests += 1
+    return Response.json({
+      code: 1000,
+      subcode: 1000,
+      data: {
+        creator: {
+          nick: 'Code 1000 User',
+        },
+      },
+    })
+  }) as typeof fetch
+
+  const profile = await getQQUserProfile({
+    uin: '123465',
+    cookie: 'uin=o123465; qm_keyst=key',
+  })
+
+  assert.deepEqual(profile, {
+    uin: '123465',
+    nickname: 'Code 1000 User',
+  })
+  assert.equal(profileRequests, 1)
+})
+
+test('requireActiveQQAccount does not expire accounts for non-login homepage rejection', async () => {
+  db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('123466')
+  saveQQLoginCookie('uin=o123466; qm_keyst=old-key; qqmusic_key=old-key')
+  const account = getAccountByQQ('123466')
+  assert.ok(account)
+
+  globalThis.fetch = (async () => Response.json({
+    code: 1001,
+    subcode: 1001,
+    msg: 'temporary upstream validation failed',
+  })) as typeof fetch
+
+  try {
+    await assert.rejects(
+      () => requireActiveQQAccount(account, { force: true }),
+      /QQ user playlists request was rejected/,
+    )
+    assert.equal(getAccountByQQ('123466')?.qqAuthState, 'active')
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('123466')
+  }
+})
+
+test('requireActiveQQAccount rechecks misclassified expired accounts with valid token expiry', async () => {
+  const expiresLater = Math.floor((Date.now() + 30 * 24 * 60 * 60 * 1000) / 1000)
+  db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('123467')
+  saveQQLoginCookie(`uin=o123467; qm_keyst=old-key; qqmusic_key=old-key; psrf_access_token_expiresAt=${expiresLater}`)
+  db.prepare(`
+    UPDATE accounts
+    SET
+      qq_auth_state = 'expired',
+      qq_auth_checked_at = CURRENT_TIMESTAMP,
+      qq_auth_error = 'QQ user playlists request was rejected'
+    WHERE qq_uin = ?
+  `).run('123467')
+  const account = getAccountByQQ('123467')
+  assert.ok(account)
+
+  let profileRequests = 0
+  globalThis.fetch = (async () => {
+    profileRequests += 1
+    return Response.json({
+      code: 1000,
+      subcode: 1000,
+      data: {
+        creator: {
+          nick: 'Recovered User',
+        },
+      },
+    })
+  }) as typeof fetch
+
+  try {
+    const result = await requireActiveQQAccount(account)
+
+    assert.equal(result?.qqAuthState, 'active')
+    assert.equal(getAccountByQQ('123467')?.qqAuthState, 'active')
+    assert.equal(profileRequests, 1)
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('123467')
   }
 })
 
