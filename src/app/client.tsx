@@ -384,6 +384,7 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
   const [embyProxyTimeoutDraft, setEmbyProxyTimeoutDraft] = useState('30000')
   const [embyIncrementalSync, setEmbyIncrementalSync] = useState<ApiState<IncrementalEmbySyncResult>>(emptyState)
   const [showEmbySyncPrompt, setShowEmbySyncPrompt] = useState(false)
+  const loginQrCheckInFlightRef = useRef(false)
   const [configDraft, setConfigDraft] = useState<ConfigDraft>({
     qqEnabled: true,
     qqSyncFavorites: true,
@@ -538,6 +539,7 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
 
   const requestLoginQr = () => {
     setMessage('')
+    loginQrCheckInFlightRef.current = false
     setLoginQrPhase('idle')
     run(s => setLoginQr(s), () => fetchJson<LoginQrState>('/api/account/qr'))
   }
@@ -545,6 +547,8 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
   const checkLoginQr = async () => {
     const qr = loginQr.data
     if (!qr) return
+    if (loginQrCheckInFlightRef.current) return
+    loginQrCheckInFlightRef.current = true
     setLoginQrPhase('checking')
     setMessage('')
     try {
@@ -573,6 +577,8 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
       setMessage(message)
       setLoginQrPhase('error')
       setAccount(current => ({ ...current, loading: false, error: message }))
+    } finally {
+      loginQrCheckInFlightRef.current = false
     }
   }
 

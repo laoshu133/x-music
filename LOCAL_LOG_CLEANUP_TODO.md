@@ -22,6 +22,15 @@ Added while investigating frequent QQ reauthorization prompts.
   - Purpose: separate profile-check rejection from refresh failure and final expired marking.
   - Cleanup: keep `qq_auth_marked_expired`; consider removing success logs after enough real-account validation.
 
+## QQ QR Login
+
+Added after the first scan after redeploy showed a login failed prompt while the second scan succeeded.
+
+- `src/lib/qq/user.ts`
+  - Events: `qq_login_qr_created`, `qq_login_qr_checked`, `qq_login_check_sig`, `qq_login_authorize`, `qq_login_completed`, `qq_login_failed`
+  - Purpose: identify whether QR login fails while polling QR status, following `check_sig`, posting Graph authorization, exchanging the authorization code, or persisting a complete QQ Music session.
+  - Cleanup: keep `qq_login_failed`; remove or gate success-stage logs once the first-scan behavior is stable.
+
 ## Request Logging
 
 Added for deployment debugging and anomalous response analysis.
