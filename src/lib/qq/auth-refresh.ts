@@ -162,6 +162,8 @@ export function getAccountQQAuthorizationRefreshDecision(
   const expiresAt = parseQQAccessTokenExpiresAt(account.qqCookie)
   const expiresAtMs = expiresAt ? Date.parse(expiresAt) : NaN
   const refreshWindowMs = options.refreshWindowMs ?? defaultRefreshWindowMs
+  const age = getAccountQQAuthorizationAge(account, now)
+  const maxAgeMs = options.maxAgeMs ?? defaultRefreshMaxAgeMs
   if (Number.isFinite(expiresAtMs)) {
     const msUntilExpiry = expiresAtMs - now
     if (msUntilExpiry <= refreshWindowMs) {
@@ -169,6 +171,17 @@ export function getAccountQQAuthorizationRefreshDecision(
         shouldRefresh: true,
         reason: 'near-access-token-expiry',
         accessTokenExpiresAt: expiresAt,
+        msUntilExpiry,
+      }
+    }
+    if (age && age.ageMs >= maxAgeMs) {
+      return {
+        shouldRefresh: true,
+        reason: 'session-age',
+        accessTokenExpiresAt: expiresAt,
+        musickeyCreatedAt: age.musickeyCreatedAt,
+        ageBasis: age.basis,
+        ageMs: age.ageMs,
         msUntilExpiry,
       }
     }
@@ -181,8 +194,6 @@ export function getAccountQQAuthorizationRefreshDecision(
     }
   }
 
-  const age = getAccountQQAuthorizationAge(account, now)
-  const maxAgeMs = options.maxAgeMs ?? defaultRefreshMaxAgeMs
   if (age && age.ageMs >= maxAgeMs) {
     return {
       shouldRefresh: true,
@@ -231,16 +242,19 @@ function getAccountQQAuthorizationAge(account: AccountRecord, now: number): {
     { basis: 'musickey-created-at', value: musickeyCreatedAt },
     { basis: 'last-login-at', value: account.lastLoginAt },
     { basis: 'updated-at', value: account.updatedAt },
-    { basis: 'created-at', value: account.createdAt },
   ]
 
-  for (const candidate of candidates) {
-    if (!candidate.value) continue
-    const time = Date.parse(candidate.value)
-    if (!Number.isFinite(time)) continue
+  const latest = candidates
+    .flatMap(candidate => {
+      if (!candidate.value) return []
+      const time = Date.parse(candidate.value)
+      return Number.isFinite(time) ? [{ ...candidate, time }] : []
+    })
+    .sort((left, right) => right.time - left.time)[0]
+  if (latest) {
     return {
-      basis: candidate.basis,
-      ageMs: Math.max(0, now - time),
+      basis: latest.basis,
+      ageMs: Math.max(0, now - latest.time),
       musickeyCreatedAt,
     }
   }

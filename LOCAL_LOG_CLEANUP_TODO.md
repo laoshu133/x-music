@@ -18,9 +18,19 @@ Added while investigating frequent QQ reauthorization prompts.
   - Cleanup: remove or keep gated; this can be noisy if enabled.
 
 - `src/lib/qq/auth-state.ts`
-  - Events: `qq_auth_check_after_refresh_success`, `qq_auth_check_rejected`, `qq_auth_check_retry_success`, `qq_auth_marked_expired`
-  - Purpose: separate profile-check rejection from refresh failure and final expired marking.
-  - Cleanup: keep `qq_auth_marked_expired`; consider removing success logs after enough real-account validation.
+  - Events: `qq_auth_expired_recheck_attempt`, `qq_auth_refresh_applied`, `qq_auth_refresh_degraded`, `qq_auth_marked_expired`, `qq_auth_expired_response`
+  - Purpose: separate successful renewal, transient degraded operation, automatic expired-account recovery, and final expired marking.
+  - Cleanup: keep degraded/expired logs; consider removing successful refresh logs after enough real-account validation.
+
+- `src/lib/qq/auth-sweep.ts`
+  - Events: `qq_auth_sweep_completed`, `qq_auth_sweep_account_failed`
+  - Purpose: verify that the worker proactively checks and renews stored QQ sessions even without website traffic.
+  - Cleanup: keep account failures; reduce successful sweep summaries if hourly log volume is unnecessary.
+
+- `src/lib/qq/http.ts` and `src/app/initial-account.ts`
+  - Events: `qq_music_error_response`, `qq_music_unhandled_error`, `initial_account_load_failed`
+  - Purpose: retain backend diagnostics while clients receive a generic friendly system-error message.
+  - Cleanup: permanent error logs are useful; revisit payload fields to keep them minimal.
 
 ## QQ QR Login
 

@@ -1,4 +1,5 @@
 import { zzcSign } from './crypto'
+import { logServiceEvent } from '@/lib/request-log'
 
 const DEFAULT_HEADERS = {
   accept: 'application/json, text/plain, */*',
@@ -22,21 +23,55 @@ export class QQMusicError extends Error {
 export function qqMusicErrorResponse(error: unknown): Response {
   if (error instanceof QQMusicError) {
     const payload = error.payload && typeof error.payload === 'object' ? error.payload as Record<string, unknown> : undefined
+    const status = error.status ?? 502
+    const systemError = status >= 500
+    const authExpired = payload?.code === 'QQ_AUTH_EXPIRED'
+    logServiceEvent('qq_music_error_response', {
+      error: error.message,
+      status,
+      payload: summarizeQQMusicErrorPayload(payload),
+    }, 'error')
     return Response.json(
       {
-        error: error.message,
-        code: payload?.code,
-        actionable: payload?.actionable,
-        payload: error.payload,
+        error: systemError
+          ? '系统出错，请稍后重试。'
+          : authExpired
+            ? 'QQ 授权已失效，请重新登录。'
+            : error.message,
+        code: systemError ? 'SYSTEM_ERROR' : payload?.code,
+        actionable: systemError ? '系统暂时无法完成请求，后台已记录错误。' : payload?.actionable,
       },
-      { status: error.status ?? 502 },
+      { status },
     )
   }
 
+  logServiceEvent('qq_music_unhandled_error', {
+    error: error instanceof Error ? error.message : String(error),
+    name: error instanceof Error ? error.name : undefined,
+  }, 'error')
   return Response.json(
-    { error: error instanceof Error ? error.message : 'QQ Music request failed' },
-    { status: 502 },
+    {
+      error: '系统出错，请稍后重试。',
+      code: 'SYSTEM_ERROR',
+      actionable: '系统暂时无法完成请求，后台已记录错误。',
+    },
+    { status: 503 },
   )
+}
+
+function summarizeQQMusicErrorPayload(payload: Record<string, unknown> | undefined): unknown {
+  if (!payload) return undefined
+  const response = payload.response && typeof payload.response === 'object'
+    ? payload.response as Record<string, unknown>
+    : undefined
+  return {
+    code: payload.code ?? response?.code,
+    subcode: payload.subcode ?? response?.subcode,
+    actionable: payload.actionable,
+    cause: typeof payload.cause === 'string' ? payload.cause : undefined,
+    keys: Array.isArray(payload.keys) ? payload.keys : undefined,
+    dataKeys: Array.isArray(payload.dataKeys) ? payload.dataKeys : undefined,
+  }
 }
 
 async function parseQQResponse<T>(response: Response): Promise<T> {

@@ -190,6 +190,17 @@ function extractAuthorizeUrl(body: string): string | undefined {
 }
 
 function extractPlaylists(payload: Record<string, any>): UserPlaylistRaw[] {
+  const matched = findPlaylists(payload)
+  if (!matched) {
+    throw new QQMusicError('QQ user playlist response did not include a playlist list', 502, {
+      keys: payload && typeof payload === 'object' ? Object.keys(payload) : [],
+      dataKeys: payload?.data && typeof payload.data === 'object' ? Object.keys(payload.data) : [],
+    })
+  }
+  return matched
+}
+
+function findPlaylists(payload: Record<string, any>): UserPlaylistRaw[] | undefined {
   const candidates = [
     payload?.data?.mydiss?.list,
     payload?.data?.mymusic,
@@ -210,13 +221,7 @@ function extractPlaylists(payload: Record<string, any>): UserPlaylistRaw[] {
   ]
 
   const matched = candidates.find(Array.isArray)
-  if (!matched) {
-    throw new QQMusicError('QQ user playlist response did not include a playlist list', 502, {
-      keys: payload && typeof payload === 'object' ? Object.keys(payload) : [],
-      dataKeys: payload?.data && typeof payload.data === 'object' ? Object.keys(payload.data) : [],
-    })
-  }
-  return matched as UserPlaylistRaw[]
+  return matched as UserPlaylistRaw[] | undefined
 }
 
 function extractProfile(payload: Record<string, any>, uin: string): QQUserProfile {
@@ -237,7 +242,7 @@ function extractProfile(payload: Record<string, any>, uin: string): QQUserProfil
     if (typeof nickname === 'string' && nickname.trim()) return { uin, nickname: nickname.trim() }
   }
 
-  const playlist = extractPlaylists(payload).find(item => item.creator?.name || item.creator?.nick || item.nickname)
+  const playlist = findPlaylists(payload)?.find(item => item.creator?.name || item.creator?.nick || item.nickname)
   const nickname = playlist?.creator?.name ?? playlist?.creator?.nick ?? playlist?.nickname
   return { uin, nickname: nickname?.trim() || undefined }
 }

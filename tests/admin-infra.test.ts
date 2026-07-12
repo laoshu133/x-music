@@ -305,7 +305,7 @@ test('QQ login creates a per-account Emby gateway account', () => {
   }
 })
 
-test('QQ playlist rejection expires the bound account auth state', async () => {
+test('explicit QQ refresh rejection expires the bound account auth state', async () => {
   const originalFetch = globalThis.fetch
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999905')
@@ -321,7 +321,7 @@ test('QQ playlist rejection expires the bound account auth state', async () => {
     )
     const updated = getAccountByQQ('999905')
     assert.equal(updated?.qqAuthState, 'expired')
-    assert.equal(updated?.qqAuthError, 'QQ user playlists request was rejected')
+    assert.equal(updated?.qqAuthError, 'QQ Music key refresh failed')
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999905')
     clearQQLoginCookie()

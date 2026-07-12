@@ -1,16 +1,15 @@
 import {
   getAccountByQQ,
-  markAccountQQAuthChecked,
   markAccountQQAuthExpired,
   type AccountRecord,
 } from '@/lib/db/accounts'
 import { logServiceEvent } from '@/lib/request-log'
 import { parseQQAccessTokenExpiresAt } from './account'
-import { getQQUserProfile } from './user'
 import { QQMusicError } from './http'
 import { refreshAccountQQAuthorizationIfNeeded } from './auth-refresh'
 
-const defaultCheckTtlMs = Number(process.env.QQ_AUTH_CHECK_TTL_MS ?? 5 * 60 * 1000)
+const expiredRecheckIntervalMs = Number(process.env.QQ_AUTH_EXPIRED_RECHECK_INTERVAL_MS ?? 6 * 60 * 60 * 1000)
+const lastExpiredRecheckByUin = new Map<string, number>()
 
 export class QQAuthExpiredError extends QQMusicError {
   constructor(message = 'QQ authorization has expired. Reauthorize QQ Music to continue.', payload?: unknown) {
@@ -28,6 +27,7 @@ export async function requireActiveQQAccount<T extends AccountRecord | undefined
   options: { force?: boolean } = {},
 ): Promise<T> {
   if (!account) return account
+  const recheckingExpiredAccount = account.qqAuthState === 'expired'
   if (account.qqAuthState === 'expired') {
     if (!shouldRecheckExpiredAccount(account, options)) {
       throw new QQAuthExpiredError(account.qqAuthError ?? undefined)
@@ -37,65 +37,60 @@ export async function requireActiveQQAccount<T extends AccountRecord | undefined
       authError: account.qqAuthError,
       accessTokenExpiresAt: parseQQAccessTokenExpiresAt(account.qqCookie),
     })
-  }
-  const refreshed = await refreshAccountQQAuthorizationIfNeeded(account)
-  const currentAccount = refreshed.account
-  if (currentAccount.qqAuthState !== 'expired' && !options.force && isRecentlyChecked(currentAccount.qqAuthCheckedAt)) {
-    return currentAccount as T
+    lastExpiredRecheckByUin.set(account.qqUin, Date.now())
   }
 
   try {
-    await getQQUserProfile({ uin: currentAccount.qqUin, cookie: currentAccount.qqCookie })
-    markAccountQQAuthChecked(currentAccount.qqUin)
+    const refreshed = await refreshAccountQQAuthorizationIfNeeded(account, {
+      force: Boolean(options.force || recheckingExpiredAccount),
+    })
+    if (refreshed.error) return handleRefreshFailure(account, refreshed.error) as T
     if (refreshed.attempted) {
-      logServiceEvent('qq_auth_check_after_refresh_success', {
-        qqUin: currentAccount.qqUin,
+      logServiceEvent('qq_auth_refresh_applied', {
+        qqUin: refreshed.account.qqUin,
         refreshed: refreshed.refreshed,
       })
     }
-    return (getAccountByQQ(currentAccount.qqUin) ?? currentAccount) as T
+    if (recheckingExpiredAccount) lastExpiredRecheckByUin.delete(account.qqUin)
+    return (getAccountByQQ(refreshed.account.qqUin) ?? refreshed.account) as T
   } catch (error) {
-    if (isQQAuthExpiredError(error)) {
-      logServiceEvent('qq_auth_check_rejected', {
-        qqUin: currentAccount.qqUin,
-        error: error instanceof Error ? error.message : String(error),
-        status: error instanceof QQMusicError ? error.status : undefined,
-        payload: summarizeQQAuthErrorPayload(error),
-        willRetryRefresh: true,
-      }, 'error')
-      try {
-        const retry = await refreshAccountQQAuthorizationIfNeeded(currentAccount, { force: true })
-        await getQQUserProfile({ uin: retry.account.qqUin, cookie: retry.account.qqCookie })
-        markAccountQQAuthChecked(retry.account.qqUin)
-        logServiceEvent('qq_auth_check_retry_success', {
-          qqUin: retry.account.qqUin,
-          refreshed: retry.refreshed,
-        })
-        return (getAccountByQQ(retry.account.qqUin) ?? retry.account) as T
-      } catch (retryError) {
-        const message = error instanceof Error ? error.message : String(error)
-        markAccountQQAuthExpired(currentAccount.qqUin, message)
-        logServiceEvent('qq_auth_marked_expired', {
-          qqUin: currentAccount.qqUin,
-          originalError: message,
-          originalPayload: summarizeQQAuthErrorPayload(error),
-          retryError: retryError instanceof Error ? retryError.message : String(retryError),
-          retryStatus: retryError instanceof QQMusicError ? retryError.status : undefined,
-          retryPayload: summarizeQQAuthErrorPayload(retryError),
-        }, 'error')
-        throw new QQAuthExpiredError(message)
-      }
-    }
-    throw error
+    return handleRefreshFailure(account, error) as T
   }
+}
+
+function handleRefreshFailure(account: AccountRecord, error: unknown): AccountRecord {
+  const message = error instanceof Error ? error.message : String(error)
+  if (isQQAuthExpiredError(error)) {
+    markAccountQQAuthExpired(account.qqUin, message)
+    logServiceEvent('qq_auth_marked_expired', {
+      qqUin: account.qqUin,
+      error: message,
+      status: error instanceof QQMusicError ? error.status : undefined,
+      payload: summarizeQQAuthErrorPayload(error),
+    }, 'error')
+    throw new QQAuthExpiredError(message)
+  }
+
+  logServiceEvent('qq_auth_refresh_degraded', {
+    qqUin: account.qqUin,
+    error: message,
+    status: error instanceof QQMusicError ? error.status : undefined,
+    payload: summarizeQQAuthErrorPayload(error),
+  }, 'error')
+  return getAccountByQQ(account.qqUin) ?? account
 }
 
 function shouldRecheckExpiredAccount(account: AccountRecord, options: { force?: boolean }): boolean {
   if (options.force) return true
+  if (!account.qqmusicKey) return false
+  const lastAttemptAt = lastExpiredRecheckByUin.get(account.qqUin)
+  if (lastAttemptAt && Date.now() - lastAttemptAt < expiredRecheckIntervalMs) return false
   const accessTokenExpiresAt = parseQQAccessTokenExpiresAt(account.qqCookie)
-  if (!accessTokenExpiresAt) return false
-  const expiresAtMs = Date.parse(accessTokenExpiresAt)
-  return Number.isFinite(expiresAtMs) && expiresAtMs > Date.now()
+  const expiresAtMs = accessTokenExpiresAt ? Date.parse(accessTokenExpiresAt) : NaN
+  if (Number.isFinite(expiresAtMs) && expiresAtMs > Date.now()) return true
+
+  const checkedAtMs = account.qqAuthCheckedAt ? Date.parse(account.qqAuthCheckedAt) : NaN
+  return !Number.isFinite(checkedAtMs) || Date.now() - checkedAtMs >= expiredRecheckIntervalMs
 }
 
 export function isQQAuthExpiredError(error: unknown): boolean {
@@ -119,19 +114,16 @@ function isQQAuthExpiredMessage(value: string): boolean {
 }
 
 export function qqAuthExpiredResponse(error?: unknown): Response {
-  const message = error instanceof Error ? error.message : 'QQ authorization has expired. Reauthorize QQ Music to continue.'
+  if (error) {
+    logServiceEvent('qq_auth_expired_response', {
+      error: error instanceof Error ? error.message : String(error),
+    }, 'error')
+  }
   return Response.json({
-    error: message,
+    error: 'QQ 授权已失效，请重新登录。',
     code: 'QQ_AUTH_EXPIRED',
     actionable: '重新完成 QQ 授权登录后再继续使用 XMusic。',
   }, { status: 401 })
-}
-
-function isRecentlyChecked(checkedAt: string | undefined): boolean {
-  if (process.env.NODE_ENV === 'test') return true
-  if (!checkedAt) return false
-  const time = Date.parse(checkedAt)
-  return Number.isFinite(time) && Date.now() - time < defaultCheckTtlMs
 }
 
 function isQQAuthExpiredPayload(payload: unknown): boolean {

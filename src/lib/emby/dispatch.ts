@@ -27,7 +27,11 @@ export async function dispatchEmbyRequest(request: Request, embyPath: string): P
     return logCompletedRequest(request, response, startedAt, { embyPath })
   } catch (error) {
     logFailedRequest(request, startedAt, error, { embyPath })
-    throw error
+    return withEmbyCors(Response.json({
+      error: '系统出错，请稍后重试。',
+      code: 'SYSTEM_ERROR',
+      actionable: '系统暂时无法完成请求，后台已记录错误。',
+    }, { status: 503 }))
   }
 }
 

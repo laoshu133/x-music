@@ -49,6 +49,7 @@ const emptyState = <T,>(): ApiState<T> => ({ loading: false, error: '', data: nu
 
 interface AccountState {
   loggedIn: boolean
+  systemError?: boolean
   source?: 'env' | 'request' | 'stored'
   uin?: string
   nickname?: string
@@ -375,7 +376,7 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
   const [favoriteStatus, setFavoriteStatus] = useState<ApiState<FavoriteStatusSummary>>(emptyState)
   const [jobs, setJobs] = useState<ApiState<JobsResult>>(emptyState)
   const [users, setUsers] = useState<ApiState<UsersResult>>(emptyState)
-  const [message, setMessage] = useState('')
+  const [message, setMessage] = useState(initialAccount.systemError ? initialAccount.actionable ?? '系统出错，请稍后重试。' : '')
   const [browserOrigin, setBrowserOrigin] = useState('')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(initialSidebarCollapsed)
   const [embyPasswordDraft, setEmbyPasswordDraft] = useState('')

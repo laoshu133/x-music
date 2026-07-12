@@ -17,17 +17,20 @@ import { processOneEmbySyncJob } from '@/lib/emby/sync-worker'
 import { cleanupInboxFile } from '@/lib/tagging/cleanup'
 import { createTaggingProvider } from '@/lib/tagging/provider'
 import type { TagTrackFileJobPayload } from '@/lib/tagging/types'
+import { sweepQQAuthorizations } from '@/lib/qq/auth-sweep'
 import { fileURLToPath } from 'node:url'
 
 const pollIntervalMs = Number(process.env.WORKER_POLL_INTERVAL_MS ?? 5000)
 const maxAttempts = Number(process.env.WORKER_MAX_ATTEMPTS ?? 3)
 const cleanupIntervalMs = Number(process.env.WORKER_CLEANUP_INTERVAL_MS ?? 24 * 60 * 60 * 1000)
 const staleRunningJobSeconds = Number(process.env.WORKER_STALE_RUNNING_JOB_SECONDS ?? 15 * 60)
+const qqAuthSweepIntervalMs = Number(process.env.QQ_AUTH_SWEEP_INTERVAL_MS ?? 60 * 60 * 1000)
 
 const taggingProvider = createTaggingProvider()
 
 let stopping = false
 let nextCleanupAt = 0
+let nextQQAuthSweepAt = 0
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
@@ -126,6 +129,14 @@ function ensureCleanupTrackCacheJob(): void {
   })
 }
 
+async function processQQAuthSweep(): Promise<boolean> {
+  const now = Date.now()
+  if (now < nextQQAuthSweepAt) return false
+  nextQQAuthSweepAt = now + qqAuthSweepIntervalMs
+  await sweepQQAuthorizations()
+  return true
+}
+
 interface WorkerTickProcessors {
   processTagJob?: () => Promise<boolean>
   processArchiveTrackJob?: () => Promise<boolean>
@@ -133,13 +144,18 @@ interface WorkerTickProcessors {
   processCleanupResourceCacheJob?: () => Promise<boolean>
   processCleanupTrackCacheJob?: () => Promise<boolean>
   processRefreshUmCryptoJob?: () => Promise<boolean>
+  processQQAuthSweep?: () => Promise<boolean>
   scheduleCleanupResourceCacheJob?: boolean
+  scheduleQQAuthSweep?: boolean
 }
 
 export async function processWorkerTick(processors: WorkerTickProcessors = {}): Promise<boolean> {
   if (processors.scheduleCleanupResourceCacheJob !== false) {
     if (ensureCleanupResourceCacheJob()) ensureCleanupTrackCacheJob()
   }
+  const processedQQAuthSweep = processors.scheduleQQAuthSweep === false
+    ? false
+    : await (processors.processQQAuthSweep ?? processQQAuthSweep)()
   const processedRefreshUmCryptoJob = await (
     processors.processRefreshUmCryptoJob ?? (() => processOneRefreshUmCryptoJob(maxAttempts))
   )()
@@ -152,7 +168,8 @@ export async function processWorkerTick(processors: WorkerTickProcessors = {}): 
   const processedCleanupTrackCacheJob = await (
     processors.processCleanupTrackCacheJob ?? (() => processOneCleanupTrackCacheJob(maxAttempts))
   )()
-  return processedRefreshUmCryptoJob
+  return processedQQAuthSweep
+    || processedRefreshUmCryptoJob
     || processedArchiveTrackJob
     || processedTagJob
     || processedEmbySyncJob

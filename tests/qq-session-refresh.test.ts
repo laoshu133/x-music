@@ -6,6 +6,7 @@ import { clearQQLoginCookie, getStoredQQLoginState, saveQQLoginCookie } from '@/
 import { buildQQLoginState, parseQQAccessTokenExpiresAt, parseQQMusickeyCreatedAt, replaceQQCookieValues } from '@/lib/qq/account'
 import { getAccountQQAuthorizationRefreshDecision, refreshAccountQQAuthorization, refreshAccountQQAuthorizationIfNeeded } from '@/lib/qq/auth-refresh'
 import { requireActiveQQAccount } from '@/lib/qq/auth-state'
+import { QQMusicError, qqMusicErrorResponse } from '@/lib/qq/http'
 import { getQQUserProfile } from '@/lib/qq/user'
 import { refreshQQMusickey } from '@/lib/qq/session-refresh'
 
@@ -160,6 +161,48 @@ test('refreshAccountQQAuthorizationIfNeeded refreshes near-expiring account cook
   }
 })
 
+test('refreshAccountQQAuthorizationIfNeeded refreshes stale sessions even when access token expires later', async () => {
+  const expiresLater = Math.floor((Date.now() + 30 * 24 * 60 * 60 * 1000) / 1000)
+  db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('123468')
+  saveQQLoginCookie(`uin=o123468; qm_keyst=old-key; qqmusic_key=old-key; psrf_access_token_expiresAt=${expiresLater}`)
+  db.prepare(`
+    UPDATE accounts
+    SET
+      last_login_at = datetime('now', '-3 days'),
+      updated_at = datetime('now', '-3 days')
+    WHERE qq_uin = ?
+  `).run('123468')
+  const account = getAccountByQQ('123468')
+  assert.ok(account)
+
+  let refreshRequests = 0
+  globalThis.fetch = (async () => {
+    refreshRequests += 1
+    return Response.json({
+      code: 0,
+      'music.login.LoginServer.Login': {
+        code: 1000,
+        data: { musickey: 'far-expiry-next-key' },
+      },
+    })
+  }) as typeof fetch
+
+  try {
+    const result = await refreshAccountQQAuthorizationIfNeeded(account, {
+      refreshWindowMs: 7 * 24 * 60 * 60 * 1000,
+      maxAgeMs: 24 * 60 * 60 * 1000,
+      minIntervalMs: 0,
+    })
+
+    assert.equal(result.attempted, true)
+    assert.equal(result.refreshed, true)
+    assert.equal(result.account.qqmusicKey, 'far-expiry-next-key')
+    assert.equal(refreshRequests, 1)
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('123468')
+  }
+})
+
 test('refreshAccountQQAuthorizationIfNeeded refreshes aged account cookies without token expiry', async () => {
   db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('123463')
   saveQQLoginCookie('uin=o123463; qm_keyst=old-key; qqmusic_key=old-key')
@@ -269,24 +312,39 @@ test('getQQUserProfile accepts QQ homepage success code 1000', async () => {
   assert.equal(profileRequests, 1)
 })
 
-test('requireActiveQQAccount does not expire accounts for non-login homepage rejection', async () => {
+test('getQQUserProfile tolerates empty QQ homepage data', async () => {
+  globalThis.fetch = (async () => Response.json({
+    code: 1000,
+    subcode: 1000,
+    msg: '',
+    data: {},
+  })) as typeof fetch
+
+  const profile = await getQQUserProfile({
+    uin: '123469',
+    cookie: 'uin=o123469; qm_keyst=key',
+  })
+
+  assert.deepEqual(profile, { uin: '123469', nickname: undefined })
+})
+
+test('requireActiveQQAccount does not call QQ homepage for active fresh accounts', async () => {
   db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('123466')
   saveQQLoginCookie('uin=o123466; qm_keyst=old-key; qqmusic_key=old-key')
   const account = getAccountByQQ('123466')
   assert.ok(account)
 
-  globalThis.fetch = (async () => Response.json({
-    code: 1001,
-    subcode: 1001,
-    msg: 'temporary upstream validation failed',
-  })) as typeof fetch
+  let remoteRequests = 0
+  globalThis.fetch = (async () => {
+    remoteRequests += 1
+    throw new Error('unexpected remote request')
+  }) as typeof fetch
 
   try {
-    await assert.rejects(
-      () => requireActiveQQAccount(account, { force: true }),
-      /QQ user playlists request was rejected/,
-    )
+    const result = await requireActiveQQAccount(account)
+    assert.equal(result?.qqUin, '123466')
     assert.equal(getAccountByQQ('123466')?.qqAuthState, 'active')
+    assert.equal(remoteRequests, 0)
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('123466')
   }
@@ -415,13 +473,12 @@ test('refreshAccountQQAuthorizationIfNeeded skips accounts outside refresh windo
   }
 })
 
-test('requireActiveQQAccount force refreshes and retries once after auth rejection', async () => {
+test('requireActiveQQAccount force refreshes without calling QQ homepage', async () => {
   db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('123459')
   saveQQLoginCookie('uin=o123459; qm_keyst=old-key; qqmusic_key=old-key')
   const account = getAccountByQQ('123459')
   assert.ok(account)
 
-  let profileRequests = 0
   let refreshRequests = 0
   globalThis.fetch = (async (url: string | URL | Request) => {
     const requestUrl = String(url)
@@ -436,17 +493,7 @@ test('requireActiveQQAccount force refreshes and retries once after auth rejecti
       })
     }
 
-    profileRequests += 1
-    if (profileRequests === 1) return Response.json({ code: -1000, message: '请登录' })
-    return Response.json({
-      code: 0,
-      data: {
-        creator: {
-          nick: 'Retry User',
-          headpic: '',
-        },
-      },
-    })
+    throw new Error(`unexpected QQ homepage request: ${requestUrl}`)
   }) as typeof fetch
 
   try {
@@ -455,8 +502,37 @@ test('requireActiveQQAccount force refreshes and retries once after auth rejecti
     assert.equal(result?.qqmusicKey, 'retry-key')
     assert.equal(getAccountByQQ('123459')?.qqAuthState, 'active')
     assert.equal(refreshRequests, 1)
-    assert.equal(profileRequests, 2)
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('123459')
+  }
+})
+
+test('qqMusicErrorResponse hides backend details for server errors', async () => {
+  const originalLogging = process.env.X_MUSIC_REQUEST_LOGS
+  const originalConsoleError = console.error
+  const logs: string[] = []
+  process.env.X_MUSIC_REQUEST_LOGS = 'true'
+  console.error = (message?: unknown) => logs.push(String(message))
+  try {
+    const response = qqMusicErrorResponse(new QQMusicError('private upstream diagnostic', 502, {
+      code: 1001,
+      body: 'sensitive response body',
+    }))
+    const payload = await response.json()
+
+    assert.equal(response.status, 502)
+    assert.deepEqual(payload, {
+      error: '系统出错，请稍后重试。',
+      code: 'SYSTEM_ERROR',
+      actionable: '系统暂时无法完成请求，后台已记录错误。',
+    })
+    assert.equal(logs.length, 1)
+    assert.match(logs[0], /"event":"qq_music_error_response"/)
+    assert.match(logs[0], /"error":"private upstream diagnostic"/)
+    assert.doesNotMatch(logs[0], /sensitive response body/)
+  } finally {
+    console.error = originalConsoleError
+    if (originalLogging === undefined) delete process.env.X_MUSIC_REQUEST_LOGS
+    else process.env.X_MUSIC_REQUEST_LOGS = originalLogging
   }
 })

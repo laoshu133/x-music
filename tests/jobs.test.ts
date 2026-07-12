@@ -625,6 +625,7 @@ test('worker tick gives emby sync a turn when tag processing did work', async ()
   const calls: string[] = []
   const didWork = await processWorkerTick({
     scheduleCleanupResourceCacheJob: false,
+    scheduleQQAuthSweep: false,
     async processTagJob() {
       calls.push('tag')
       return true
@@ -651,6 +652,7 @@ test('worker tick processes queued UM crypto refresh jobs', async () => {
   const calls: string[] = []
   const didWork = await processWorkerTick({
     scheduleCleanupResourceCacheJob: false,
+    scheduleQQAuthSweep: false,
     async processRefreshUmCryptoJob() {
       calls.push('um')
       return true
@@ -675,6 +677,26 @@ test('worker tick processes queued UM crypto refresh jobs', async () => {
 
   assert.equal(didWork, true)
   assert.deepEqual(calls, ['um', 'tag', 'emby', 'cleanup', 'track-cleanup'])
+})
+
+test('worker tick runs the scheduled QQ authorization sweep', async () => {
+  const calls: string[] = []
+  const didWork = await processWorkerTick({
+    scheduleCleanupResourceCacheJob: false,
+    async processQQAuthSweep() {
+      calls.push('qq-auth')
+      return true
+    },
+    processRefreshUmCryptoJob: async () => false,
+    processArchiveTrackJob: async () => false,
+    processTagJob: async () => false,
+    processEmbySyncJob: async () => false,
+    processCleanupResourceCacheJob: async () => false,
+    processCleanupTrackCacheJob: async () => false,
+  })
+
+  assert.equal(didWork, true)
+  assert.deepEqual(calls, ['qq-auth'])
 })
 
 test('track cache cleanup removes stale staging and inbox files', async () => {
@@ -1054,6 +1076,7 @@ exports.detectAudioType = () => ({ audioType: 'mp3', needMore: false });
     enqueueRefreshUmCryptoJob({ reason: 'startup' })
     assert.equal(await processWorkerTick({
       scheduleCleanupResourceCacheJob: false,
+      scheduleQQAuthSweep: false,
       processTagJob: async () => false,
       processEmbySyncJob: async () => false,
       processCleanupResourceCacheJob: async () => false,
@@ -1063,6 +1086,7 @@ exports.detectAudioType = () => ({ audioType: 'mp3', needMore: false });
     enqueueRefreshUmCryptoJob({ reason: 'startup' })
     assert.equal(await processWorkerTick({
       scheduleCleanupResourceCacheJob: false,
+      scheduleQQAuthSweep: false,
       processTagJob: async () => false,
       processEmbySyncJob: async () => false,
       processCleanupResourceCacheJob: async () => false,
