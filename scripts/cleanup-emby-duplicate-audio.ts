@@ -1,5 +1,6 @@
 import '../src/lib/config'
 import { db } from '../src/lib/db'
+import { getAccountByEmbyUsername, listAccounts, type AccountRecord } from '../src/lib/db/accounts'
 import { embyAuthorizationHeader } from '../src/lib/emby/auth'
 
 interface EmbyItem {
@@ -38,7 +39,7 @@ const apply = args.has('--apply')
 const includeAll = args.has('--all')
 const limitArg = process.argv.find(arg => arg.startsWith('--limit='))
 const limit = limitArg ? Number(limitArg.slice('--limit='.length)) : undefined
-const qqUinArg = stringArg('--qq-uin')
+const usernameArg = stringArg('--username')
 const tokenArg = stringArg('--token')
 const deleteVia = stringArg('--delete-via') ?? 'webdav'
 const embyRootArg = stringArg('--emby-root')
@@ -120,7 +121,7 @@ Options:
   --limit=N          Process only the first N duplicate groups
   --delete-via=MODE  Delete through webdav (default) or emby
   --emby-root=PATH   Emby library root path when it is not cached, e.g. /volume2/music2
-  --qq-uin=UIN       Use this account's upstream Emby and WebDAV configuration
+  --username=NAME    Use this XMusic user's upstream Emby and WebDAV configuration
   --token=TOKEN      With --delete-via=emby, use this Emby user token`)
 }
 
@@ -337,31 +338,18 @@ function deleteAuthToken(): string {
 function readDeleteAuthToken(): string {
   if (tokenArg?.trim()) return tokenArg.trim()
 
-  const row = qqUinArg?.trim()
-    ? db.prepare(`
-      SELECT qq_uin AS qqUin, emby_username AS embyUsername, emby_access_token AS embyAccessToken
-      FROM accounts
-      WHERE qq_uin = ?
-      LIMIT 1
-    `).get(qqUinArg.trim()) as AccountTokenRow | undefined
-    : db.prepare(`
-      SELECT qq_uin AS qqUin, emby_username AS embyUsername, emby_access_token AS embyAccessToken
-      FROM accounts
-      WHERE emby_access_token IS NOT NULL AND emby_access_token != ''
-      ORDER BY updated_at DESC
-      LIMIT 1
-    `).get() as AccountTokenRow | undefined
+  const account = scriptAccount()
 
-  if (row?.embyAccessToken?.trim()) {
-    console.log(`Using Emby delete token from XMusic account ${row.qqUin} (${row.embyUsername}).`)
-    return row.embyAccessToken.trim()
+  if (account?.embyAccessToken?.trim()) {
+    console.log(`Using Emby delete token from XMusic user ${account.username}.`)
+    return account.embyAccessToken.trim()
   }
 
-  if (qqUinArg?.trim()) {
-    throw new Error(`No saved upstream Emby access token found for QQ account ${qqUinArg.trim()}. Re-login that account through XMusic or pass --token=TOKEN.`)
+  if (usernameArg?.trim()) {
+    throw new Error(`No saved upstream Emby access token found for XMusic user ${usernameArg.trim()}. Re-login that user through XMusic or pass --token=TOKEN.`)
   }
 
-  throw new Error('No saved upstream Emby access token found. Re-login any XMusic account, or pass --qq-uin=UIN / --token=TOKEN when using --apply.')
+  throw new Error('No saved upstream Emby access token found. Re-login an XMusic user, or pass --username=NAME / --token=TOKEN when using --apply.')
 }
 
 function scriptEmbyConfig(): ScriptEmbyConfig {
@@ -370,40 +358,27 @@ function scriptEmbyConfig(): ScriptEmbyConfig {
 }
 
 function readScriptEmbyConfig(): ScriptEmbyConfig {
-  const row = qqUinArg?.trim()
-    ? db.prepare(`
-      SELECT
-        qq_uin AS qqUin,
-        emby_dsn AS dsn,
-        emby_source_webdav_dsn AS sourceWebdavDsn,
-        emby_proxy_timeout_ms AS proxyTimeoutMs
-      FROM accounts
-      WHERE qq_uin = ?
-      LIMIT 1
-    `).get(qqUinArg.trim()) as AccountEmbyConfigRow | undefined
-    : db.prepare(`
-      SELECT
-        qq_uin AS qqUin,
-        emby_dsn AS dsn,
-        emby_source_webdav_dsn AS sourceWebdavDsn,
-        emby_proxy_timeout_ms AS proxyTimeoutMs
-      FROM accounts
-      WHERE emby_dsn IS NOT NULL AND emby_dsn != ''
-      ORDER BY updated_at DESC
-      LIMIT 1
-    `).get() as AccountEmbyConfigRow | undefined
-
-  if (!row?.dsn?.trim()) {
-    const suffix = qqUinArg?.trim() ? ` for QQ account ${qqUinArg.trim()}` : ''
-    throw new Error(`No account upstream Emby configuration found${suffix}. Configure it in the XMusic account Emby settings.`)
+  const account = scriptAccount()
+  if (!account?.embyDsn?.trim()) {
+    const suffix = usernameArg?.trim() ? ` for XMusic user ${usernameArg.trim()}` : ''
+    throw new Error(`No user upstream Emby configuration found${suffix}. Configure it in the XMusic Emby settings.`)
   }
-  const parsed = parseEmbyDsn(row.dsn)
-  console.log(`Using upstream Emby configuration from XMusic account ${row.qqUin}.`)
+  const parsed = parseEmbyDsn(account.embyDsn)
+  console.log(`Using upstream Emby configuration from XMusic user ${account.username}.`)
   return {
     ...parsed,
-    sourceWebdavDsn: row.sourceWebdavDsn?.trim() || undefined,
-    proxyTimeoutMs: row.proxyTimeoutMs && row.proxyTimeoutMs > 0 ? row.proxyTimeoutMs : 30000,
+    sourceWebdavDsn: account.embySourceWebdavDsn?.trim() || undefined,
+    proxyTimeoutMs: account.embyProxyTimeoutMs && account.embyProxyTimeoutMs > 0 ? account.embyProxyTimeoutMs : 30000,
   }
+}
+
+let cachedScriptAccount: AccountRecord | undefined
+function scriptAccount(): AccountRecord | undefined {
+  if (cachedScriptAccount) return cachedScriptAccount
+  cachedScriptAccount = usernameArg?.trim()
+    ? getAccountByEmbyUsername(usernameArg.trim())
+    : listAccounts().find(account => Boolean(account.embyDsn?.trim()))
+  return cachedScriptAccount
 }
 
 interface ScriptEmbyConfig {
@@ -451,20 +426,7 @@ function parseEmbyDsn(dsn: string): Pick<ScriptEmbyConfig, 'baseUrl' | 'username
   }
 }
 
-interface AccountEmbyConfigRow {
-  qqUin: string
-  dsn: string | null
-  sourceWebdavDsn: string | null
-  proxyTimeoutMs: number | null
-}
-
 let cachedScriptEmbyConfig: ScriptEmbyConfig | undefined
-
-interface AccountTokenRow {
-  qqUin: string
-  embyUsername: string
-  embyAccessToken: string | null
-}
 
 interface WebdavConfig {
   baseUrl: URL
@@ -556,11 +518,13 @@ function configuredLibraryRoots(): string[] {
 }
 
 function readConfiguredLibraryRoots(): string[] {
+  const account = scriptAccount()
+  if (!account) return embyRootArg?.trim() ? [normalizePath(embyRootArg.trim())] : []
   const rows = db.prepare(`
     SELECT value_json AS valueJson
     FROM app_settings
-    WHERE key IN ('emby.upstreamMusicLibraryMapping', 'emby.upstreamMusicLibraryIds')
-  `).all() as Array<{ valueJson: string }>
+    WHERE key = ?
+  `).all(`emby.upstreamMusicLibraryMapping.${account.userId}`) as Array<{ valueJson: string }>
 
   const roots: string[] = []
   for (const row of rows) {

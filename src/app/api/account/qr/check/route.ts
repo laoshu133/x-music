@@ -1,67 +1,29 @@
 import { NextResponse } from 'next/server'
-import { buildQQLoginState, checkQQLoginQr, qqMusicErrorResponse, summarizeQQLoginState } from '@/lib/qq'
-import { getAccountByQQ, refreshAccountQQProfile, summarizeAccount } from '@/lib/db/accounts'
-import { saveQQLoginCookie } from '@/lib/db/qq-session'
-import { setCurrentAccount } from '@/lib/session'
-import { readRequestIp } from '@/lib/request-ip'
+import { checkQQLoginQr, qqMusicErrorResponse } from '@/lib/qq'
+import { bindQQAuthorization, getAccountByUserId, refreshAccountQQProfile, summarizeAccount } from '@/lib/db/accounts'
+import { getCurrentAccount } from '@/lib/session'
+import { consumeQQAuthAttempt, readQQAuthAttempt } from '@/lib/db/qq-auth-attempts'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
-type CheckRequest = {
-  ptqrtoken?: string | number
-  qrsig?: string
-  persist?: boolean
-}
-
 export async function POST(request: Request) {
-  const contentType = request.headers.get('content-type') ?? ''
-  if (!contentType.includes('application/json')) {
-    return NextResponse.json({ error: 'POST /api/account/qr/check expects application/json' }, { status: 415 })
-  }
-
-  const body = (await request.json().catch(() => undefined)) as CheckRequest | undefined
-  if (!body?.ptqrtoken || !body.qrsig) {
-    return NextResponse.json({ error: 'Missing ptqrtoken or qrsig' }, { status: 400 })
-  }
-
+  const account = await getCurrentAccount({ verifyQQ: false })
+  if (!account) return NextResponse.json({ error: 'Login required', code: 'AUTH_REQUIRED' }, { status: 401 })
+  const body = await request.json().catch(() => undefined) as { attemptId?: string } | undefined
+  if (!body?.attemptId) return NextResponse.json({ error: 'Missing authorization attempt' }, { status: 400 })
   try {
-    const result = await checkQQLoginQr({
-      ptqrtoken: body.ptqrtoken,
-      qrsig: body.qrsig,
-    })
-
+    const attempt = readQQAuthAttempt<{ ptqrtoken: string | number; qrsig: string }>({ id: body.attemptId, userId: account.userId, method: 'qr' })
+    const result = await checkQQLoginQr(attempt)
     if (!result.isOk) return NextResponse.json(result)
-
-    if (body.persist !== false) {
-      const saved = saveQQLoginCookie(result.session.cookie, { loginIp: readRequestIp(request) })
-      await setCurrentAccount(saved.uin)
-      const profiledAccount = await refreshAccountQQProfile(saved.uin).catch(() => undefined)
-      const account = profiledAccount ?? getAccountByQQ(saved.uin)
-      const accountSummary = account ? summarizeAccount(account) : saved
-      return NextResponse.json({
-        ...result,
-        account: {
-          ...accountSummary,
-          emby: {
-            ...saved.emby,
-            ...accountSummary.emby,
-            userId: accountSummary.emby?.userId,
-          },
-          persisted: true,
-        },
-      })
-    }
-
-    const state = buildQQLoginState(result.session.cookie, 'request')
-    return NextResponse.json({
-      ...result,
-      account: {
-        ...summarizeQQLoginState(state),
-        persisted: false,
-      },
-    })
+    bindQQAuthorization(account.userId, result.session.cookie)
+    consumeQQAuthAttempt(account.userId, 'qr')
+    const refreshed = await refreshAccountQQProfile(account.userId).catch(() => undefined)
+    return NextResponse.json({ ...result, account: summarizeAccount(refreshed ?? getAccountByUserId(account.userId)!) })
   } catch (error) {
+    if (error instanceof Error && error.message === 'QQ_ALREADY_BOUND') {
+      return NextResponse.json({ error: 'This QQ account is already bound to another user', code: 'QQ_ALREADY_BOUND' }, { status: 409 })
+    }
     return qqMusicErrorResponse(error)
   }
 }

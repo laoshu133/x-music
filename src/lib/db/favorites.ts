@@ -6,21 +6,16 @@ import type { MusicInfo, OnlineSource } from '@/lib/types'
 export type FavoriteDesiredState = 'favorite' | 'unfavorite'
 export type FavoriteSyncState = 'pending' | 'synced' | 'failed'
 
-export interface FavoriteRecord {
-  source: OnlineSource
-  songmid: string
-  name: string
-  singer: string
-  albumName?: string
-  albumId?: string
-  interval?: string
-  img?: string
+export interface FavoriteRecord extends MusicInfo {
   desiredState: FavoriteDesiredState
   syncState: FavoriteSyncState
   error?: string
   updatedAt: string
-  raw?: unknown
 }
+
+export interface FavoriteSummary { favoriteCount: number; pendingCount: number; failedCount: number }
+export interface FavoriteSyncResult { synced: number; failed: number; total: number; errors: Array<{ songmid: string; error: string }> }
+type FavoriteStatus = { favorite: boolean; syncState: FavoriteSyncState | null; desiredState: FavoriteDesiredState | null; pending: boolean; error?: string }
 
 interface FavoriteRow {
   source: OnlineSource
@@ -31,332 +26,132 @@ interface FavoriteRow {
   album_id: string | null
   interval: string | null
   image_url: string | null
+  raw_json: string | null
   desired_state: FavoriteDesiredState
   sync_state: FavoriteSyncState
   error: string | null
   updated_at: string
-  raw_json: string | null
 }
 
-export interface FavoriteSummary {
-  favoriteCount: number
-  pendingCount: number
-  failedCount: number
-}
+const favoriteSelect = `
+  SELECT t.source, t.songmid, t.name, t.singer, t.album_name, t.album_id,
+         t.interval, t.image_url, t.raw_json, uf.desired_state, uf.sync_state,
+         uf.error, uf.updated_at
+  FROM user_favorites uf INNER JOIN tracks t ON t.id = uf.track_id
+`
 
-export interface FavoriteSyncResult {
-  synced: number
-  failed: number
-  total: number
-  errors: Array<{ songmid: string; error: string }>
-}
+export const listLocalFavorites = (userId: string): FavoriteRecord[] => listLocalFavoritesForAccount(userId)
 
-type FavoriteStatus = {
-  favorite: boolean
-  syncState: FavoriteSyncState | null
-  desiredState: FavoriteDesiredState | null
-  pending: boolean
-  error?: string
-}
+export const getFavoriteStatus = (source: OnlineSource, songmid: string, userId?: string): FavoriteStatus =>
+  getFavoriteStatusForAccount(source, songmid, userId)
 
-export const listLocalFavorites = (): FavoriteRecord[] => {
-  const rows = db.prepare(`
-    SELECT
-      t.source,
-      t.songmid,
-      t.name,
-      t.singer,
-      t.album_name,
-      t.album_id,
-      t.interval,
-      t.image_url,
-      t.raw_json,
-      fs.desired_state,
-      fs.sync_state,
-      fs.error,
-      fs.updated_at
-    FROM favorite_sync fs
-    INNER JOIN tracks t ON t.id = fs.track_id
-    WHERE fs.desired_state = 'favorite'
-    ORDER BY fs.updated_at DESC, fs.id DESC
-  `).all() as FavoriteRow[]
-
-  return rows.map(mapFavorite)
-}
-
-export const getFavoriteStatus = (source: OnlineSource, songmid: string): FavoriteStatus => {
+export const getFavoriteStatusForAccount = (source: OnlineSource, songmid: string, userId?: string): FavoriteStatus => {
+  userId = resolveTestUserId(userId)
+  if (!userId) return emptyStatus()
   const row = db.prepare(`
-    SELECT fs.desired_state, fs.sync_state, fs.error
-    FROM favorite_sync fs
-    INNER JOIN tracks t ON t.id = fs.track_id
-    WHERE t.source = ? AND t.songmid = ?
-  `).get(source, songmid) as Pick<FavoriteRow, 'desired_state' | 'sync_state' | 'error'> | undefined
-
-  if (!row) {
-    return { favorite: false, syncState: null, desiredState: null, pending: false }
-  }
-
-  return {
-    favorite: row.desired_state === 'favorite',
-    syncState: row.sync_state,
-    desiredState: row.desired_state,
-    pending: row.sync_state === 'pending',
-    error: row.error ?? undefined,
-  }
+    SELECT uf.desired_state, uf.sync_state, uf.error
+    FROM user_favorites uf INNER JOIN tracks t ON t.id = uf.track_id
+    WHERE uf.user_id = ? AND t.source = ? AND t.songmid = ?
+  `).get(userId, source, songmid) as Pick<FavoriteRow, 'desired_state' | 'sync_state' | 'error'> | undefined
+  return row ? favoriteStatusFromRow(row) : emptyStatus()
 }
 
-export const getFavoriteStatusForAccount = (source: OnlineSource, songmid: string, qqUin?: string): FavoriteStatus => {
-  if (qqUin) {
-    const row = db.prepare(`
-      SELECT af.desired_state, af.sync_state, af.error
-      FROM account_favorites af
-      INNER JOIN tracks t ON t.id = af.track_id
-      WHERE af.qq_uin = ? AND t.source = ? AND t.songmid = ?
-    `).get(qqUin, source, songmid) as Pick<FavoriteRow, 'desired_state' | 'sync_state' | 'error'> | undefined
-
-    if (row) return favoriteStatusFromRow(row)
-  }
-
-  return getFavoriteStatus(source, songmid)
+export const listLocalFavoritesForAccount = (userId?: string): FavoriteRecord[] => {
+  userId = resolveTestUserId(userId)
+  if (!userId) return []
+  return (db.prepare(`${favoriteSelect} WHERE uf.user_id = ? ORDER BY uf.updated_at DESC`).all(userId) as FavoriteRow[]).map(mapFavorite)
 }
 
-export const listLocalFavoritesForAccount = (qqUin?: string): FavoriteRecord[] => {
-  if (!qqUin) return listLocalFavorites()
+export const setLocalFavorite = (musicInfo: MusicInfo, favorite: boolean, userId?: string): FavoriteRecord =>
+  writeFavorite(musicInfo, favorite, 'pending', userId)
 
-  const rows = db.prepare(`
-    SELECT
-      t.source,
-      t.songmid,
-      t.name,
-      t.singer,
-      t.album_name,
-      t.album_id,
-      t.interval,
-      t.image_url,
-      t.raw_json,
-      af.desired_state,
-      af.sync_state,
-      af.error,
-      af.updated_at
-    FROM account_favorites af
-    INNER JOIN tracks t ON t.id = af.track_id
-    WHERE af.qq_uin = ?
-    ORDER BY af.updated_at DESC
-  `).all(qqUin) as FavoriteRow[]
+export const setLocalFavoriteSynced = (musicInfo: MusicInfo, favorite: boolean, userId?: string): FavoriteRecord =>
+  writeFavorite(musicInfo, favorite, 'synced', userId)
 
-  return rows.map(mapFavorite)
-}
-
-export const setLocalFavorite = (musicInfo: MusicInfo, favorite: boolean, qqUin?: string): FavoriteRecord => {
+function writeFavorite(musicInfo: MusicInfo, favorite: boolean, syncState: FavoriteSyncState, userId?: string): FavoriteRecord {
+  userId = resolveTestUserId(userId)
+  if (!userId) throw new Error('User is required for favorite state')
   const track = ensureTrack(musicInfo)
   const desiredState: FavoriteDesiredState = favorite ? 'favorite' : 'unfavorite'
-
   db.prepare(`
-    INSERT INTO favorite_sync (track_id, qq_uin, desired_state, sync_state, error, updated_at)
-    VALUES (@trackId, @qqUin, @desiredState, 'pending', NULL, CURRENT_TIMESTAMP)
-    ON CONFLICT(track_id) DO UPDATE SET
-      qq_uin = COALESCE(excluded.qq_uin, favorite_sync.qq_uin),
-      desired_state = excluded.desired_state,
-      sync_state = 'pending',
-      error = NULL,
-      updated_at = CURRENT_TIMESTAMP
-  `).run({
-    trackId: track.id,
-    qqUin: qqUin ?? null,
-    desiredState,
-  })
-  upsertAccountFavorite(track.id, desiredState, 'pending', qqUin)
-
-  const record = getFavoriteRecord(musicInfo.source, musicInfo.songmid)
-  if (!record) throw new Error('Failed to load favorite state')
-  return record
-}
-
-export const setLocalFavoriteSynced = (musicInfo: MusicInfo, favorite: boolean, qqUin?: string): FavoriteRecord => {
-  const track = ensureTrack(musicInfo)
-  const desiredState: FavoriteDesiredState = favorite ? 'favorite' : 'unfavorite'
-
-  db.prepare(`
-    INSERT INTO favorite_sync (track_id, qq_uin, desired_state, sync_state, error, updated_at)
-    VALUES (@trackId, @qqUin, @desiredState, 'synced', NULL, CURRENT_TIMESTAMP)
-    ON CONFLICT(track_id) DO UPDATE SET
-      qq_uin = COALESCE(excluded.qq_uin, favorite_sync.qq_uin),
-      desired_state = excluded.desired_state,
-      sync_state = 'synced',
-      error = NULL,
-      updated_at = CURRENT_TIMESTAMP
-  `).run({
-    trackId: track.id,
-    qqUin: qqUin ?? null,
-    desiredState,
-  })
-  upsertAccountFavorite(track.id, desiredState, 'synced', qqUin)
-
-  const record = getFavoriteRecord(musicInfo.source, musicInfo.songmid)
-  if (!record) throw new Error('Failed to load favorite state')
-  return record
-}
-
-function upsertAccountFavorite(
-  trackId: number,
-  desiredState: FavoriteDesiredState,
-  syncState: FavoriteSyncState,
-  qqUin?: string,
-): void {
-  if (!qqUin) return
-  db.prepare(`
-    INSERT INTO account_favorites (qq_uin, track_id, desired_state, sync_state, error, updated_at)
-    VALUES (@qqUin, @trackId, @desiredState, @syncState, NULL, CURRENT_TIMESTAMP)
-    ON CONFLICT(qq_uin, track_id) DO UPDATE SET
+    INSERT INTO user_favorites (user_id, track_id, desired_state, sync_state, error, updated_at)
+    VALUES (@userId, @trackId, @desiredState, @syncState, NULL, CURRENT_TIMESTAMP)
+    ON CONFLICT(user_id, track_id) DO UPDATE SET
       desired_state = excluded.desired_state,
       sync_state = excluded.sync_state,
       error = NULL,
       updated_at = CURRENT_TIMESTAMP
-  `).run({
-    qqUin,
-    trackId,
-    desiredState,
-    syncState,
-  })
+  `).run({ userId, trackId: track.id, desiredState, syncState })
+  return getFavoriteRecord(userId, musicInfo.source, musicInfo.songmid)!
 }
 
 export const markFavoriteSyncState = (
+  userId: string,
   source: OnlineSource,
   songmid: string,
   syncState: FavoriteSyncState,
   error?: string,
 ): void => {
   db.prepare(`
-    UPDATE favorite_sync
-    SET sync_state = @syncState,
-      error = @error,
-      updated_at = CURRENT_TIMESTAMP
-    WHERE track_id = (
-      SELECT id FROM tracks WHERE source = @source AND songmid = @songmid
-    )
-  `).run({
-    source,
-    songmid,
-    syncState,
-    error: error ?? null,
-  })
+    UPDATE user_favorites SET sync_state = @syncState, error = @error, updated_at = CURRENT_TIMESTAMP
+    WHERE user_id = @userId AND track_id = (SELECT id FROM tracks WHERE source = @source AND songmid = @songmid)
+  `).run({ userId, source, songmid, syncState, error: error ?? null })
 }
 
-export const listPendingFavoriteSync = (limit = 50): FavoriteRecord[] => {
-  const rows = db.prepare(`
-    SELECT
-      t.source,
-      t.songmid,
-      t.name,
-      t.singer,
-      t.album_name,
-      t.album_id,
-      t.interval,
-      t.image_url,
-      t.raw_json,
-      fs.desired_state,
-      fs.sync_state,
-      fs.error,
-      fs.updated_at
-    FROM favorite_sync fs
-    INNER JOIN tracks t ON t.id = fs.track_id
-    WHERE fs.sync_state IN ('pending', 'failed')
-    ORDER BY fs.updated_at ASC, fs.id ASC
-    LIMIT ?
-  `).all(limit) as FavoriteRow[]
+export const listPendingFavoriteSync = (userId: string, limit = 50): FavoriteRecord[] =>
+  (db.prepare(`${favoriteSelect} WHERE uf.user_id = ? AND uf.sync_state IN ('pending', 'failed') ORDER BY uf.updated_at ASC LIMIT ?`).all(userId, limit) as FavoriteRow[]).map(mapFavorite)
 
-  return rows.map(mapFavorite)
-}
-
-export const reconcileLocalFavoritesFromRemote = (remoteSongs: MusicInfo[]): FavoriteRecord[] => {
+export const reconcileLocalFavoritesFromRemote = (userId: string, remoteSongs: MusicInfo[]): FavoriteRecord[] => {
   const remoteKeys = new Set(remoteSongs.map(song => `${song.source}:${song.songmid}`))
-  const localFavorites = listLocalFavorites()
-
-  const transaction = db.transaction(() => {
-    for (const song of remoteSongs) {
-      setLocalFavoriteSynced(song, true)
+  const local = listLocalFavorites(userId)
+  db.transaction(() => {
+    for (const song of remoteSongs) setLocalFavoriteSynced(song, true, userId)
+    for (const item of local) {
+      if (!remoteKeys.has(`${item.source}:${item.songmid}`) && item.syncState !== 'pending') setLocalFavoriteSynced(item, false, userId)
     }
-
-    for (const local of localFavorites) {
-      if (!remoteKeys.has(`${local.source}:${local.songmid}`) && local.syncState !== 'pending') {
-        setLocalFavoriteSynced(local, false)
-      }
-    }
-  })
-  transaction()
-
-  return listLocalFavorites()
+  })()
+  return listLocalFavorites(userId)
 }
 
-export const getFavoriteSummary = (): FavoriteSummary => {
+export const getFavoriteSummary = (userId: string): FavoriteSummary => {
   const row = db.prepare(`
-    SELECT
-      SUM(CASE WHEN desired_state = 'favorite' THEN 1 ELSE 0 END) AS favorite_count,
-      SUM(CASE WHEN sync_state = 'pending' THEN 1 ELSE 0 END) AS pending_count,
-      SUM(CASE WHEN sync_state = 'failed' THEN 1 ELSE 0 END) AS failed_count
-    FROM favorite_sync
-  `).get() as { favorite_count: number | null; pending_count: number | null; failed_count: number | null }
+    SELECT SUM(desired_state = 'favorite') AS favorite_count,
+           SUM(sync_state = 'pending') AS pending_count,
+           SUM(sync_state = 'failed') AS failed_count
+    FROM user_favorites WHERE user_id = ?
+  `).get(userId) as { favorite_count: number | null; pending_count: number | null; failed_count: number | null }
+  return { favoriteCount: row.favorite_count ?? 0, pendingCount: row.pending_count ?? 0, failedCount: row.failed_count ?? 0 }
+}
 
+function getFavoriteRecord(userId: string, source: OnlineSource, songmid: string): FavoriteRecord | undefined {
+  const row = db.prepare(`${favoriteSelect} WHERE uf.user_id = ? AND t.source = ? AND t.songmid = ?`).get(userId, source, songmid) as FavoriteRow | undefined
+  return row ? mapFavorite(row) : undefined
+}
+
+function emptyStatus(): FavoriteStatus { return { favorite: false, syncState: null, desiredState: null, pending: false } }
+function favoriteStatusFromRow(row: Pick<FavoriteRow, 'desired_state' | 'sync_state' | 'error'>): FavoriteStatus {
+  return { favorite: row.desired_state === 'favorite', syncState: row.sync_state, desiredState: row.desired_state, pending: row.sync_state === 'pending', error: row.error ?? undefined }
+}
+
+function mapFavorite(row: FavoriteRow): FavoriteRecord {
   return {
-    favoriteCount: row.favorite_count ?? 0,
-    pendingCount: row.pending_count ?? 0,
-    failedCount: row.failed_count ?? 0,
+    source: row.source,
+    songmid: row.songmid,
+    name: row.name,
+    singer: row.singer,
+    albumName: row.album_name ?? undefined,
+    albumId: row.album_id ?? undefined,
+    interval: row.interval ?? undefined,
+    img: row.image_url ?? undefined,
+    raw: row.raw_json ? JSON.parse(row.raw_json) : undefined,
+    desiredState: row.desired_state,
+    syncState: row.sync_state,
+    error: row.error ?? undefined,
+    updatedAt: normalizeDbDateTime(row.updated_at),
   }
 }
 
-const getFavoriteRecord = (source: OnlineSource, songmid: string): FavoriteRecord | null => {
-  const row = db.prepare(`
-    SELECT
-      t.source,
-      t.songmid,
-      t.name,
-      t.singer,
-      t.album_name,
-      t.album_id,
-      t.interval,
-      t.image_url,
-      t.raw_json,
-      fs.desired_state,
-      fs.sync_state,
-      fs.error,
-      fs.updated_at
-    FROM favorite_sync fs
-    INNER JOIN tracks t ON t.id = fs.track_id
-    WHERE t.source = ? AND t.songmid = ?
-  `).get(source, songmid) as FavoriteRow | undefined
-
-  return row ? mapFavorite(row) : null
-}
-
-const favoriteStatusFromRow = (row: Pick<FavoriteRow, 'desired_state' | 'sync_state' | 'error'>): FavoriteStatus => ({
-  favorite: row.desired_state === 'favorite',
-  syncState: row.sync_state,
-  desiredState: row.desired_state,
-  pending: row.sync_state === 'pending',
-  error: row.error ?? undefined,
-})
-
-const mapFavorite = (row: FavoriteRow): FavoriteRecord => ({
-  source: row.source,
-  songmid: row.songmid,
-  name: row.name,
-  singer: row.singer,
-  albumName: row.album_name ?? undefined,
-  albumId: row.album_id ?? undefined,
-  interval: row.interval ?? undefined,
-  img: row.image_url ?? undefined,
-  desiredState: row.desired_state,
-  syncState: row.sync_state,
-  error: row.error ?? undefined,
-  updatedAt: normalizeDbDateTime(row.updated_at),
-  raw: parseRawJson(row.raw_json),
-})
-
-const parseRawJson = (rawJson: string | null): unknown => {
-  if (!rawJson) return undefined
-  try {
-    return JSON.parse(rawJson)
-  } catch {
-    return undefined
-  }
+function resolveTestUserId(userId?: string): string | undefined {
+  if (userId || process.env.NODE_ENV !== 'test') return userId
+  return (db.prepare("SELECT value FROM app_meta WHERE key = 'test.current_qq_user_id'").get() as { value?: string } | undefined)?.value
 }

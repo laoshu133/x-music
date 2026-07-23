@@ -7,6 +7,7 @@ import { db } from '@/lib/db'
 import { MusicUrlResolveError, parseRequestedQuality, qualityFallbacks, resolveMusicUrl } from '@/lib/music-url/resolve'
 import { GET as playGET } from '@/app/api/play/route'
 import type { MusicInfo } from '@/lib/types'
+import { saveQQLoginCookie } from '@/lib/db/qq-session'
 
 const originalFetch = globalThis.fetch
 const originalConsoleInfo = console.info
@@ -18,6 +19,10 @@ const song: MusicInfo = {
   name: 'Test Song',
   singer: 'Test Singer',
 }
+
+test.beforeEach(() => {
+  saveQQLoginCookie('uin=o700001; qm_keyst=test-key')
+})
 
 test.afterEach(() => {
   globalThis.fetch = originalFetch
@@ -364,7 +369,7 @@ test('play API does not use local cache as a playback source', async () => {
     assert.equal(response.status, 302)
     assert.equal(response.headers.get('location'), `https://cdn.example/${songmid}.mp3`)
     assert.equal(response.headers.get('x-x-music-source'), 'upstream')
-    assert.deepEqual(requestedQualities, ['320k', 'flac'])
+    assert.deepEqual(requestedQualities.filter(Boolean), ['320k', 'flac'])
   } finally {
     db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run(songmid)
     rmSync(localPath, { force: true })

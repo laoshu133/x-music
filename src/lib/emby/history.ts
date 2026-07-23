@@ -45,7 +45,7 @@ export async function pullEmbyPlayHistory(input: {
     }
 
     const track = ensureTrack(song)
-    insertPlayEvent(track.id, '320k', account.qqUin, lastPlayedAt)
+    insertPlayEvent(track.id, '320k', account.userId, lastPlayedAt)
     pulled += 1
 
     if (input.syncQQ !== false) {
@@ -76,7 +76,7 @@ export async function pullEmbyPlayHistory(input: {
 
   return {
     source: 'emby',
-    list: listPlayHistory(input.limit ?? 50),
+    list: listPlayHistory(account.userId, input.limit ?? 50),
     pulled,
     qqSynced,
     qqFailed,
@@ -97,11 +97,11 @@ export async function pushLocalPlayHistoryToEmby(input: {
   errors: Array<{ songmid: string; error: string }>
 }> {
   const embyUserId = input.account?.embyUserId
-  if (!embyUserId) {
+  if (!input.account || !embyUserId) {
     return { source: 'emby', attempted: 0, synced: 0, failed: 0, skipped: 0, errors: [] }
   }
 
-  const events = listPlayHistory(input.limit ?? 200)
+  const events = listPlayHistory(input.account.userId, input.limit ?? 200)
   const errors: Array<{ songmid: string; error: string }> = []
   let synced = 0
   let skipped = 0
@@ -135,8 +135,9 @@ export async function pushLocalPlayHistoryToEmby(input: {
 }
 
 function mappedEmbyItemId(song: Pick<MusicInfo, 'source' | 'songmid'>, account?: AccountRecord): string | undefined {
+  if (!account) return undefined
   return getRemoteMapping({
-    qqUin: account?.qqUin,
+    userId: account.userId,
     localType: 'track',
     localKey: `${song.source}:${song.songmid}`,
     remote: 'emby',

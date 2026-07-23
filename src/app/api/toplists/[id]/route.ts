@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { getQQToplistDetail } from '@/lib/qq'
+import { isAuthResponse, requireUserAccount } from '@/lib/api-auth'
 
 export const runtime = 'nodejs'
 
@@ -13,6 +14,8 @@ export async function GET(
   request: Request,
   context: { params: Promise<{ id: string }> },
 ) {
+  const account = await requireUserAccount()
+  if (isAuthResponse(account)) return account
   const { id } = await context.params
   const { searchParams } = new URL(request.url)
   const page = getPositiveInt(searchParams.get('page'), 1, 1000)

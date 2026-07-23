@@ -122,6 +122,6 @@ export const upsertTrackFile = (input: {
   return row
 }
 
-export const recordPlayEvent = (trackId: number, quality: MusicQuality, qqUin?: string) => {
-  db.prepare('INSERT INTO play_events (track_id, quality, qq_uin) VALUES (?, ?, ?)').run(trackId, quality, qqUin ?? null)
+export const recordPlayEvent = (trackId: number, quality: MusicQuality, userId: string) => {
+  db.prepare('INSERT INTO play_events (user_id, track_id, quality) VALUES (?, ?, ?)').run(userId, trackId, quality)
 }

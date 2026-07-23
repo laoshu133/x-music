@@ -22,7 +22,7 @@ import {
 } from '@/lib/qq'
 import { getFavoriteStatusForAccount, listLocalFavoritesForAccount, setLocalFavorite, setLocalFavoriteSynced } from '@/lib/db/favorites'
 import type { MusicInfo, MusicQuality, PlayHistoryRecord, QQPlaylistInfo, TrackRecord } from '@/lib/types'
-import { enqueueEmbyTrackSync } from './sync'
+import { enqueueEmbyTrackSync, enqueuePendingEmbyTrackSyncs, requestUserTrackSync } from './sync'
 import { hasEmbySyncableCachedMedia } from './sync-worker'
 import { logServiceEvent, markRequestSource, safeRequestPath } from '@/lib/request-log'
 import { albumVirtualId, decodeVirtualId, encodeVirtualId, genreVirtualId, playlistVirtualId, songVirtualId, type VirtualId } from './virtual-ids'
@@ -42,7 +42,7 @@ import { deleteRemoteMapping, getRemoteMapping, getRemoteMappingByRemote, upsert
 import { deleteEmbyItems, fetchEmbyJson, fetchEmbyText, searchEmbyAudioByName, searchEmbyPlaylistByName } from './upstream-api'
 import { proxyToUpstreamEmby } from './upstream-proxy'
 import { ensureEmbyMasterCachedBestEffort } from './master'
-import { getAccountByEmbyUsername, getAccountByEmbyUserId, getAccountByQQ, listAccounts, markAccountActive, markAccountLogin, type AccountRecord } from '@/lib/db/accounts'
+import { getAccountByEmbyUsername, getAccountByEmbyUserId, listAccounts, markAccountActive, markAccountLogin, type AccountRecord } from '@/lib/db/accounts'
 import { getDefaultUpstreamMusicLibraryId, hasUpstreamEmbyConfigured } from './auth'
 import { embyConfigForAccount } from './config'
 import { QQAuthExpiredError, qqAuthExpiredResponse, requireActiveQQAccount } from '@/lib/qq/auth-state'
@@ -78,7 +78,7 @@ import {
 import crypto from 'node:crypto'
 import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
-import { createLocalAccessToken } from './tokens'
+import { createLocalAccessToken, findAccountByAccessToken, localEmbyUserId } from './tokens'
 import { readClientAccessToken } from './client-compat'
 import { readRequestIp } from '@/lib/request-ip'
 import fs from 'node:fs'
@@ -480,8 +480,15 @@ async function handleAuthenticateByName(request: Request): Promise<Response> {
     return Response.json({ error: 'Invalid username or password' }, { status: 401 })
   }
 
+  try {
+    await requireActiveQQAccount(account)
+  } catch (error) {
+    if (error instanceof QQAuthExpiredError) return qqAuthExpiredResponse(error)
+    throw error
+  }
+
   const accessToken = createLocalAccessToken(account)
-  markAccountLogin(account.qqUin, readRequestIp(request))
+  markAccountLogin(account.userId, readRequestIp(request))
   return localAuthenticateResponse(account, accessToken)
 }
 
@@ -547,9 +554,9 @@ async function authorizeLocalRequest(request: Request): Promise<AccountRecord | 
   if (cached) return cached
   const token = readClientAccessToken(request)
   if (!token) return undefined
-  const account = listAccounts().find(account => token === createLocalAccessToken(account))
+  const account = findAccountByAccessToken(token)
   if (!account) return undefined
-  markAccountActive(account.qqUin)
+  markAccountActive(account.userId)
   const verified = await requireActiveQQAccount(account)
   if (verified) authorizedAccountByRequest.set(request, verified)
   return verified
@@ -564,16 +571,16 @@ function accountForUpstreamFallback(request: Request): AccountRecord | undefined
   if (account) return account
   const token = readClientAccessToken(request)
   if (!token) return undefined
-  const matched = listAccounts().find(account => token === createLocalAccessToken(account))
-  if (matched) markAccountActive(matched.qqUin)
+  const matched = findAccountByAccessToken(token)
+  if (matched) markAccountActive(matched.userId)
   return matched
 }
 
 function subsonicAccountForRequest(request: Request): AccountRecord | undefined {
   const username = new URL(request.url).searchParams.get('u')?.trim()
   if (!username) return undefined
-  const account = getAccountByEmbyUsername(username) ?? getAccountByQQ(username.replace(/^QQ/i, ''))
-  if (account) markAccountActive(account.qqUin)
+  const account = getAccountByEmbyUsername(username)
+  if (account) markAccountActive(account.userId)
   return account
 }
 
@@ -594,7 +601,7 @@ function pathEquals(path: string, expected: string): boolean {
 }
 
 function localUserId(account: AccountRecord): string {
-  return account.embyUserId ?? crypto.createHash('sha1').update(`${LOCAL_SERVER_ID}:${account.qqUin}:${account.embyUsername}`).digest('hex')
+  return localEmbyUserId(account.userId)
 }
 
 function handlePublicUsers(): Response {
@@ -667,21 +674,21 @@ function remoteIdForVirtualItem(decoded: VirtualId, account?: AccountRecord): st
 
 function remoteMappingForVirtualItem(decoded: VirtualId, account?: AccountRecord): RemoteMappingRecord | undefined {
   if (decoded.kind === 'qq-playlist') {
-    return getRemoteMapping({ qqUin: account?.qqUin, localType: 'playlist', localKey: `qq:${decoded.id}`, remote: 'emby' })
+    return getRemoteMapping({ userId: account?.userId, localType: 'playlist', localKey: `qq:${decoded.id}`, remote: 'emby' })
   }
   if (decoded.kind === 'qq-song') {
-    return getRemoteMapping({ qqUin: account?.qqUin, localType: 'track', localKey: `tx:${decoded.songmid}`, remote: 'emby' })
+    return getRemoteMapping({ userId: account?.userId, localType: 'track', localKey: `tx:${decoded.songmid}`, remote: 'emby' })
   }
   return undefined
 }
 
 function forgetRemoteMappingForVirtualItem(decoded: VirtualId, mapping?: RemoteMappingRecord): void {
-  const qqUin = mapping?.qqUin
+  const userId = mapping?.userId
   const remoteId = mapping?.remoteId
   if (decoded.kind === 'qq-playlist') {
-    deleteRemoteMapping({ qqUin, localType: 'playlist', localKey: `qq:${decoded.id}`, remote: 'emby', remoteId })
+    deleteRemoteMapping({ userId, localType: 'playlist', localKey: `qq:${decoded.id}`, remote: 'emby', remoteId })
   } else if (decoded.kind === 'qq-song') {
-    deleteRemoteMapping({ qqUin, localType: 'track', localKey: `tx:${decoded.songmid}`, remote: 'emby', remoteId })
+    deleteRemoteMapping({ userId, localType: 'track', localKey: `tx:${decoded.songmid}`, remote: 'emby', remoteId })
   }
 }
 
@@ -702,7 +709,7 @@ async function handleFavoriteItemMutationRequest(request: Request, itemId: strin
       const tracked = getTrack('tx', decoded.songmid)
       if (tracked) {
         const song = trackRecordToMusicInfo(tracked)
-        setLocalFavorite(song, false, account?.qqUin)
+        setLocalFavorite(song, false, account?.userId)
         await syncMappedEmbyFavoriteBestEffort(account, song, false)
       }
       return favoriteItemMutationResponse(itemId, false)
@@ -710,7 +717,7 @@ async function handleFavoriteItemMutationRequest(request: Request, itemId: strin
     return Response.json({ error: 'Virtual song not found' }, { status: 404 })
   }
 
-  setLocalFavorite(loaded.song, favorite, account?.qqUin)
+  setLocalFavorite(loaded.song, favorite, account?.userId)
   if (favorite) enqueueArchiveAndSyncForSong(account, loaded.song, 'favorite', decoded.playlistId ?? loaded.playlistId)
 
   try {
@@ -720,7 +727,7 @@ async function handleFavoriteItemMutationRequest(request: Request, itemId: strin
       favorited: favorite,
       raw: loaded.song.raw,
     })
-    setLocalFavoriteSynced(loaded.song, favorite, account?.qqUin)
+    setLocalFavoriteSynced(loaded.song, favorite, account?.userId)
   } catch (error) {
     console.warn(
       `QQ favorite ${favorite ? 'add' : 'remove'} sync deferred for ${loaded.song.songmid}: ${error instanceof Error ? error.message : String(error)}`,
@@ -745,7 +752,7 @@ function favoriteItemMutationResponse(itemId: string, favorite: boolean): Respon
 }
 
 function getMappedSongmidForEmbyItemId(itemId: string, account?: AccountRecord): string | undefined {
-  const mapping = getRemoteMappingByRemote({ qqUin: account?.qqUin, remote: 'emby', remoteId: itemId })
+  const mapping = getRemoteMappingByRemote({ userId: account?.userId, remote: 'emby', remoteId: itemId })
   if (mapping?.localType !== 'track') return undefined
   return mapping.localKey.match(/^tx:(.+)$/)?.[1]
 }
@@ -1198,7 +1205,7 @@ async function handlePlaybackReportRequest(request: Request, embyPath: string): 
     const playableQuality = playableQualityForSong(stored.song)
     const quality = playableQuality ?? '320k'
     const track = ensureTrack(stored.song)
-    insertPlayEvent(track.id, quality, account?.qqUin)
+    insertPlayEvent(track.id, quality, account?.userId)
     enqueueArchiveAndSyncForSong(account, stored.song, 'playback_completed', decoded.playlistId ?? stored.playlistId)
   }
 
@@ -1211,21 +1218,21 @@ function enqueueArchiveAndSyncForSong(
   reason: 'playback_completed' | 'favorite',
   playlistId?: string,
 ): void {
-  if (!shouldArchiveForAccount(account)) return
+  if (!account || !shouldArchiveForAccount(account)) return
+  const track = ensureTrack(musicInfo)
+  requestUserTrackSync(account.userId, track.id, reason)
   enqueueTrackArchive({
     source: musicInfo.source,
     songmid: musicInfo.songmid,
     musicInfo,
-    qqUin: account?.qqUin,
     reason,
     playlistId,
   })
-  enqueueEmbyTrackSync({
+  enqueueEmbyTrackSync(account.userId, {
     source: musicInfo.source,
     songmid: musicInfo.songmid,
     playlistId,
     musicInfo,
-    qqUin: account?.qqUin,
     allowCachedQualityFallback: true,
   })
 }
@@ -1480,10 +1487,10 @@ async function handlePlaylistItemsRequest(request: Request, embyPath: string): P
 
   if (decoded.kind === 'qq-playlist') {
     const playlist = loadVirtualPlaylist(decoded.id)
-    const mapped = getRemoteMapping({ qqUin: account?.qqUin, localType: 'playlist', localKey: `qq:${decoded.id}`, remote: 'emby' })?.remoteId
+    const mapped = getRemoteMapping({ userId: account?.userId, localType: 'playlist', localKey: `qq:${decoded.id}`, remote: 'emby' })?.remoteId
       ?? (playlist ? await searchEmbyPlaylistByName(playlist.name, { account }).catch(() => undefined) : undefined)
     if (mapped) {
-      upsertRemoteMapping({ qqUin: account?.qqUin, localType: 'playlist', localKey: `qq:${decoded.id}`, remote: 'emby', remoteId: mapped, raw: playlist })
+      upsertRemoteMapping({ userId: account?.userId, localType: 'playlist', localKey: `qq:${decoded.id}`, remote: 'emby', remoteId: mapped, raw: playlist })
       if (hasUpstreamEmbyConfigured(account)) return proxyToUpstreamEmby(request, `/Playlists/${encodeURIComponent(mapped)}/Items`)
     }
   }
@@ -1501,10 +1508,10 @@ async function handlePlaylistItemsMutationRequest(request: Request, embyPath: st
   if (!hasUpstreamEmbyConfigured(account)) return undefined
 
   const playlist = loadVirtualPlaylist(decoded.id)
-  const mappedPlaylistId = getRemoteMapping({ qqUin: account?.qqUin, localType: 'playlist', localKey: `qq:${decoded.id}`, remote: 'emby' })?.remoteId
+  const mappedPlaylistId = getRemoteMapping({ userId: account?.userId, localType: 'playlist', localKey: `qq:${decoded.id}`, remote: 'emby' })?.remoteId
     ?? (playlist ? await searchEmbyPlaylistByName(playlist.name, { account }).catch(() => undefined) : undefined)
   if (!mappedPlaylistId) return undefined
-  upsertRemoteMapping({ qqUin: account?.qqUin, localType: 'playlist', localKey: `qq:${decoded.id}`, remote: 'emby', remoteId: mappedPlaylistId, raw: playlist })
+  upsertRemoteMapping({ userId: account?.userId, localType: 'playlist', localKey: `qq:${decoded.id}`, remote: 'emby', remoteId: mappedPlaylistId, raw: playlist })
 
   const rewritten = await rewritePlaylistItemsMutationRequest(request, account)
   return proxyToUpstreamEmby(rewritten, `/Playlists/${encodeURIComponent(mappedPlaylistId)}/Items`)
@@ -1652,7 +1659,8 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
     const resolved = await resolvePlayableUpstreamResponse(musicInfo, preferredQuality, track, request, {
       allowFullFallback: shouldAllowFullAudioFallback(request),
     })
-    insertPlayEvent(track.id, resolved.quality, authorizedLocalAccount(request)?.qqUin)
+    const account = authorizedLocalAccount(request)
+    insertPlayEvent(track.id, resolved.quality, account?.userId)
     syncQQPlayHistoryBestEffort({
       cookie: qqCookieForRequest(request),
       musicInfo,
@@ -1660,12 +1668,11 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
       playUrl: resolved.url,
     })
     if (hasSyncableEmbyMedia(musicInfo)) {
-      enqueueEmbyTrackSync({
+      if (account) enqueueEmbyTrackSync(account.userId, {
         source: musicInfo.source,
         songmid: musicInfo.songmid,
         playlistId: decoded.playlistId ?? stored.playlistId,
         musicInfo,
-        qqUin: authorizedLocalAccount(request)?.qqUin,
       })
     } else if (!isHighestAvailableQuality(musicInfo, resolved.quality)) {
       ensureEmbyMasterCachedBestEffort({ musicInfo, track })
@@ -1784,13 +1791,13 @@ function syncedWebdavPlaybackCandidates(musicInfo: MusicInfo, preferredQuality: 
   for (const row of rows) {
     try {
       const payload = JSON.parse(row.payloadJson) as {
-        qqUin?: string
+        userId?: string
         source?: string
         songmid?: string
         embyPath?: string
       }
       if (payload.source !== musicInfo.source || payload.songmid !== musicInfo.songmid) continue
-      if ((payload.qqUin ?? '') !== (account?.qqUin ?? '')) continue
+      if ((payload.userId ?? '') !== (account?.userId ?? '')) continue
       const relativePath = payload.embyPath?.replace(/^\/+/, '')
       if (relativePath) result.push({ quality, relativePath })
     } catch {
@@ -1908,7 +1915,7 @@ async function resolvePlayableUpstreamResponse(
         resolved.ekey,
         {
           librarySync: shouldSyncResolvedQualityToEmby(musicInfo, preferredQuality, resolved.quality, attempts),
-          qqUin: authorizedLocalAccount(request)?.qqUin,
+          userId: authorizedLocalAccount(request)?.userId,
         },
       )
       return {
@@ -2026,7 +2033,7 @@ async function resolveSongVirtualId(itemId: string, account?: AccountRecord): Pr
   if (remote) {
     rememberVirtualSong(remote)
     upsertRemoteMapping({
-      qqUin: account?.qqUin,
+      userId: account?.userId,
       localType: 'track',
       localKey: `${remote.source}:${remote.songmid}`,
       remote: 'emby',
@@ -2051,7 +2058,7 @@ function localSongmidForExternalItemId(itemId: string, account?: AccountRecord):
 }
 
 function mappingForExternalTrackItemId(itemId: string, account?: AccountRecord): RemoteMappingRecord | undefined {
-  const mapping = getRemoteMappingByRemote({ qqUin: account?.qqUin, remote: 'emby', remoteId: itemId })
+  const mapping = getRemoteMappingByRemote({ userId: account?.userId, remote: 'emby', remoteId: itemId })
   return mapping?.localType === 'track' ? mapping : undefined
 }
 
@@ -2079,9 +2086,9 @@ function songmidFromTrackMapping(mapping: Pick<RemoteMappingRecord, 'localKey'>)
   return mapping.localKey.match(/^tx:(.+)$/)?.[1]
 }
 
-function deleteStaleTrackMapping(mapping: Pick<RemoteMappingRecord, 'qqUin' | 'localType' | 'localKey' | 'remote' | 'remoteId' | 'rawJson'>): void {
+function deleteStaleTrackMapping(mapping: Pick<RemoteMappingRecord, 'userId' | 'localType' | 'localKey' | 'remote' | 'remoteId' | 'rawJson'>): void {
   rememberStaleEmbyTrackAlias(mapping)
-  deleteRemoteMapping({ qqUin: mapping.qqUin, localType: mapping.localType, localKey: mapping.localKey, remote: mapping.remote, remoteId: mapping.remoteId })
+  deleteRemoteMapping({ userId: mapping.userId, localType: mapping.localType, localKey: mapping.localKey, remote: mapping.remote, remoteId: mapping.remoteId })
 }
 
 function isUsableUpstreamResponse(response: Response | undefined): response is Response {
@@ -2206,7 +2213,7 @@ function qqCookieForRequest(request: Request): string | undefined {
 }
 
 function validEmbyTrackMapping(musicInfo: MusicInfo, account?: AccountRecord): string | undefined {
-  const mapping = getRemoteMapping({ qqUin: account?.qqUin, localType: 'track', localKey: `${musicInfo.source}:${musicInfo.songmid}`, remote: 'emby' })
+  const mapping = getRemoteMapping({ userId: account?.userId, localType: 'track', localKey: `${musicInfo.source}:${musicInfo.songmid}`, remote: 'emby' })
   if (!mapping?.remoteId) return undefined
   if (!mapping.rawJson) return undefined
   try {
@@ -2229,7 +2236,7 @@ async function resolveEmbyTrackMapping(musicInfo: MusicInfo, account?: AccountRe
     ?? await searchEmbyAudioByName(musicInfo, { account }).catch(() => undefined)
   if (!mapped) return undefined
   upsertRemoteMapping({
-    qqUin: account?.qqUin,
+    userId: account?.userId,
     localType: 'track',
     localKey: `${musicInfo.source}:${musicInfo.songmid}`,
     remote: 'emby',
@@ -2471,7 +2478,7 @@ async function readCachedValue<T>(
 
 function localLibraryCacheKey(request: Request): string {
   const account = authorizedLocalAccount(request)
-  if (account?.qqUin) return `account:${account.qqUin}`
+  if (account?.userId) return `account:${account.userId}`
   return favoriteCacheKey(qqCookieForRequest(request))
 }
 
@@ -2548,9 +2555,9 @@ async function listQQFavoriteSongs(request: Request, limit: number): Promise<Win
 
 function localFavoriteStateForRequest(request: Request): Map<string, ReturnType<typeof getFavoriteStatusForAccount> & { song?: MusicInfo }> {
   const account = authorizedLocalAccount(request)
-  const local = listLocalFavoritesForAccount(account?.qqUin)
+  const local = listLocalFavoritesForAccount(account?.userId)
   return new Map(local.map(record => [`${record.source}:${record.songmid}`, {
-    ...getFavoriteStatusForAccount(record.source, record.songmid, account?.qqUin),
+    ...getFavoriteStatusForAccount(record.source, record.songmid, account?.userId),
     song: record,
   }]))
 }
@@ -2647,8 +2654,9 @@ async function getQQDailyRecommendationsWindow(limit: number): Promise<WindowRes
 }
 
 function localPlayHistoryToEmbyItems(limit: number, account?: AccountRecord): any[] {
+  if (!account) return []
   const grouped = new Map<string, { song: PlayHistoryRecord; playCount: number; lastPlayedAt: string }>()
-  for (const event of listPlayHistory(limit)) {
+  for (const event of listPlayHistory(account.userId, limit)) {
     const key = `${event.source}:${event.songmid}`
     const existing = grouped.get(key)
     if (existing) {
@@ -3314,13 +3322,7 @@ async function persistQQLyricsToLocalCache(song: MusicInfo | undefined, lyrics: 
     lyricsPath,
   })
 
-  if (hasSyncableEmbyMedia(song)) {
-    enqueueEmbyTrackSync({
-      source: song.source,
-      songmid: song.songmid,
-      musicInfo: song,
-    })
-  }
+  enqueuePendingEmbyTrackSyncs(song)
 }
 
 function firstWritableTrackFile(song: Pick<MusicInfo, 'source' | 'songmid'>): ReturnType<typeof getPlayableTrackFile> {

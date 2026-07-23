@@ -38,6 +38,7 @@ async function CallbackContent({
         {code ? (
           <form className="auth-actions" action="/api/account/mobile/exchange" method="post">
             <input type="hidden" name="code" value={code} />
+            <input type="hidden" name="state" value={state ?? ''} />
             <button type="submit">
               <KeyRound size={16} />
               完成登录

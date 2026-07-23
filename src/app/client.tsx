@@ -32,7 +32,6 @@ import {
   UserRound,
 } from 'lucide-react'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { buildQQMobileAuthorizeUrl, randomAuthState } from '@/lib/qq/mobile-auth'
 
 type View = 'home' | 'player' | 'config' | 'status' | 'users' | 'jobs'
 
@@ -49,10 +48,10 @@ const emptyState = <T,>(): ApiState<T> => ({ loading: false, error: '', data: nu
 
 interface AccountState {
   loggedIn: boolean
+  user?: { id: string; username: string; role: 'admin' | 'user'; status: 'active' | 'disabled' }
+  username?: string
+  qq?: { authorized: boolean; status: 'missing' | 'active' | 'expired'; uin?: string; nickname?: string; error?: string }
   systemError?: boolean
-  source?: 'env' | 'request' | 'stored'
-  uin?: string
-  nickname?: string
   isAdmin?: boolean
   hasEncryptedUin?: boolean
   hasQQMusicKey?: boolean
@@ -69,21 +68,18 @@ interface AccountState {
 
 interface AccountRefreshResult {
   refreshed: boolean
-  uin: string
   changed: boolean
   keyRefreshed?: boolean
   tokenRefreshed?: boolean
   refreshedAt: string
   hasQQMusicKey: boolean
   accessTokenExpiresAt?: string
-  persisted: boolean
   account?: AccountState
 }
 
 interface LoginQrState {
   img: string
-  ptqrtoken: number
-  qrsig: string
+  attemptId: string
 }
 
 type LoginQrPhase = 'idle' | 'active' | 'checking' | 'scanned' | 'expired' | 'error'
@@ -178,7 +174,11 @@ interface UsersResult {
 }
 
 interface UserItem {
-  qqUin: string
+  userId: string
+  username: string
+  role: 'admin' | 'user'
+  status: 'active' | 'disabled'
+  qqUin?: string
   qqNickname?: string
   embyUsername: string
   embyUserId?: string
@@ -212,7 +212,8 @@ interface UserDetail {
     hasEmbyAccessToken: boolean
   }
   qq: {
-    loggedIn: boolean
+    authorized: boolean
+    status: 'missing' | 'active' | 'expired'
     source?: string
     uin?: string
     hasEncryptedUin?: boolean
@@ -364,6 +365,9 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
   const routeView = parseView(searchParams.get('view'))
   const [view, setView] = useState<View>(routeView)
   const [cookieText, setCookieText] = useState('')
+  const [systemUsername, setSystemUsername] = useState('')
+  const [systemPassword, setSystemPassword] = useState('')
+  const [systemAuthMode, setSystemAuthMode] = useState<'login' | 'register'>('login')
   const [mobileAuthUrl, setMobileAuthUrl] = useState('')
   const [account, setAccount] = useState<ApiState<AccountState>>({ loading: false, error: '', data: initialAccount })
   const [accountRefresh, setAccountRefresh] = useState<ApiState<AccountRefreshResult>>(emptyState)
@@ -394,14 +398,7 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
   })
 
   const embyUrl = browserOrigin
-  const mobileAuthorizeUrl = useMemo(() => {
-    if (!browserOrigin) return '/auth/mobile/start'
-    return buildQQMobileAuthorizeUrl({
-      callbackUrl: `${browserOrigin}/auth/mobile/callback`,
-      state: randomAuthState(),
-      useQQMusicRedirect: true,
-    })
-  }, [browserOrigin])
+  const mobileAuthorizeUrl = '/auth/mobile/start'
   const ampcastOfficialUrl = useMemo(() => new URL(AMPCAST_OFFICIAL_URL).toString(), [])
   const connectionInfo: ConnectionInfo = {
     server: embyUrl,
@@ -513,6 +510,17 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
     await loadAccountEmbyConfig()
   }
 
+  const authenticateSystemAccount = async () => {
+    setMessage('')
+    const path = systemAuthMode === 'register' ? '/api/auth/register' : '/api/auth/login'
+    await run(s => setAccount(s), () => fetchJson<AccountState>(path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username: systemUsername, password: systemPassword }),
+    }))
+    setSystemPassword('')
+  }
+
   const completeMobileAuthLogin = async () => {
     const value = mobileAuthUrl.trim()
     if (!value) return
@@ -559,7 +567,7 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
     >('/api/account/qr/check', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ ptqrtoken: qr.ptqrtoken, qrsig: qr.qrsig, persist: true }),
+      body: JSON.stringify({ attemptId: qr.attemptId }),
     })
 
       if (!result.isOk) {
@@ -699,27 +707,27 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
 
   useEffect(() => {
     setView(routeView)
-    if (account.data?.loggedIn) loadViewData(routeView)
-  }, [routeView, account.data?.loggedIn])
+    if (account.data?.loggedIn && account.data.qq?.authorized) loadViewData(routeView)
+  }, [routeView, account.data?.loggedIn, account.data?.qq?.authorized])
 
   useEffect(() => {
-    if (!account.data?.loggedIn) return
+    if (!account.data?.loggedIn || !account.data.qq?.authorized) return
     if (!isViewAllowed(view, account.data)) openView('home')
-  }, [account.data?.loggedIn, account.data?.isAdmin, view])
+  }, [account.data?.loggedIn, account.data?.qq?.authorized, account.data?.isAdmin, view])
 
   useEffect(() => {
-    if (account.data?.loggedIn) {
+    if (account.data?.loggedIn && account.data.qq?.authorized) {
       void loadAccountEmbyConfig()
     }
-  }, [account.data?.loggedIn])
+  }, [account.data?.loggedIn, account.data?.qq?.authorized])
 
   useEffect(() => {
-    if (!account.data?.loggedIn || !account.data.uin) {
+    if (!account.data?.loggedIn || !account.data.qq?.uin) {
       setAvatar(emptyState())
       return
     }
-    void run(s => setAvatar(s), () => fetchJson<UserAvatarResult>(`/api/user/avatar?uin=${encodeURIComponent(account.data!.uin!)}&size=100`))
-  }, [account.data?.loggedIn, account.data?.uin])
+    void run(s => setAvatar(s), () => fetchJson<UserAvatarResult>('/api/user/avatar?size=100'))
+  }, [account.data?.loggedIn, account.data?.qq?.uin])
 
   useEffect(() => {
     if (loginQr.data && loginQrPhase === 'idle') setLoginQrPhase('active')
@@ -727,14 +735,14 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
 
   useEffect(() => {
     const shouldPollQr = loginQrPhase === 'active' || loginQrPhase === 'scanned'
-    if (!loginQr.data || !shouldPollQr || account.data?.loggedIn) return
+    if (!loginQr.data || !shouldPollQr || account.data?.qq?.authorized) return
 
     const timer = window.setInterval(() => {
       void checkLoginQr()
     }, 2500)
 
     return () => window.clearInterval(timer)
-  }, [loginQr.data, loginQrPhase, account.data?.loggedIn])
+  }, [loginQr.data, loginQrPhase, account.data?.qq?.authorized])
 
   if (account.loading && !account.data) {
     return (
@@ -750,6 +758,24 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
   if (!account.data?.loggedIn) {
     return (
       <main className="login-screen">
+        <SystemLoginPage
+          account={account}
+          username={systemUsername}
+          password={systemPassword}
+          mode={systemAuthMode}
+          onUsernameChange={setSystemUsername}
+          onPasswordChange={setSystemPassword}
+          onModeChange={setSystemAuthMode}
+          onSubmit={authenticateSystemAccount}
+          message={message}
+        />
+      </main>
+    )
+  }
+
+  if (!account.data.qq?.authorized) {
+    return (
+      <main className="login-screen">
         <LoginPage
           account={account}
           cookieText={cookieText}
@@ -763,6 +789,7 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
           loginQrPhase={loginQrPhase}
           onRequestLoginQr={requestLoginQr}
           message={message}
+          onLogout={logout}
         />
       </main>
     )
@@ -922,6 +949,40 @@ function isViewAllowed(view: View, account?: AccountState | null): boolean {
   return true
 }
 
+function SystemLoginPage({ account, username, password, mode, onUsernameChange, onPasswordChange, onModeChange, onSubmit, message }: {
+  account: ApiState<AccountState>
+  username: string
+  password: string
+  mode: 'login' | 'register'
+  onUsernameChange: (value: string) => void
+  onPasswordChange: (value: string) => void
+  onModeChange: (value: 'login' | 'register') => void
+  onSubmit: () => void
+  message: string
+}) {
+  return (
+    <section className="login-card">
+      <div className="brand-lockup login-brand">
+        <div className="brand-mark"><img src="/public/logo.svg" alt="" /></div>
+        <div><h1>XMusic</h1><span>把音乐装进自己口袋</span></div>
+      </div>
+      <div className="login-tabs" role="tablist" aria-label="帐号操作">
+        <button className={mode === 'login' ? 'active' : ''} onClick={() => onModeChange('login')}><LogIn size={16} /><span>登录</span></button>
+        <button className={mode === 'register' ? 'active' : ''} onClick={() => onModeChange('register')}><UserRound size={16} /><span>注册</span></button>
+      </div>
+      <form className="mobile-auth-form" onSubmit={(event) => { event.preventDefault(); onSubmit() }}>
+        <label htmlFor="system-username">用户名</label>
+        <input id="system-username" autoComplete="username" value={username} onChange={event => onUsernameChange(event.target.value)} placeholder="3-32 位字母、数字或 ._-" />
+        <label htmlFor="system-password">密码</label>
+        <input id="system-password" type="password" autoComplete={mode === 'register' ? 'new-password' : 'current-password'} value={password} onChange={event => onPasswordChange(event.target.value)} />
+        <button type="submit" disabled={account.loading || !username.trim() || password.length < 8}><KeyRound size={16} />{mode === 'register' ? '创建帐号' : '登录'}</button>
+      </form>
+      {message ? <p className="status notice">{message}</p> : null}
+      <Status state={account} />
+    </section>
+  )
+}
+
 function LoginPage({
   account,
   cookieText,
@@ -935,6 +996,7 @@ function LoginPage({
   loginQrPhase,
   onRequestLoginQr,
   message,
+  onLogout,
 }: {
   account: ApiState<AccountState>
   cookieText: string
@@ -948,6 +1010,7 @@ function LoginPage({
   loginQrPhase: LoginQrPhase
   onRequestLoginQr: () => void
   message: string
+  onLogout: () => void
 }) {
   const [loginMethod, setLoginMethod] = useState<'qr' | 'mobile' | 'cookie'>('qr')
   const qrDisabled = loginQrPhase === 'expired' || loginQrPhase === 'error'
@@ -1075,6 +1138,7 @@ function LoginPage({
       </div>
       {message ? <p className="status notice">{message}</p> : null}
       <Status state={account} />
+      <button className="secondary-button" onClick={onLogout}>退出系统帐号</button>
     </section>
   )
 }
@@ -1089,7 +1153,7 @@ function isMobileLoginDevice(): boolean {
 }
 
 function AccountSummary({ account, avatarUrl, onLogout }: { account: AccountState; avatarUrl?: string; onLogout: () => void }) {
-  const displayName = account.nickname ?? '-'
+  const displayName = account.qq?.nickname ?? account.username ?? '-'
   const [menuOpen, setMenuOpen] = useState(false)
   const panelRef = useRef<HTMLElement | null>(null)
 
@@ -1111,18 +1175,18 @@ function AccountSummary({ account, avatarUrl, onLogout }: { account: AccountStat
       </div>
       <div className="account-summary">
         <button className="account-avatar-button" onClick={() => setMenuOpen(value => !value)} aria-label="帐号菜单" aria-expanded={menuOpen}>
-          {avatarUrl ? <img src={avatarUrl} alt="" /> : <span className="avatar-placeholder">{account.uin?.slice(-2) ?? 'QQ'}</span>}
+          {avatarUrl ? <img src={avatarUrl} alt="" /> : <span className="avatar-placeholder">{account.username?.slice(0, 2).toUpperCase() ?? 'XM'}</span>}
         </button>
         <dl className="account-facts">
-          <div><dt>昵称</dt><dd>{displayName}</dd></div>
-          <div><dt>QQ</dt><dd>{account.uin ?? '-'}</dd></div>
+          <div><dt>用户名</dt><dd>{account.username ?? '-'}</dd></div>
+          <div><dt>QQ</dt><dd>{account.qq?.uin ?? '-'}</dd></div>
         </dl>
       </div>
       {menuOpen ? (
         <div className="account-popover" role="menu">
           <dl>
-            <div><dt>昵称</dt><dd>{displayName}</dd></div>
-            <div><dt>QQ</dt><dd>{account.uin ?? '-'}</dd></div>
+            <div><dt>QQ 昵称</dt><dd>{displayName}</dd></div>
+            <div><dt>QQ</dt><dd>{account.qq?.uin ?? '-'}</dd></div>
           </dl>
           <button className="ghost-button" onClick={onLogout} role="menuitem"><LogOut size={16} />登出</button>
         </div>
@@ -1702,7 +1766,7 @@ function UsersPanel({ users }: { users: UsersResult }) {
     setFavorites(emptyState)
     setPlays(emptyState)
     try {
-      setProfile({ loading: false, error: '', data: await fetchJson<UserProfile>(`/api/admin/users?qqUin=${encodeURIComponent(user.qqUin)}&section=profile`) })
+      setProfile({ loading: false, error: '', data: await fetchJson<UserProfile>(`/api/admin/users?userId=${encodeURIComponent(user.userId)}&section=profile`) })
     } catch (error) {
       setProfile({ loading: false, error: error instanceof Error ? error.message : String(error), data: null })
     }
@@ -1721,8 +1785,8 @@ function UsersPanel({ users }: { users: UsersResult }) {
           <span>最近使用</span>
         </div>
         {users.items.map(user => (
-          <button className={`user-row ${selectedUser?.qqUin === user.qqUin ? 'active' : ''}`} key={user.qqUin} onClick={() => void openUser(user)}>
-            <span className="user-cell-main"><strong>{user.qqNickname ?? user.qqUin}</strong><small>{user.qqNickname ? `QQ ${user.qqUin}` : user.embyUserId ?? '无 Emby ID'}</small></span>
+          <button className={`user-row ${selectedUser?.userId === user.userId ? 'active' : ''}`} key={user.userId} onClick={() => void openUser(user)}>
+            <span className="user-cell-main"><strong>{user.username}</strong><small>{user.qqNickname ? `${user.qqNickname} · QQ ${user.qqUin}` : '未绑定 QQ'}</small></span>
             <span><StatusBadge status={user.isAdmin ? 'admin' : 'user'} /></span>
             <span className="numeric-cell">{user.playCount}</span>
             <span className="numeric-cell">{user.favoriteCount}</span>
@@ -1769,7 +1833,7 @@ function UserDetailDialog({
   const [favoritesPage, setFavoritesPage] = useState(1)
   const [playsPage, setPlaysPage] = useState(1)
   const account = profile.data?.account ?? user
-  const accountTitle = account.qqNickname ?? account.qqUin
+  const accountTitle = account.username
   const favoriteBadge = favorites.data?.total ?? (favorites.loading ? '...' : '-')
   const playBadge = plays.data?.total ?? account.playCount
   const loadFavorites = async (page = favoritesPage, force = false) => {
@@ -1780,7 +1844,7 @@ function UserDetailDialog({
       setFavorites({
         loading: false,
         error: '',
-        data: await fetchJson<UserFavorites>(`/api/admin/users?qqUin=${encodeURIComponent(user.qqUin)}&section=favorites&page=${page}&limit=${userDetailPageSize}`),
+        data: await fetchJson<UserFavorites>(`/api/admin/users?userId=${encodeURIComponent(user.userId)}&section=favorites&page=${page}&limit=${userDetailPageSize}`),
       })
       setFavoritesPage(page)
     } catch (error) {
@@ -1795,7 +1859,7 @@ function UserDetailDialog({
       setPlays({
         loading: false,
         error: '',
-        data: await fetchJson<UserPlays>(`/api/admin/users?qqUin=${encodeURIComponent(user.qqUin)}&section=plays&page=${page}&limit=${userDetailPageSize}`),
+        data: await fetchJson<UserPlays>(`/api/admin/users?userId=${encodeURIComponent(user.userId)}&section=plays&page=${page}&limit=${userDetailPageSize}`),
       })
       setPlaysPage(page)
     } catch (error) {
@@ -1836,7 +1900,8 @@ function UserDetailDialog({
             <Status state={profile} />
             <dl className="user-info-grid">
               <div><dt>昵称</dt><dd><span>{account.qqNickname ?? '-'}</span></dd></div>
-              <div><dt>QQ</dt><dd><span>{account.qqUin}</span></dd></div>
+              <div><dt>用户名</dt><dd><span>{account.username}</span></dd></div>
+              <div><dt>QQ</dt><dd><span>{account.qqUin ?? '-'}</span></dd></div>
               <div><dt>Emby ID</dt><dd><span>{account.embyUserId ?? '-'}</span></dd></div>
               <div><dt>播放器帐号</dt><dd><span>{account.embyUsername}</span></dd></div>
               <div><dt>权限</dt><dd><span>{account.isAdmin ? '管理员' : '用户'}</span></dd></div>

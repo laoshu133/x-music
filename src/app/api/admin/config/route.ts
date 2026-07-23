@@ -1,5 +1,6 @@
 import { getEffectiveSettings, updateEffectiveSettings } from '@/lib/db/settings'
 import { z } from 'zod'
+import { requireAdmin } from '@/lib/admin'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -12,10 +13,14 @@ const updateSchema = z.object({
 }).strict()
 
 export async function GET(): Promise<Response> {
+  const forbidden = await requireAdmin()
+  if (forbidden) return forbidden
   return Response.json(redactSettings())
 }
 
 export async function PUT(request: Request): Promise<Response> {
+  const forbidden = await requireAdmin()
+  if (forbidden) return forbidden
   const body = await request.json().catch(() => undefined)
   const parsed = updateSchema.safeParse(body)
   if (!parsed.success) {

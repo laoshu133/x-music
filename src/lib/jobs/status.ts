@@ -5,6 +5,8 @@ import type { JobRow, JobStatus } from '@/lib/jobs'
 interface JobRecord {
   id: number
   type: string
+  scope: 'global' | 'user'
+  user_id: string | null
   status: string
   payload_json: string
   attempts: number
@@ -104,6 +106,8 @@ function parseJobRecord(record: JobRecord): JobRow {
   return {
     id: record.id,
     type: record.type,
+    scope: record.scope,
+    userId: record.user_id ?? undefined,
     status: record.status,
     payload: JSON.parse(record.payload_json) as unknown,
     attempts: record.attempts,

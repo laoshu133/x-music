@@ -6,7 +6,7 @@ The app is for personal/private deployment. It is not designed as a public multi
 
 ## Core Features
 
-- QQ Music account access with QR-code login or pasted y.qq.com Cookie. Each QQ account gets a local Emby gateway account using the normalized username `QQ${QQ_UID}`.
+- XMusic username/password registration and multi-device sessions. Each user binds an independent QQ Music authorization by QR code, mobile authorization, or pasted y.qq.com Cookie.
 - Emby-compatible music gateway for ampcast and other clients. XMusic exposes authentication, user views, a virtual music library, merged songs/albums/playlists/genres, favorites, most-played and recently-played lists, artwork routes, lyrics/subtitle routes, and QQ virtual audio playback from the service root.
 - Optional merged upstream Emby and QQ Music library views. Real Emby music items are proxied from the configured upstream server, while QQ playlists, albums, recommendations, top lists, favorites, and play history are expanded into virtual Emby-compatible items. Without upstream Emby, the local gateway still supports player login, browsing, and QQ virtual playback.
 - Private local playback cache and archive pipeline. Non-encrypted QQ/LX audio URLs are returned to clients with a 302 redirect. Encrypted QQ audio is cached locally and decrypted as a stream. Playback completion and favorite actions enqueue archive jobs that transfer songs, lyrics, and covers into the local library.
@@ -102,10 +102,10 @@ The service root is the Emby-compatible gateway. Emby-style paths such as
 `/System/Info/Public`, `/Users/AuthenticateByName`, and `/Users/{id}/Items`
 are handled directly from the root.
 
-After QQ login, use the account information shown in the UI:
+After registering an XMusic account and binding QQ, use the connection information shown in the UI:
 
-- Username: `QQ${QQ_UID}`
-- Password: generated on first login, editable in the account Emby config
+- Username: the canonical XMusic username
+- Password: the separate player password, editable in the account Emby config
 
 Each user can also configure their own upstream Emby server URL, API key,
 WebDAV storage DSN, and proxy timeout in the same account Emby config. These
@@ -127,7 +127,7 @@ Optional:
 - `AMPCAST_PORT`: optional host port for the bundled ampcast container in Docker Compose, default `8000`.
 - `AMPCAST_URL`: optional ampcast upstream URL for XMusic's same-origin `/@player` proxy, default `http://ampcast:8000/`. Local npm development can use `http://127.0.0.1:8000/`.
 - `X_MUSIC_REQUEST_LOGS`: request logging to stdout for Docker/Dokploy logs. `auto` enables logs in production and leaves local `next dev` to Next's built-in request output; set `true` to force-enable locally or `false` to reduce production log volume. URLs are logged with sensitive token-like query values redacted.
-- `ADMIN_QQ_UINS`: QQ UIN allowlist for admin-only pages such as user management and jobs. Accepts comma, semicolon, or whitespace separated values.
+- `X_MUSIC_SECRET`: optional instance secret used to encrypt QQ and player credentials. If omitted, XMusic creates a persistent secret in the data directory.
 - `WORKER_POLL_INTERVAL_MS`: idle worker polling interval, default `5000`.
 - `WORKER_MAX_ATTEMPTS`: max job attempts before failure, default `3`.
 - `TAGGING_WRITE_TAGS`: write supported file tags, default `true`.
@@ -143,8 +143,9 @@ Optional:
 - The worker handles queued jobs using SQLite-backed job rows.
 - QQ Music private APIs are used conservatively and must be treated as unstable.
 - LX source scripts are loaded server-side. The browser never receives the script URL or key.
-- Upstream Emby URL, API key, WebDAV DSN, and proxy timeout are per-account settings managed from the UI. Player-facing passwords and access tokens are maintained locally by XMusic.
-- QQ login state is authoritative. When the stored QQ authorization expires, account-dependent XMusic and Emby-compatible endpoints return `401` with `QQ_AUTH_EXPIRED` until QQ authorization is completed again.
+- Upstream Emby URL, API key, WebDAV DSN, and proxy timeout are per-user settings managed from the UI. Player-facing passwords and random revocable tokens are maintained locally by XMusic.
+- `user_id` is the ownership key for sessions, favorites, history, mappings, and user jobs. QQ UIN is retained only in each user's QQ authorization and QQ protocol calls.
+- QQ authorization expiry does not sign the XMusic user out. Personal music and Emby features return `QQ_AUTH_REQUIRED` until that user refreshes authorization.
 - Generated QQ upstream Emby users are intentionally restricted to the music library only when upstream Emby is configured.
 
 ## Current Risks

@@ -1,13 +1,13 @@
 import { NextResponse } from 'next/server'
 import { listLocalFavorites, setLocalFavorite, setLocalFavoriteSynced } from '@/lib/db/favorites'
-import { getAccountByQQ } from '@/lib/db/accounts'
-import { getStoredQQLoginState } from '@/lib/db/qq-session'
 import { getQQFavoriteSongs, pullRemoteFavorites, QQMusicError, qqMusicErrorResponse, setQQFavoriteSong, syncPendingFavorites } from '@/lib/qq'
 import type { MusicInfo } from '@/lib/types'
 import { getCurrentAccount } from '@/lib/session'
 import { pullEmbyFavorites, pushLocalFavoritesToEmby, syncEmbyFavoritesFromQQList, syncMappedEmbyFavoriteBestEffort } from '@/lib/emby/favorites'
 import { enqueueTrackArchive } from '@/lib/archive/track'
 import type { AccountRecord } from '@/lib/db/accounts'
+import { ensureTrack } from '@/lib/cache/store'
+import { requestUserTrackSync } from '@/lib/emby/sync'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -45,9 +45,10 @@ function resolveFavorited(body: FavoriteRequest) {
 }
 
 export async function GET(request: Request) {
+  const account = await getCurrentAccount()
+  if (!account) return NextResponse.json({ error: 'Login required', code: 'AUTH_REQUIRED' }, { status: 401 })
   const { searchParams } = new URL(request.url)
   if (searchParams.get('remote') === 'emby') {
-    const account = await getCurrentAccount()
     try {
       return NextResponse.json(await pullEmbyFavorites({
         account,
@@ -62,7 +63,7 @@ export async function GET(request: Request) {
   if (searchParams.get('remote') !== 'qq') {
     if (searchParams.get('sync') === 'pull') {
       try {
-        return NextResponse.json(await pullQQFavoritesAndSyncEmby(request, searchParams, 100, 200))
+        return NextResponse.json(await pullQQFavoritesAndSyncEmby(account, searchParams, 100, 200))
       } catch (error) {
         return qqMusicErrorResponse(error)
       }
@@ -70,29 +71,29 @@ export async function GET(request: Request) {
 
     return NextResponse.json({
       source: 'local',
-      list: listLocalFavorites(),
+      list: listLocalFavorites(account.userId),
     })
   }
 
   try {
-    return NextResponse.json(await pullQQFavoritesAndSyncEmby(request, searchParams, 50, 100))
+    return NextResponse.json(await pullQQFavoritesAndSyncEmby(account, searchParams, 50, 100))
   } catch (error) {
     return qqMusicErrorResponse(error)
   }
 }
 
 async function pullQQFavoritesAndSyncEmby(
-  request: Request,
+  account: AccountRecord,
   searchParams: URLSearchParams,
   defaultLimit: number,
   maxLimit: number,
 ) {
   const result = await pullRemoteFavorites({
-    cookie: request.headers.get('x-qq-music-cookie') ?? undefined,
+    userId: account.userId,
+    cookie: account.qqCookie,
     page: getPositiveInt(searchParams.get('page'), 1, 1000),
     limit: getPositiveInt(searchParams.get('limit'), defaultLimit, maxLimit),
   })
-  const account = await getCurrentAccountForQQFavoriteSync()
   const embySync = await syncEmbyFavoritesFromQQList({
     account,
     qqFavorites: result.list,
@@ -104,21 +105,6 @@ async function pullQQFavoritesAndSyncEmby(
   }
 }
 
-async function getCurrentAccountForQQFavoriteSync() {
-  try {
-    return await getCurrentAccount()
-  } catch (error) {
-    if (
-      process.env.NODE_ENV !== 'test'
-      || !String(error instanceof Error ? error.message : error).includes('outside a request scope')
-    ) {
-      throw error
-    }
-    const stored = getStoredQQLoginState()
-    return stored ? getAccountByQQ(stored.uin) : undefined
-  }
-}
-
 export async function POST(request: Request) {
   const contentType = request.headers.get('content-type') ?? ''
   if (!contentType.includes('application/json')) {
@@ -127,8 +113,9 @@ export async function POST(request: Request) {
 
   const body = (await request.json().catch(() => undefined)) as FavoriteRequest | undefined
   const url = new URL(request.url)
-  const cookie = body?.cookie ?? request.headers.get('x-qq-music-cookie') ?? undefined
   const account = await getCurrentAccount()
+  if (!account) return NextResponse.json({ error: 'Login required', code: 'AUTH_REQUIRED' }, { status: 401 })
+  const cookie = account.qqCookie
   if (url.searchParams.get('sync') === 'push') {
     if (url.searchParams.get('remote') === 'emby') {
       try {
@@ -143,6 +130,7 @@ export async function POST(request: Request) {
 
     try {
       return NextResponse.json(await syncPendingFavorites({
+        userId: account.userId,
         cookie,
         limit: getPositiveInt(url.searchParams.get('limit'), 50, 200),
       }))
@@ -162,7 +150,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Missing boolean favorite' }, { status: 400 })
     }
 
-    let record = setLocalFavorite(musicInfo, body.favorite, account?.qqUin)
+    let record = setLocalFavorite(musicInfo, body.favorite, account?.userId)
     if (body.favorite) enqueueFavoriteArchive(musicInfo, account)
     let remoteSynced = false
     let remoteError: string | undefined
@@ -179,7 +167,7 @@ export async function POST(request: Request) {
         songType: readFavoriteSongNumber(body, 'songType'),
         raw: musicInfo.raw,
       })
-      record = setLocalFavoriteSynced(musicInfo, body.favorite, account?.qqUin)
+      record = setLocalFavoriteSynced(musicInfo, body.favorite, account?.userId)
       remoteSynced = true
     } catch (error) {
       remoteError = error instanceof Error ? error.message : String(error)
@@ -235,15 +223,16 @@ export async function DELETE(request: Request) {
   if (!body?.songmid) return NextResponse.json({ error: 'Missing songmid' }, { status: 400 })
 
   const url = new URL(request.url)
-  const cookie = body.cookie ?? request.headers.get('x-qq-music-cookie') ?? undefined
   const account = await getCurrentAccount()
+  if (!account) return NextResponse.json({ error: 'Login required', code: 'AUTH_REQUIRED' }, { status: 401 })
+  const cookie = account.qqCookie
   if (url.searchParams.get('remote') !== 'qq') {
     const musicInfo = parseMusicInfo(body)
     if (!musicInfo) {
       return NextResponse.json({ error: 'Missing required local song fields' }, { status: 400 })
     }
 
-    let record = setLocalFavorite(musicInfo, false, account?.qqUin)
+    let record = setLocalFavorite(musicInfo, false, account?.userId)
     let remoteSynced = false
     let remoteError: string | undefined
     let remotePayload: unknown
@@ -259,7 +248,7 @@ export async function DELETE(request: Request) {
         songType: readFavoriteSongNumber(body, 'songType'),
         raw: musicInfo.raw,
       })
-      record = setLocalFavoriteSynced(musicInfo, false, account?.qqUin)
+      record = setLocalFavoriteSynced(musicInfo, false, account?.userId)
       remoteSynced = true
     } catch (error) {
       remoteError = error instanceof Error ? error.message : String(error)
@@ -299,11 +288,11 @@ export async function DELETE(request: Request) {
 }
 
 function enqueueFavoriteArchive(musicInfo: MusicInfo, account?: AccountRecord): void {
+  if (account) requestUserTrackSync(account.userId, ensureTrack(musicInfo).id, 'favorite')
   enqueueTrackArchive({
     source: musicInfo.source,
     songmid: musicInfo.songmid,
     musicInfo,
-    qqUin: account?.qqUin,
     reason: 'favorite',
   })
 }

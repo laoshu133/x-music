@@ -7,11 +7,12 @@ export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 export async function GET(request: Request): Promise<Response> {
+  const account = await getCurrentAccount()
+  if (!account) return Response.json({ error: 'Login required', code: 'AUTH_REQUIRED' }, { status: 401 })
   const url = new URL(request.url)
   const limit = Number(url.searchParams.get('limit') ?? 50)
   const remote = url.searchParams.get('remote')
   if (remote === 'emby' || (url.searchParams.get('sync') === 'pull' && !remote)) {
-    const account = await getCurrentAccount()
     try {
       return Response.json(await pullEmbyPlayHistory({
         account,
@@ -25,11 +26,13 @@ export async function GET(request: Request): Promise<Response> {
 
   return Response.json({
     source: 'local',
-    list: listPlayHistory(limit),
+    list: listPlayHistory(account.userId, limit),
   })
 }
 
 export async function POST(request: Request): Promise<Response> {
+  const account = await getCurrentAccount()
+  if (!account) return Response.json({ error: 'Login required', code: 'AUTH_REQUIRED' }, { status: 401 })
   const url = new URL(request.url)
   if (url.searchParams.get('sync') !== 'push') {
     return Response.json({ error: 'POST /api/history expects sync=push' }, { status: 400 })
@@ -37,9 +40,8 @@ export async function POST(request: Request): Promise<Response> {
 
   const limit = Number(url.searchParams.get('limit') ?? 200)
   if (url.searchParams.get('remote') === 'qq') {
-    const cookie = request.headers.get('x-qq-music-cookie') ?? undefined
     try {
-      return Response.json(await pushLocalPlayHistoryToQQ({ cookie, limit }))
+      return Response.json(await pushLocalPlayHistoryToQQ({ userId: account.userId, cookie: account.qqCookie, limit }))
     } catch (error) {
       return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 502 })
     }
@@ -49,7 +51,6 @@ export async function POST(request: Request): Promise<Response> {
     return Response.json({ error: 'POST /api/history supports remote=emby or remote=qq' }, { status: 400 })
   }
 
-  const account = await getCurrentAccount()
   try {
     return Response.json(await pushLocalPlayHistoryToEmby({ account, limit }))
   } catch (error) {

@@ -28,7 +28,7 @@ export async function POST(request: Request): Promise<Response> {
   }
 
   const hadUpstream = hasAccountUpstreamEmby(account)
-  const updated = updateAccountEmbyConfig(account.qqUin, {
+  const updated = updateAccountEmbyConfig(account.userId, {
     password,
     dsn: optionalString(body?.dsn),
     sourceWebdavDsn: optionalString(body?.sourceWebdavDsn),

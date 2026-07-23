@@ -3,8 +3,8 @@ import { proxyToUpstreamEmby } from './upstream-proxy'
 import { hasUpstreamEmbyConfigured } from './auth'
 import { withEmbyCors } from './cors'
 import { logCompletedRequest, logFailedRequest } from '@/lib/request-log'
-import { listAccounts, markAccountActive } from '@/lib/db/accounts'
-import { createLocalAccessToken, readEmbyAccessToken } from './tokens'
+import { markAccountActive } from '@/lib/db/accounts'
+import { findAccountByAccessToken, readEmbyAccessToken } from './tokens'
 import { QQAuthExpiredError, qqAuthExpiredResponse, requireActiveQQAccount } from '@/lib/qq/auth-state'
 
 export async function dispatchEmbyRequest(request: Request, embyPath: string): Promise<Response> {
@@ -46,7 +46,7 @@ function localOnlyNotFoundResponse(embyPath: string): Response {
 async function activeAccountForRequest(request: Request) {
   const token = readEmbyAccessToken(request)
   if (!token) return undefined
-  const account = listAccounts().find(account => token === createLocalAccessToken(account))
-  if (account) markAccountActive(account.qqUin)
+  const account = findAccountByAccessToken(token)
+  if (account) markAccountActive(account.userId)
   return requireActiveQQAccount(account)
 }

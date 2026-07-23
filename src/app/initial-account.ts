@@ -6,7 +6,7 @@ import { logServiceEvent } from '@/lib/request-log'
 export async function getInitialAccount() {
   let account
   try {
-    account = await getCurrentAccount()
+    account = await getCurrentAccount({ verifyQQ: false })
   } catch (error) {
     if (isNextDynamicServerSignal(error)) throw error
     if (error instanceof QQAuthExpiredError) return {
@@ -27,7 +27,7 @@ export async function getInitialAccount() {
     ? summarizeAccount(account)
     : {
         loggedIn: false,
-        actionable: 'Scan the QQ login QR code or POST a QQ Music Cookie header string to /api/account/import.',
+      actionable: 'Register or sign in with your XMusic username and password.',
       }
 }
 

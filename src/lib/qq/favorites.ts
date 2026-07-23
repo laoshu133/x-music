@@ -191,7 +191,7 @@ export async function getQQFavoriteSongs(input: {
 
   if (data.code !== 0 || data.req?.code !== 0) {
     throw new QQMusicError('QQ favorite songs request failed', 502, {
-      actionable: 'Verify QQ_MUSIC_COOKIE is current and confirm the private favorite read endpoint still accepts CgiGetDiss with enc_host_uin.',
+      actionable: 'Refresh the current user QQ authorization and confirm the private favorite endpoint still accepts CgiGetDiss with enc_host_uin.',
       response: data,
     })
   }

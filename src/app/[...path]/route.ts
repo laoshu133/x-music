@@ -3,6 +3,7 @@ import { embyCorsPreflight } from '@/lib/emby/cors'
 import { isReservedManagementPath, normalizeEmbyPath } from '@/lib/emby/paths'
 import { getCurrentAccount } from '@/lib/session'
 import { ampcastAutoConnectConfig, ampcastAutoInitHtml, playerPathFromEmbyPath, proxyToAmpcast } from '@/lib/ampcast/proxy'
+import { isAuthResponse, requireUserAccount } from '@/lib/api-auth'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -18,7 +19,11 @@ async function handle(request: Request, context: RouteContext): Promise<Response
   if (isAmpcastAutoInitPath(embyPath)) return ampcastAutoInitResponse(request)
 
   const playerPath = playerPathFromEmbyPath(embyPath)
-  if (playerPath) return proxyToAmpcast(request, playerPath)
+  if (playerPath) {
+    const account = await requireUserAccount()
+    if (isAuthResponse(account)) return account
+    return proxyToAmpcast(request, playerPath)
+  }
 
   if (isReservedManagementPath(embyPath)) {
     return Response.json({ error: 'Reserved XMusic path cannot be proxied as Emby API' }, { status: 404 })
@@ -86,7 +91,9 @@ async function ampcastAutoInitResponse(request: Request): Promise<Response> {
     return Response.json({ error: 'Method not allowed' }, { status: 405 })
   }
 
-  const account = await getCurrentAccount()
+  const authorized = await requireUserAccount()
+  if (isAuthResponse(authorized)) return authorized
+  const account = authorized
   if (!account) {
     return new Response(`<!doctype html>
 <html lang="zh-CN">

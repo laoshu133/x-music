@@ -1,53 +1,47 @@
 import { NextResponse } from 'next/server'
-import { getAccountByQQ, refreshAccountQQProfile, summarizeAccount } from '@/lib/db/accounts'
-import { saveQQLoginCookie } from '@/lib/db/qq-session'
+import { bindQQAuthorization, getAccountByUserId, refreshAccountQQProfile, summarizeAccount } from '@/lib/db/accounts'
 import { exchangeQQMusicLoginCode, qqMusicErrorResponse } from '@/lib/qq'
-import { readRequestIp } from '@/lib/request-ip'
-import { setCurrentAccount } from '@/lib/session'
+import { getCurrentAccount } from '@/lib/session'
+import { consumeQQAuthAttempt, readQQAuthAttempt } from '@/lib/db/qq-auth-attempts'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 export async function POST(request: Request) {
-  const code = await readCode(request)
-  if (!code) return NextResponse.json({ error: 'Missing code' }, { status: 400 })
-
+  const account = await getCurrentAccount({ verifyQQ: false })
+  if (!account) return NextResponse.json({ error: 'Login required', code: 'AUTH_REQUIRED' }, { status: 401 })
+  const authorization = await readAuthorization(request)
+  if (!authorization?.code || !authorization.state) return NextResponse.json({ error: 'Missing code or state' }, { status: 400 })
   try {
-    const session = await exchangeQQMusicLoginCode({ code })
-    const saved = saveQQLoginCookie(session.cookie, { loginIp: readRequestIp(request) })
-    await setCurrentAccount(saved.uin)
-    const profiledAccount = await refreshAccountQQProfile(saved.uin).catch(() => undefined)
-    const account = profiledAccount ?? getAccountByQQ(saved.uin)
-
-    return NextResponse.json({
-      isOk: true,
-      message: '登录成功',
-      uin: saved.uin,
-      hasQQMusicKey: saved.hasQQMusicKey,
-      account: account ? summarizeAccount(account) : saved,
-    })
+    readQQAuthAttempt({ userId: account.userId, method: 'mobile', verifier: authorization.state })
+    const session = await exchangeQQMusicLoginCode({ code: authorization.code })
+    bindQQAuthorization(account.userId, session.cookie)
+    consumeQQAuthAttempt(account.userId, 'mobile')
+    const refreshed = await refreshAccountQQProfile(account.userId).catch(() => undefined)
+    return NextResponse.json({ isOk: true, message: '授权成功', account: summarizeAccount(refreshed ?? getAccountByUserId(account.userId)!) })
   } catch (error) {
+    if (error instanceof Error && error.message === 'QQ_ALREADY_BOUND') {
+      return NextResponse.json({ error: 'This QQ account is already bound to another user', code: 'QQ_ALREADY_BOUND' }, { status: 409 })
+    }
     return qqMusicErrorResponse(error)
   }
 }
 
-async function readCode(request: Request): Promise<string | undefined> {
+async function readAuthorization(request: Request): Promise<{ code?: string; state?: string } | undefined> {
   const contentType = request.headers.get('content-type') ?? ''
   if (contentType.includes('application/json')) {
-    const body = await request.json().catch(() => undefined) as { code?: string; url?: string } | undefined
-    return extractCode(body?.code) ?? extractCode(body?.url)
+    const body = await request.json().catch(() => undefined) as { code?: string; state?: string; url?: string } | undefined
+    return authorizationValues(body?.url, body?.code, body?.state)
   }
   const form = await request.formData().catch(() => undefined)
-  return extractCode(form?.get('code')?.toString()) ?? extractCode(form?.get('url')?.toString())
+  return authorizationValues(undefined, form?.get('code')?.toString(), form?.get('state')?.toString())
 }
 
-function extractCode(value: string | undefined): string | undefined {
-  const trimmed = value?.trim()
-  if (!trimmed) return undefined
+function authorizationValues(urlText?: string, codeText?: string, stateText?: string): { code?: string; state?: string } {
   try {
-    const url = new URL(trimmed)
-    return url.searchParams.get('code')?.trim() || undefined
+    const url = new URL(urlText?.trim() ?? '')
+    return { code: url.searchParams.get('code')?.trim() || undefined, state: url.searchParams.get('state')?.trim() || undefined }
   } catch {
-    return trimmed
+    return { code: codeText?.trim() || undefined, state: stateText?.trim() || undefined }
   }
 }

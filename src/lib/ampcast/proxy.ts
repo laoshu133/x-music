@@ -1,6 +1,5 @@
-import crypto from 'node:crypto'
 import { getEffectiveSettings } from '@/lib/db/settings'
-import { createLocalAccessToken } from '@/lib/emby/tokens'
+import { createLocalAccessToken, localEmbyUserId } from '@/lib/emby/tokens'
 
 const hopByHopHeaders = new Set([
   'connection',
@@ -60,10 +59,8 @@ const defaultHiddenServices = {
 }
 
 type AmpcastAccount = {
-  qqUin: string
+  userId: string
   embyUsername: string
-  embyPassword: string
-  embyUserId?: string
 }
 
 type AmpcastAutoConnectConfig = {
@@ -213,7 +210,7 @@ export function ampcastAutoInitHtml(config: AmpcastAutoConnectConfig): string {
 }
 
 function localUserId(account: AmpcastAccount): string {
-  return account.embyUserId ?? crypto.createHash('sha1').update(`${localServerId}:${account.qqUin}:${account.embyUsername}`).digest('hex')
+  return localEmbyUserId(account.userId)
 }
 
 function shouldRewriteBody(response: Response, method: string): boolean {

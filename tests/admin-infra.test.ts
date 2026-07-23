@@ -25,6 +25,7 @@ import type { MusicInfo } from '@/lib/types'
 import { syncMappedEmbyFavoriteBestEffort } from '@/lib/emby/favorites'
 import { logCompletedRequest, logFailedRequest, logServiceEvent, requestLoggingEnabled, safeRequestPath } from '@/lib/request-log'
 import { QQAuthExpiredError, requireActiveQQAccount } from '@/lib/qq/auth-state'
+import { requestUserTrackSync } from '@/lib/emby/sync'
 
 function markAccountUpstreamBound(qqUin: string, embyUserId = `emby-user-${qqUin}`, embyAccessToken?: string): void {
   configureAccountUpstreamEmby(qqUin)
@@ -83,30 +84,20 @@ test('settings store persists typed values and merges effective defaults', () =>
   deleteSetting('qq.enabled')
 })
 
-test('admin QQ env controls account permissions and summaries', () => {
-  const previous = process.env.ADMIN_QQ_UINS
+test('persisted user roles control account permissions and summaries', () => {
   try {
-    process.env.ADMIN_QQ_UINS = '123456, 999777'
     db.prepare('DELETE FROM accounts WHERE qq_uin IN (?, ?)').run('123456', '999777')
 
     saveQQLoginCookie('uin=o123456; qm_keyst=test-key')
     saveQQLoginCookie('uin=o999777; qm_keyst=test-key')
+    db.prepare("UPDATE users SET role = 'admin' WHERE id IN ('123456', '999777')").run()
     markAccountActive('123456')
-
-    assert.equal(isAdminQQ('123456'), true)
-    assert.equal(isAdminQQ('999777'), true)
-    assert.equal(isAdminQQ('555000'), false)
 
     const users = listAccountSummaries().filter(user => user.qqUin === '123456' || user.qqUin === '999777')
     assert.equal(users.length, 2)
     assert.ok(users.every(user => user.isAdmin))
     assert.ok(users.find(user => user.qqUin === '123456')?.lastActiveAt)
   } finally {
-    if (previous === undefined) {
-      delete process.env.ADMIN_QQ_UINS
-    } else {
-      process.env.ADMIN_QQ_UINS = previous
-    }
     db.prepare('DELETE FROM accounts WHERE qq_uin IN (?, ?)').run('123456', '999777')
     clearQQLoginCookie()
   }
@@ -285,7 +276,7 @@ test('catch-all route handles apple touch icon probes locally', async () => {
   }
 })
 
-test('QQ login creates a per-account Emby gateway account', () => {
+test('test compatibility QQ login creates a user-scoped Emby gateway account', () => {
   db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('123456')
   try {
     const saved = saveQQLoginCookie('uin=o123456; qm_keyst=test-key')
@@ -329,7 +320,7 @@ test('explicit QQ refresh rejection expires the bound account auth state', async
   }
 })
 
-test('upstream emby account creation uses QQ-prefixed username and restricts access to music library', async () => {
+test('upstream emby account creation uses the XMusic username and restricts access to music library', async () => {
   const originalFetch = globalThis.fetch
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999019')
@@ -575,16 +566,15 @@ test('ampcast player path maps to embedded proxy route', () => {
 
 test('ampcast auto-init html stores local config and redirects to embedded player', () => {
   const body = ampcastAutoInitHtml(ampcastAutoConnectConfig({
-    qqUin: '555777',
+    userId: 'test-user-555777',
     embyUsername: 'player-user',
-    embyPassword: 'player-pass',
   }, 'http://local'))
 
   assert.match(body, /const currentHost = window\.location\.origin/)
   assert.match(body, /localStorage\.setItem\(prefix \+ 'host', currentHost\)/)
   assert.match(body, /"host":"http:\/\/local"/)
   assert.match(body, /"userName":"player-user"/)
-  assert.match(body, new RegExp(`"userId":"${crypto.createHash('sha1').update('x-music:555777:player-user').digest('hex')}"`))
+  assert.match(body, new RegExp(`"userId":"${crypto.createHash('sha256').update('x-music:emby-user:test-user-555777').digest('hex').slice(0, 32)}"`))
   assert.match(body, /"libraryId":"x-music-music"/)
   assert.match(body, /localStorage\.setItem\(prefix \+ 'deviceId', deviceId\)/)
   assert.match(body, /localStorage\.setItem\(prefix \+ 'isLocal', 'true'\)/)
@@ -1141,16 +1131,16 @@ test('local emby authorized requests fail when QQ auth is expired', async () => 
     const response = await handleLocalEmbyRequest(new Request('http://local/emby/Users/Current', {
       headers: { 'X-Emby-Token': authPayload.AccessToken },
     }), stripOptionalEmbyPrefix('/emby/Users/Current'))
-    assert.equal(response?.status, 401)
+    assert.equal(response?.status, 428)
     const payload = await response!.json()
-    assert.equal(payload.code, 'QQ_AUTH_EXPIRED')
+    assert.equal(payload.code, 'QQ_AUTH_REQUIRED')
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999904')
     clearQQLoginCookie()
   }
 })
 
-test('upstream fallback emby requests fail with 401 when QQ auth is expired', async () => {
+test('upstream fallback emby requests fail with QQ precondition when auth is expired', async () => {
   const originalFetch = globalThis.fetch
   let upstreamRequests = 0
   try {
@@ -1181,9 +1171,9 @@ test('upstream fallback emby requests fail with 401 when QQ auth is expired', as
     const response = await dispatchEmbyRequest(new Request('http://local/emby/System/Info', {
       headers: { 'X-Emby-Token': authPayload.AccessToken },
     }), stripOptionalEmbyPrefix('/emby/System/Info'))
-    assert.equal(response.status, 401)
+    assert.equal(response.status, 428)
     const payload = await response.json()
-    assert.equal(payload.code, 'QQ_AUTH_EXPIRED')
+    assert.equal(payload.code, 'QQ_AUTH_REQUIRED')
     assert.match(payload.actionable, /QQ 授权/)
     assert.equal(upstreamRequests, 0)
   } finally {
@@ -4123,8 +4113,8 @@ test('local emby played lists merge local QQ play history', async () => {
       ON CONFLICT(source, songmid) DO UPDATE SET name = excluded.name, updated_at = CURRENT_TIMESTAMP
     `).run({ ...song, raw: JSON.stringify(song) })
     const track = db.prepare("SELECT id FROM tracks WHERE source = 'tx' AND songmid = ?").get(song.songmid) as { id: number }
-    db.prepare('INSERT INTO play_events (track_id, quality, played_at) VALUES (?, ?, ?)').run(track.id, '320k', '2026-05-21T10:00:00.000Z')
-    db.prepare('INSERT INTO play_events (track_id, quality, played_at) VALUES (?, ?, ?)').run(track.id, '320k', '2026-05-22T10:00:00.000Z')
+    db.prepare('INSERT INTO play_events (user_id, track_id, quality, played_at) VALUES (?, ?, ?, ?)').run(account.userId, track.id, '320k', '2026-05-21T10:00:00.000Z')
+    db.prepare('INSERT INTO play_events (user_id, track_id, quality, played_at) VALUES (?, ?, ?, ?)').run(account.userId, track.id, '320k', '2026-05-22T10:00:00.000Z')
 
     globalThis.fetch = (async () => Response.json({ Items: [], TotalRecordCount: 0 })) as typeof fetch
 
@@ -4778,6 +4768,7 @@ test('virtual song lyrics persist QQ fallback to local sidecar for Emby sync', a
     writeFileSync(audioPath, 'audio-bytes')
     const track = ensureTrack(song)
     upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath: audioPath, sizeBytes: 11, sha256: 'persistsha' })
+    requestUserTrackSync(account.userId, track.id, 'lyrics')
 
     globalThis.fetch = (async (url: string | URL | Request) => {
       const requestUrl = new URL(String(url))
@@ -6258,17 +6249,16 @@ test('virtual favorite add enqueues track archive job', async () => {
     `).get(songmid) as { payloadJson: string } | undefined
     const archivePayload = JSON.parse(archiveJob?.payloadJson ?? '{}') as { reason?: string; playlistId?: string; qqUin?: string }
     assert.equal(archivePayload.reason, 'favorite')
-    assert.equal(archivePayload.qqUin, '999902')
+    assert.equal(archivePayload.qqUin, undefined)
 
     const syncJob = db.prepare(`
-      SELECT payload_json AS payloadJson
+      SELECT user_id AS userId, payload_json AS payloadJson
       FROM jobs
       WHERE type = 'sync_emby_track'
         AND json_extract(payload_json, '$.songmid') = ?
       LIMIT 1
-    `).get(songmid) as { payloadJson: string } | undefined
-    const syncPayload = JSON.parse(syncJob?.payloadJson ?? '{}') as { qqUin?: string }
-    assert.equal(syncPayload.qqUin, '999902')
+    `).get(songmid) as { userId: string; payloadJson: string } | undefined
+    assert.equal(syncJob?.userId, '999902')
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999902')
     db.prepare("DELETE FROM app_settings WHERE key = ?").run(`virtual.song.${songmid}`)
@@ -6396,17 +6386,17 @@ test('virtual playback stopped report enqueues track archive and sync jobs when 
     `).get(songmid) as { payloadJson: string } | undefined
     const archivePayload = JSON.parse(archiveJob?.payloadJson ?? '{}') as { reason?: string; qqUin?: string }
     assert.equal(archivePayload.reason, 'playback_completed')
-    assert.equal(archivePayload.qqUin, '999903')
+    assert.equal(archivePayload.qqUin, undefined)
 
     const syncJob = db.prepare(`
-      SELECT payload_json AS payloadJson
+      SELECT user_id AS userId, payload_json AS payloadJson
       FROM jobs
       WHERE type = 'sync_emby_track'
         AND json_extract(payload_json, '$.songmid') = ?
       LIMIT 1
-    `).get(songmid) as { payloadJson: string } | undefined
-    const syncPayload = JSON.parse(syncJob?.payloadJson ?? '{}') as { qqUin?: string; allowCachedQualityFallback?: boolean }
-    assert.equal(syncPayload.qqUin, '999903')
+    `).get(songmid) as { userId: string; payloadJson: string } | undefined
+    const syncPayload = JSON.parse(syncJob?.payloadJson ?? '{}') as { allowCachedQualityFallback?: boolean }
+    assert.equal(syncJob?.userId, '999903')
     assert.equal(syncPayload.allowCachedQualityFallback, true)
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999903')
@@ -6494,8 +6484,8 @@ test('virtual favorite and playback enqueue archive jobs with WebDAV-only Emby s
         return [payload.songmid, payload.reason, payload.qqUin]
       }),
       [
-        [favoriteSongmid, 'favorite', '999904'],
-        [stoppedSongmid, 'playback_completed', '999904'],
+        [favoriteSongmid, 'favorite', undefined],
+        [stoppedSongmid, 'playback_completed', undefined],
       ],
     )
     const syncJobs = db.prepare(`

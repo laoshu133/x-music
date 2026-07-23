@@ -124,7 +124,7 @@ async function syncQQPlaylistsToEmby(input: {
         continue
       }
       upsertRemoteMapping({
-        qqUin: input.account.qqUin,
+        userId: input.account.userId,
         localType: 'playlist',
         localKey: `qq:${playlist.id}`,
         remote: 'emby',
@@ -155,7 +155,7 @@ function mappedEmbyItemIds(songs: MusicInfo[], account: AccountRecord): string[]
   const ids = new Set<string>()
   for (const song of songs) {
     const mapping = getRemoteMapping({
-      qqUin: account.qqUin,
+      userId: account.userId,
       localType: 'track',
       localKey: `${song.source}:${song.songmid}`,
       remote: 'emby',
@@ -169,7 +169,7 @@ async function fallbackPlaylistMapping(playlist: QQPlaylistInfo, account: Accoun
   const remoteId = await searchEmbyPlaylistByName(playlist.name, { account })
   if (!remoteId) return undefined
   upsertRemoteMapping({
-    qqUin: account.qqUin,
+    userId: account.userId,
     localType: 'playlist',
     localKey: `qq:${playlist.id}`,
     remote: 'emby',

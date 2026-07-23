@@ -7,7 +7,7 @@ import { normalizeDbDateTime } from '@/lib/db/time'
 import { getFavoriteSummary } from '@/lib/db/favorites'
 import { getJobSummary } from '@/lib/jobs/status'
 import { getCurrentAccount } from '@/lib/session'
-import { isAdminQQ, type AccountRecord } from '@/lib/db/accounts'
+import type { AccountRecord } from '@/lib/db/accounts'
 import { hasAccountUpstreamEmby } from '@/lib/emby/config'
 
 export const runtime = 'nodejs'
@@ -19,7 +19,8 @@ interface CountRow {
 
 export async function GET() {
   const account = await getCurrentAccount({ verifyQQ: false })
-  const isAdmin = isAdminQQ(account?.qqUin)
+  const isAdmin = account?.role === 'admin'
+  const hasActiveQQ = account?.qqAuthState === 'active'
   const database = checkDatabase()
   const cache = {
     dataDir: checkDirectory(appConfig.dataDir),
@@ -28,7 +29,7 @@ export async function GET() {
     musicDir: checkDirectory(appConfig.musicDir),
   }
   const jobs = isAdmin ? getJobStatus() : emptyJobStatus()
-  const favorites = getFavoriteSummary()
+  const favorites = account && hasActiveQQ ? getFavoriteSummary(account.userId) : { favoriteCount: 0, pendingCount: 0, failedCount: 0 }
   const resourceCache = listResourceCacheSummary()
   const config = {
     missing: [
@@ -71,18 +72,21 @@ const accountStatus = (account: AccountRecord | undefined) => {
     }
   }
 
+  const hasActiveQQ = account.qqAuthState === 'active'
   return {
     loggedIn: true,
-    qqUin: account.qqUin,
+    userId: account.userId,
+    username: account.username,
+    qqUin: account.qqUin || undefined,
     qqNickname: account.qqNickname,
     qqAuthState: account.qqAuthState,
     qqAuthCheckedAt: account.qqAuthCheckedAt,
     qqAuthError: account.qqAuthError,
-    embyGatewayUsername: account.embyUsername,
-    embyConfigured: hasAccountUpstreamEmby(account),
-    embyDsnConfigured: Boolean(account.embyDsn),
-    webdavConfigured: Boolean(account.embySourceWebdavDsn),
-    proxyTimeoutMs: account.embyProxyTimeoutMs ?? 30000,
+    embyGatewayUsername: hasActiveQQ ? account.embyUsername : undefined,
+    embyConfigured: hasActiveQQ && hasAccountUpstreamEmby(account),
+    embyDsnConfigured: hasActiveQQ && Boolean(account.embyDsn),
+    webdavConfigured: hasActiveQQ && Boolean(account.embySourceWebdavDsn),
+    proxyTimeoutMs: hasActiveQQ ? account.embyProxyTimeoutMs ?? 30000 : undefined,
   }
 }
 
@@ -245,9 +249,9 @@ const getJobTypeStatus = (type: string, isAdmin: boolean, account: AccountRecord
   }
   const params: Record<string, unknown> = { type }
   const clauses = ['type = @type']
-  if (account?.qqUin) {
-    clauses.push("(json_extract(payload_json, '$.qqUin') = @qqUin OR json_extract(payload_json, '$.qqUin') IS NULL)")
-    params.qqUin = account.qqUin
+  if (account?.userId) {
+    clauses.push('(user_id = @userId OR scope = \'global\')')
+    params.userId = account.userId
   }
   const rows = db.prepare(`
     SELECT status, COUNT(*) AS count
@@ -270,9 +274,9 @@ const getJobTypeStatus = (type: string, isAdmin: boolean, account: AccountRecord
 const recentJobFailures = (account: AccountRecord | undefined) => {
   const params: Record<string, unknown> = {}
   const clauses = ["status = 'failed'"]
-  if (account?.qqUin) {
-    clauses.push("(json_extract(payload_json, '$.qqUin') = @qqUin OR json_extract(payload_json, '$.qqUin') IS NULL)")
-    params.qqUin = account.qqUin
+  if (account?.userId) {
+    clauses.push('(user_id = @userId OR scope = \'global\')')
+    params.userId = account.userId
   }
   const rows = db.prepare(`
     SELECT id, type, error, updated_at AS updatedAt
@@ -292,9 +296,9 @@ const recentJobFailures = (account: AccountRecord | undefined) => {
 const getRecentWebdavEvents = (account: AccountRecord | undefined) => {
   const params: Record<string, unknown> = {}
   const clauses = ["type = 'emby_webdav'", "updated_at >= datetime('now', '-7 days')"]
-  if (account?.qqUin) {
-    clauses.push("json_extract(payload_json, '$.qqUin') = @qqUin")
-    params.qqUin = account.qqUin
+  if (account?.userId) {
+    clauses.push('user_id = @userId')
+    params.userId = account.userId
   }
   const rows = db.prepare(`
     SELECT status, COUNT(*) AS count

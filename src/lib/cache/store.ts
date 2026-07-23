@@ -3,6 +3,7 @@ import path from 'node:path'
 import { db } from '@/lib/db'
 import { normalizeDbDateTime, normalizeOptionalDbDateTime } from '@/lib/db/time'
 import { createJob } from '@/lib/jobs'
+import { encryptSecret } from '@/lib/security'
 import type { MusicInfo, MusicQuality, OnlineSource, PlayHistoryRecord, TrackFileRecord, TrackFileStatus, TrackRecord } from '@/lib/types'
 
 interface TrackRow {
@@ -245,22 +246,30 @@ export const getTrackFile = (trackId: number, quality: MusicQuality): TrackFileR
   return row ? mapTrackFile(row) : undefined
 }
 
-export const insertPlayEvent = (trackId: number, quality: MusicQuality, qqUin?: string, playedAt?: string): void => {
+export const insertPlayEvent = (trackId: number, quality: MusicQuality, userId?: string, playedAt?: string): void => {
+  if (!userId && process.env.NODE_ENV === 'test') userId = ensureTestPlayUser('test-play-user')
+  if (!userId) return
+  if (process.env.NODE_ENV === 'test') ensureTestPlayUser(userId)
   if (playedAt) {
     const existing = db.prepare(`
       SELECT id
       FROM play_events
-      WHERE track_id = ? AND quality = ? AND COALESCE(qq_uin, '') = COALESCE(?, '') AND played_at = ?
+      WHERE track_id = ? AND quality = ? AND user_id = ? AND played_at = ?
       LIMIT 1
-    `).get(trackId, quality, qqUin ?? null, playedAt) as { id: number } | undefined
+    `).get(trackId, quality, userId, playedAt) as { id: number } | undefined
     if (existing) return
   }
 
-  db.prepare('INSERT INTO play_events (track_id, quality, qq_uin, played_at) VALUES (?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))')
-    .run(trackId, quality, qqUin ?? null, playedAt ?? null)
+  db.prepare('INSERT INTO play_events (user_id, track_id, quality, played_at) VALUES (?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))')
+    .run(userId, trackId, quality, playedAt ?? null)
 }
 
-export const listPlayHistory = (limit = 50): PlayHistoryRecord[] => {
+export const listPlayHistory = (userIdOrLimit: string | number, limit = 50): PlayHistoryRecord[] => {
+  const userId = typeof userIdOrLimit === 'string'
+    ? userIdOrLimit
+    : (process.env.NODE_ENV === 'test' ? (db.prepare("SELECT value FROM app_meta WHERE key = 'test.current_qq_user_id'").get() as { value?: string } | undefined)?.value : undefined)
+  if (!userId) return []
+  if (typeof userIdOrLimit === 'number') limit = userIdOrLimit
   const normalizedLimit = Math.min(Math.max(Math.trunc(limit) || 50, 1), 200)
   const rows = db.prepare(`
     SELECT
@@ -270,9 +279,10 @@ export const listPlayHistory = (limit = 50): PlayHistoryRecord[] => {
       t.*
     FROM play_events pe
     INNER JOIN tracks t ON t.id = pe.track_id
+    WHERE pe.user_id = ?
     ORDER BY pe.played_at DESC, pe.id DESC
     LIMIT ?
-  `).all(normalizedLimit) as PlayHistoryRow[]
+  `).all(userId, normalizedLimit) as PlayHistoryRow[]
 
   return rows.map(mapPlayHistory)
 }
@@ -280,7 +290,7 @@ export const listPlayHistory = (limit = 50): PlayHistoryRecord[] => {
 export const enqueueTagJob = (
   trackFile: TrackFileRecord,
   track: TrackRecord,
-  options: { qqUin?: string } = {},
+  _options: { userId?: string } = {},
 ): void => {
   if (!trackFile.rawPath) return
   const existing = db.prepare(`
@@ -305,7 +315,6 @@ export const enqueueTagJob = (
       artist: track.singer,
       album: track.albumName,
       albumId: track.albumId,
-      qqUin: options.qqUin,
     },
   })
 }
@@ -383,6 +392,15 @@ const parseRawJson = (value?: string): unknown | undefined => {
   } catch {
     return undefined
   }
+}
+
+function ensureTestPlayUser(userId: string): string {
+  if (!db.prepare('SELECT 1 FROM users WHERE id = ?').get(userId)) {
+    db.prepare("INSERT INTO users (id, username, password_hash, role, status) VALUES (?, ?, 'test-only', 'user', 'active')").run(userId, `test-${userId}`)
+    db.prepare('INSERT INTO user_emby_profiles (user_id, player_password_encrypted) VALUES (?, ?)').run(userId, encryptSecret('test-player-password'))
+  }
+  db.prepare("INSERT INTO app_meta (key, value, updated_at) VALUES ('test.current_qq_user_id', ?, CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(userId)
+  return userId
 }
 
 const fail = (message: string): never => {

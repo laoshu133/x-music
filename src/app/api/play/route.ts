@@ -57,15 +57,16 @@ const handlePlayRequest = async (request: Request, input: PlayRequest): Promise<
   const requestedQuality = parseRequestedQuality(input.quality)
   const preferredQuality = requestedQuality ?? 'flac'
   const shouldRecordPlayback = isPlaybackStartRequest(request)
-  const account = await getCurrentAccount({ verifyQQ: false }).catch(() => undefined)
+  const account = await getCurrentAccount()
+  if (!account) return jsonError('Login required', 401)
 
   const track = ensureTrack(musicInfo)
   try {
     const resolved = await resolvePlayableUpstreamResponse(musicInfo, preferredQuality, track, request, account)
     if (shouldRecordPlayback) {
-      insertPlayEvent(track.id, resolved.quality, account?.qqUin)
+      insertPlayEvent(track.id, resolved.quality, account.userId)
       syncQQPlayHistoryBestEffort({
-        cookie: request.headers.get('x-qq-music-cookie') ?? undefined,
+        cookie: account.qqCookie,
         musicInfo,
         quality: resolved.quality,
         playUrl: resolved.url,
@@ -135,7 +136,7 @@ const resolvePlayableUpstreamResponse = async (
         resolved.ekey,
         {
           librarySync: isHighestAvailableQuality(musicInfo, resolved.quality),
-          qqUin: account?.qqUin,
+          userId: account?.userId,
         },
       )
       return {

@@ -17,9 +17,10 @@ export async function syncMappedEmbyFavoriteBestEffort(
   song: MusicInfo,
   favorite: boolean,
 ): Promise<EmbyFavoriteSyncResult> {
+  if (!account) return { attempted: false, synced: false }
   const embyUserId = account?.embyUserId
   const remoteItemId = getRemoteMapping({
-    qqUin: account?.qqUin,
+    userId: account.userId,
     localType: 'track',
     localKey: `${song.source}:${song.songmid}`,
     remote: 'emby',
@@ -52,11 +53,11 @@ export async function pushLocalFavoritesToEmby(input: {
   errors: Array<{ songmid: string; error: string }>
 }> {
   const embyUserId = input.account?.embyUserId
-  if (!embyUserId) {
+  if (!input.account || !embyUserId) {
     return { source: 'emby', attempted: 0, synced: 0, failed: 0, skipped: 0, errors: [] }
   }
 
-  const favorites = listLocalFavoritesForAccount(input.account?.qqUin)
+  const favorites = listLocalFavoritesForAccount(input.account?.userId)
     .filter(record => record.desiredState === 'favorite')
     .slice(0, input.limit ?? 200)
   const errors: Array<{ songmid: string; error: string }> = []
@@ -121,7 +122,7 @@ export async function pullEmbyFavorites(input: {
       skipped += 1
       continue
     }
-    setLocalFavoriteSynced(song, true, account.qqUin)
+    setLocalFavoriteSynced(song, true, account.userId)
     pulled += 1
 
     if (input.syncQQ !== false) {
@@ -142,7 +143,7 @@ export async function pullEmbyFavorites(input: {
 
   return {
     source: 'emby',
-    list: listLocalFavoritesForAccount(account.qqUin).filter(record => record.desiredState === 'favorite'),
+    list: listLocalFavoritesForAccount(account.userId).filter(record => record.desiredState === 'favorite'),
     pulled,
     qqSynced,
     qqFailed,
@@ -163,7 +164,7 @@ export async function syncEmbyFavoritesFromQQList(input: {
   errors: Array<{ songmid: string; error: string }>
 }> {
   const embyUserId = input.account?.embyUserId
-  if (!embyUserId) return { attempted: 0, synced: 0, failed: 0, skipped: 0, errors: [] }
+  if (!input.account || !embyUserId) return { attempted: 0, synced: 0, failed: 0, skipped: 0, errors: [] }
 
   const embyFavorites = await fetchEmbyFavoriteAudioItems({
     userId: embyUserId,
@@ -171,7 +172,7 @@ export async function syncEmbyFavoritesFromQQList(input: {
   }, { account: input.account }).catch(() => ({ Items: [] }))
   const embyFavoriteIds = new Set((embyFavorites.Items ?? []).map(item => item.Id).filter((id): id is string => Boolean(id)))
   const mappings = dedupeSongs(input.qqFavorites)
-    .map(song => getRemoteMapping({ qqUin: input.account?.qqUin, localType: 'track', localKey: `${song.source}:${song.songmid}`, remote: 'emby' }))
+    .map(song => getRemoteMapping({ userId: input.account!.userId, localType: 'track', localKey: `${song.source}:${song.songmid}`, remote: 'emby' }))
     .filter((mapping): mapping is NonNullable<typeof mapping> => Boolean(mapping))
     .slice(0, input.limit ?? 500)
   const errors: Array<{ songmid: string; error: string }> = []
@@ -258,8 +259,9 @@ function dedupeSongs(songs: MusicInfo[]): MusicInfo[] {
 }
 
 function mappedEmbyItemId(song: Pick<FavoriteRecord, 'source' | 'songmid'>, account?: AccountRecord): string | undefined {
+  if (!account) return undefined
   return getRemoteMapping({
-    qqUin: account?.qqUin,
+    userId: account.userId,
     localType: 'track',
     localKey: `${song.source}:${song.songmid}`,
     remote: 'emby',
@@ -270,7 +272,7 @@ export function musicInfoFromEmbyMappedItem(item: EmbyAudioUserDataItem, account
   const itemId = item.Id
   if (!itemId) return undefined
 
-  const mapping = getRemoteMappingByRemote({ qqUin: account?.qqUin, remote: 'emby', remoteId: itemId })
+  const mapping = account ? getRemoteMappingByRemote({ userId: account.userId, remote: 'emby', remoteId: itemId }) : undefined
   const mapped = parseMappedMusicInfo(mapping?.rawJson)
   if (mapped) return mapped
 

@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { getQQDailyRecommendations, getQQRecommendations, qqMusicErrorResponse } from '@/lib/qq'
+import { isAuthResponse, requireUserAccount } from '@/lib/api-auth'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -11,9 +12,11 @@ function getPositiveInt(value: string | null, fallback: number, max: number) {
 }
 
 export async function GET(request: Request) {
+  const account = await requireUserAccount()
+  if (isAuthResponse(account)) return account
   const { searchParams } = new URL(request.url)
   const limit = getPositiveInt(searchParams.get('limit'), 30, 100)
-  const cookie = request.headers.get('x-qq-music-cookie') ?? undefined
+  const cookie = account.qqCookie
   const type = searchParams.get('type')?.toLowerCase()
 
   try {

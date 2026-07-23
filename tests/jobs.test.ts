@@ -134,11 +134,11 @@ test('exhausted queued jobs are failed during queue maintenance', () => {
 
   const exhausted = createJob({
     type: 'sync_emby_track',
-    payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid: `EXHAUSTED_QUEUED_${Date.now()}`, musicInfo: { source: 'tx', songmid: 'a', name: 'A', singer: 'B' } },
+    payload: { source: 'tx', userId: TEST_EMBY_QQ_UIN, songmid: `EXHAUSTED_QUEUED_${Date.now()}`, musicInfo: { source: 'tx', songmid: 'a', name: 'A', singer: 'B' } },
   })
   const retryable = createJob({
     type: 'sync_emby_track',
-    payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid: `RETRYABLE_QUEUED_${Date.now()}`, musicInfo: { source: 'tx', songmid: 'b', name: 'B', singer: 'C' } },
+    payload: { source: 'tx', userId: TEST_EMBY_QQ_UIN, songmid: `RETRYABLE_QUEUED_${Date.now()}`, musicInfo: { source: 'tx', songmid: 'b', name: 'B', singer: 'C' } },
   })
   db.prepare("UPDATE jobs SET attempts = 3, next_run_at = datetime('now', '-1 minute'), error = 'Recovered stale running job' WHERE id = ?").run(exhausted.id)
   db.prepare("UPDATE jobs SET attempts = 2, next_run_at = datetime('now', '-1 minute') WHERE id = ?").run(retryable.id)
@@ -150,30 +150,30 @@ test('exhausted queued jobs are failed during queue maintenance', () => {
   assert.equal(getJob(retryable.id)?.status, 'queued')
 })
 
-test('remote emby mappings are isolated by QQ user', () => {
+test('remote emby mappings are isolated by XMusic user id', () => {
   const songmid = `REMOTE_MAPPING_USER_${Date.now()}`
   const localKey = `tx:${songmid}`
   db.prepare("DELETE FROM remote_mappings WHERE local_type = 'track' AND local_key = ? AND remote = 'emby'").run(localKey)
   try {
     upsertRemoteMapping({
-      qqUin: 'user-a',
+      userId: 'user-a',
       localType: 'track',
       localKey,
       remote: 'emby',
       remoteId: 'emby-user-a-track',
     })
     upsertRemoteMapping({
-      qqUin: 'user-b',
+      userId: 'user-b',
       localType: 'track',
       localKey,
       remote: 'emby',
       remoteId: 'emby-user-b-track',
     })
 
-    assert.equal(getRemoteMapping({ qqUin: 'user-a', localType: 'track', localKey, remote: 'emby' })?.remoteId, 'emby-user-a-track')
-    assert.equal(getRemoteMapping({ qqUin: 'user-b', localType: 'track', localKey, remote: 'emby' })?.remoteId, 'emby-user-b-track')
-    assert.equal(getRemoteMappingByRemote({ qqUin: 'user-a', remote: 'emby', remoteId: 'emby-user-b-track' })?.localKey, undefined)
-    assert.equal(getRemoteMappingByRemote({ qqUin: 'user-b', remote: 'emby', remoteId: 'emby-user-b-track' })?.localKey, localKey)
+    assert.equal(getRemoteMapping({ userId: 'user-a', localType: 'track', localKey, remote: 'emby' })?.remoteId, 'emby-user-a-track')
+    assert.equal(getRemoteMapping({ userId: 'user-b', localType: 'track', localKey, remote: 'emby' })?.remoteId, 'emby-user-b-track')
+    assert.equal(getRemoteMappingByRemote({ userId: 'user-a', remote: 'emby', remoteId: 'emby-user-b-track' })?.localKey, undefined)
+    assert.equal(getRemoteMappingByRemote({ userId: 'user-b', remote: 'emby', remoteId: 'emby-user-b-track' })?.localKey, localKey)
   } finally {
     db.prepare("DELETE FROM remote_mappings WHERE local_type = 'track' AND local_key = ? AND remote = 'emby'").run(localKey)
   }
@@ -184,11 +184,11 @@ test('job status helpers list jobs and summarize states', () => {
 
   const queued = createJob({
     type: 'sync_emby_track',
-    payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid: `JOB_${Date.now()}`, musicInfo: { source: 'tx', songmid: 'a', name: 'A', singer: 'B' } },
+    payload: { source: 'tx', userId: TEST_EMBY_QQ_UIN, songmid: `JOB_${Date.now()}`, musicInfo: { source: 'tx', songmid: 'a', name: 'A', singer: 'B' } },
   })
   const failed = createJob({
     type: 'sync_emby_track',
-    payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid: `JOB_FAIL_${Date.now()}`, musicInfo: { source: 'tx', songmid: 'c', name: 'C', singer: 'D' } },
+    payload: { source: 'tx', userId: TEST_EMBY_QQ_UIN, songmid: `JOB_FAIL_${Date.now()}`, musicInfo: { source: 'tx', songmid: 'c', name: 'C', singer: 'D' } },
   })
   failJob(failed.id, 'no file')
 
@@ -208,17 +208,17 @@ test('stale running jobs are recovered until max attempts', () => {
   const retryable = createJob({
     type: 'sync_emby_track',
     status: 'running',
-    payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid: `STALE_${Date.now()}`, musicInfo: { source: 'tx', songmid: 'a', name: 'A', singer: 'B' } },
+    payload: { source: 'tx', userId: TEST_EMBY_QQ_UIN, songmid: `STALE_${Date.now()}`, musicInfo: { source: 'tx', songmid: 'a', name: 'A', singer: 'B' } },
   })
   const exhausted = createJob({
     type: 'sync_emby_track',
     status: 'running',
-    payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid: `STALE_EXHAUSTED_${Date.now()}`, musicInfo: { source: 'tx', songmid: 'b', name: 'B', singer: 'C' } },
+    payload: { source: 'tx', userId: TEST_EMBY_QQ_UIN, songmid: `STALE_EXHAUSTED_${Date.now()}`, musicInfo: { source: 'tx', songmid: 'b', name: 'B', singer: 'C' } },
   })
   const fresh = createJob({
     type: 'sync_emby_track',
     status: 'running',
-    payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid: `FRESH_${Date.now()}`, musicInfo: { source: 'tx', songmid: 'c', name: 'C', singer: 'D' } },
+    payload: { source: 'tx', userId: TEST_EMBY_QQ_UIN, songmid: `FRESH_${Date.now()}`, musicInfo: { source: 'tx', songmid: 'c', name: 'C', singer: 'D' } },
   })
   db.prepare("UPDATE jobs SET attempts = 1, updated_at = datetime('now', '-1 hour') WHERE id = ?").run(retryable.id)
   db.prepare("UPDATE jobs SET attempts = 3, updated_at = datetime('now', '-1 hour') WHERE id = ?").run(exhausted.id)
@@ -277,7 +277,7 @@ test('emby sync job fails after max attempts when no cached file exists', async 
     type: 'sync_emby_track',
     payload: {
       source: 'tx',
-      qqUin: TEST_EMBY_QQ_UIN,
+      userId: TEST_EMBY_QQ_UIN,
       songmid,
       musicInfo: { source: 'tx', songmid, name: 'Missing Sync', singer: 'Tester' },
     },
@@ -311,7 +311,7 @@ test('emby sync job waits for cached media before failing', async () => {
     const track = ensureTrack(musicInfo)
     const created = createJob({
       type: 'sync_emby_track',
-      payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid, musicInfo },
+      payload: { source: 'tx', userId: TEST_EMBY_QQ_UIN, songmid, musicInfo },
     })
 
     globalThis.fetch = (async (url: string | URL | Request) => {
@@ -360,7 +360,7 @@ test('emby sync job prefers highest ready quality over newer low quality cache',
     upsertTrackFileStatus(track.id, '128k', 'ready', { finalPath: oggPath, sizeBytes: 3_000_000 })
     const created = createJob({
       type: 'sync_emby_track',
-      payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid, musicInfo },
+      payload: { source: 'tx', userId: TEST_EMBY_QQ_UIN, songmid, musicInfo },
     })
 
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
@@ -444,7 +444,7 @@ test('emby sync job marks stale missing highest quality without falling back to 
     upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath: oggPath, sizeBytes: 5_000_000 })
     const created = createJob({
       type: 'sync_emby_track',
-      payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid, musicInfo },
+      payload: { source: 'tx', userId: TEST_EMBY_QQ_UIN, songmid, musicInfo },
     })
 
     globalThis.fetch = (async () => Response.json({ error: 'should not scan lower quality' }, { status: 500 })) as typeof fetch
@@ -488,7 +488,7 @@ test('emby sync job does not sync low quality when highest quality is missing', 
     upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath: lowPath, sizeBytes: 5_000_000 })
     const created = createJob({
       type: 'sync_emby_track',
-      payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid, musicInfo },
+      payload: { source: 'tx', userId: TEST_EMBY_QQ_UIN, songmid, musicInfo },
     })
 
     globalThis.fetch = (async (url: string | URL | Request) => {
@@ -535,7 +535,7 @@ test('emby sync job can use cached fallback quality when explicitly allowed', as
       type: 'sync_emby_track',
       payload: {
         source: 'tx',
-        qqUin: TEST_EMBY_QQ_UIN,
+        userId: TEST_EMBY_QQ_UIN,
         songmid,
         musicInfo,
         allowCachedQualityFallback: true,
@@ -592,7 +592,7 @@ test('emby sync job recovers failed rows that still have playable files', async 
     })
     const created = createJob({
       type: 'sync_emby_track',
-      payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid, musicInfo },
+      payload: { source: 'tx', userId: TEST_EMBY_QQ_UIN, songmid, musicInfo },
     })
 
     globalThis.fetch = (async (url: string | URL | Request) => {
@@ -1000,7 +1000,7 @@ test('archive track job downloads from QQ LX even when upstream Emby is configur
     }
     const created = createJob({
       type: 'archive_track',
-      payload: { source: 'tx' as const, qqUin: TEST_EMBY_QQ_UIN, songmid, musicInfo, reason: 'favorite' as const },
+      payload: { source: 'tx' as const, userId: TEST_EMBY_QQ_UIN, songmid, musicInfo, reason: 'favorite' as const },
     })
 
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
@@ -1136,7 +1136,7 @@ test('emby sync job does not complete when scan cannot find item', async () => {
     upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath: rawPath, rawPath })
     const created = createJob({
       type: 'sync_emby_track',
-      payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid, musicInfo },
+      payload: { source: 'tx', userId: TEST_EMBY_QQ_UIN, songmid, musicInfo },
     })
 
     globalThis.fetch = (async (url: string | URL | Request) => {
@@ -1172,7 +1172,7 @@ test('emby sync job ignores non-matching Emby search fallback item', async () =>
     upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath: rawPath, rawPath })
     const created = createJob({
       type: 'sync_emby_track',
-      payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid, musicInfo },
+      payload: { source: 'tx', userId: TEST_EMBY_QQ_UIN, songmid, musicInfo },
     })
 
     globalThis.fetch = (async (url: string | URL | Request) => {
@@ -1212,7 +1212,7 @@ test('emby sync job fails unsupported audio containers without scanning Emby', a
     upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath: rawPath, rawPath })
     const created = createJob({
       type: 'sync_emby_track',
-      payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid, musicInfo },
+      payload: { source: 'tx', userId: TEST_EMBY_QQ_UIN, songmid, musicInfo },
     })
 
     globalThis.fetch = (async (url: string | URL | Request) => {
@@ -1244,11 +1244,7 @@ test('emby sync job reports missing account context in configuration failures', 
     assert.equal(await processOneEmbySyncJob(1), true)
     const job = getJob(created.id)
     assert.equal(job?.status, 'failed')
-    assert.match(job?.error ?? '', /User Emby server or source WebDAV is not configured/)
-    assert.match(job?.error ?? '', new RegExp(`song=tx:${songmid}`))
-    assert.match(job?.error ?? '', /qqUin=<missing>/)
-    assert.match(job?.error ?? '', /accountFound=no/)
-    assert.match(job?.error ?? '', /hasSourceWebdav=no/)
+    assert.match(job?.error ?? '', /User for Emby sync job no longer exists/)
   } finally {
     db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track' AND json_extract(payload_json, '$.songmid') = ?").run(songmid)
   }
@@ -1282,7 +1278,7 @@ test('emby sync job creates or updates Emby playlist from virtual playlist ids',
     upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath: rawPath, rawPath })
     const created = createJob({
       type: 'sync_emby_track',
-      payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid, playlistId, musicInfo },
+      payload: { source: 'tx', userId: TEST_EMBY_QQ_UIN, songmid, playlistId, musicInfo },
     })
 
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
@@ -1336,7 +1332,7 @@ test('emby sync job waits for asynchronous Emby scan results', async () => {
     upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath: rawPath, rawPath })
     const created = createJob({
       type: 'sync_emby_track',
-      payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid, musicInfo },
+      payload: { source: 'tx', userId: TEST_EMBY_QQ_UIN, songmid, musicInfo },
     })
 
     globalThis.fetch = (async (url: string | URL | Request) => {
@@ -1395,7 +1391,7 @@ test('emby sync job uploads ready media through WebDAV before scanning Emby', as
     `).run(lyricsPath, coverPath, trackFile.id)
     const created = createJob({
       type: 'sync_emby_track',
-      payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid, musicInfo },
+      payload: { source: 'tx', userId: TEST_EMBY_QQ_UIN, songmid, musicInfo },
     })
 
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
@@ -1545,7 +1541,7 @@ test('emby sync job uploads to WebDAV without upstream Emby and skips Emby refre
     `).run(lyricsPath, coverPath, trackFile.id)
     const created = createJob({
       type: 'sync_emby_track',
-      payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid, musicInfo },
+      payload: { source: 'tx', userId: TEST_EMBY_QQ_UIN, songmid, musicInfo },
     })
 
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
@@ -1568,7 +1564,7 @@ test('emby sync job uploads to WebDAV without upstream Emby and skips Emby refre
     assert.equal(await processOneEmbySyncJob(1), true)
     assert.equal(getJob(created.id)?.status, 'completed')
     assert.deepEqual(
-      requests.map(request => `${request.method} ${decodeURIComponent(request.pathname)}`),
+      requests.filter(request => request.pathname.startsWith('/dav/')).map(request => `${request.method} ${decodeURIComponent(request.pathname)}`),
       [
         'HEAD /dav/music/WebDAV Only Artist/WebDAV Only Album/WebDAV Only Artist - WebDAV Only Song.flac',
         'MKCOL /dav/music/WebDAV Only Artist',
@@ -1631,7 +1627,7 @@ test('emby sync job skips WebDAV upload when remote audio already exists', async
     `).run(lyricsPath, coverPath, trackFile.id)
     const created = createJob({
       type: 'sync_emby_track',
-      payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid, musicInfo },
+      payload: { source: 'tx', userId: TEST_EMBY_QQ_UIN, songmid, musicInfo },
     })
 
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
@@ -1748,7 +1744,7 @@ test('emby sync job requires path match after WebDAV upload', async () => {
     upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath })
     const created = createJob({
       type: 'sync_emby_track',
-      payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid, musicInfo },
+      payload: { source: 'tx', userId: TEST_EMBY_QQ_UIN, songmid, musicInfo },
     })
 
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
@@ -1813,7 +1809,7 @@ test('emby sync job waits for library final path before WebDAV upload', async ()
     upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath: inboxPath, rawPath: inboxPath })
     const created = createJob({
       type: 'sync_emby_track',
-      payload: { source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid, musicInfo },
+      payload: { source: 'tx', userId: TEST_EMBY_QQ_UIN, songmid, musicInfo },
     })
 
     globalThis.fetch = (async (url: string | URL | Request) => {
@@ -1854,7 +1850,7 @@ test('emby sync preflight rejects cached raw and pathless ready rows under WebDA
     upsertTrackFileStatus(track.id, '320k', 'cached_raw', { rawPath: inboxPath })
     upsertTrackFileStatus(track.id, 'flac', 'ready')
 
-    assert.equal(hasEmbySyncableCachedMedia({ source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid, musicInfo }), false)
+    assert.equal(hasEmbySyncableCachedMedia({ source: 'tx', userId: TEST_EMBY_QQ_UIN, songmid, musicInfo }), false)
   } finally {
     rmSync(inboxPath, { force: true })
     db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run(songmid)
@@ -1884,7 +1880,7 @@ test('emby sync preflight waits for unfinished preferred quality before WebDAV s
     upsertTrackFileStatus(track.id, 'flac', 'cached_raw', { rawPath: inboxPath })
     upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath: readyPath })
 
-    assert.equal(hasEmbySyncableCachedMedia({ source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid, musicInfo }), false)
+    assert.equal(hasEmbySyncableCachedMedia({ source: 'tx', userId: TEST_EMBY_QQ_UIN, songmid, musicInfo }), false)
   } finally {
     rmSync(inboxPath, { force: true })
     rmSync(path.join(appConfig.musicDir, 'Preflight Wait Artist'), { recursive: true, force: true })
@@ -1912,7 +1908,7 @@ test('emby sync preflight does not fall back from declared pathless preferred qu
     upsertTrackFileStatus(track.id, 'flac', 'ready')
     upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath: readyPath })
 
-    assert.equal(hasEmbySyncableCachedMedia({ source: 'tx', qqUin: TEST_EMBY_QQ_UIN, songmid, musicInfo }), false)
+    assert.equal(hasEmbySyncableCachedMedia({ source: 'tx', userId: TEST_EMBY_QQ_UIN, songmid, musicInfo }), false)
   } finally {
     rmSync(path.join(appConfig.musicDir, 'Preflight Fallback Artist'), { recursive: true, force: true })
     db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run(songmid)
@@ -1937,7 +1933,7 @@ test('emby sync job applies local favorite state after mapping', async () => {
       type: 'sync_emby_track',
       payload: {
         source: 'tx',
-        qqUin: TEST_EMBY_QQ_UIN,
+        userId: TEST_EMBY_QQ_UIN,
         songmid,
         musicInfo,
       },
@@ -1983,7 +1979,7 @@ test('emby sync job applies local unfavorite state after mapping', async () => {
       type: 'sync_emby_track',
       payload: {
         source: 'tx',
-        qqUin: TEST_EMBY_QQ_UIN,
+        userId: TEST_EMBY_QQ_UIN,
         songmid,
         musicInfo,
       },

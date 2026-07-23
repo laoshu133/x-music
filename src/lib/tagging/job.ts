@@ -1,4 +1,4 @@
-import { enqueueEmbyTrackSync } from '@/lib/emby/sync'
+import { enqueuePendingEmbyTrackSyncs } from '@/lib/emby/sync'
 import { db } from '@/lib/db'
 import { claimJobById, completeJob, failJob, requeueJob } from '@/lib/jobs'
 import { cleanupInboxFile } from '@/lib/tagging/cleanup'
@@ -62,18 +62,13 @@ export async function processTagTrackFileJobById(jobId: number): Promise<void> {
 
   try {
     await tagTrackFile(job.payload)
-    enqueueEmbyTrackSync({
+    enqueuePendingEmbyTrackSyncs({
       source: job.payload.source,
       songmid: job.payload.songmid,
-      musicInfo: {
-        source: job.payload.source,
-        songmid: job.payload.songmid,
-        name: job.payload.title ?? job.payload.songmid,
-        singer: job.payload.artist ?? '',
-        albumName: job.payload.album,
-        albumId: job.payload.albumId,
-      },
-      qqUin: job.payload.qqUin,
+      name: job.payload.title ?? job.payload.songmid,
+      singer: job.payload.artist ?? '',
+      albumName: job.payload.album,
+      albumId: job.payload.albumId,
     })
     completeJob(job.id)
   } catch (error) {

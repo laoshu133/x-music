@@ -1,5 +1,4 @@
 import { QQMusicError } from './http'
-import { db } from '@/lib/db'
 
 export type QQLoginState = {
   cookie: string
@@ -12,10 +11,6 @@ export type QQLoginState = {
 
 type CookieInput = {
   cookie?: string
-}
-
-interface QQSessionRow {
-  cookie: string
 }
 
 const SESSION_COOKIE_NAMES = ['qm_keyst', 'qqmusic_key', 'p_skey', 'skey']
@@ -89,7 +84,7 @@ export function buildQQLoginState(cookieText: string, source: QQLoginState['sour
       'QQ Music login cookie is incomplete. Provide a cookie string containing uin plus qm_keyst/qqmusic_key or skey.',
       401,
       {
-        actionable: 'Copy the Cookie request header from an authenticated y.qq.com request, or set QQ_MUSIC_COOKIE.',
+        actionable: 'Copy the Cookie request header from an authenticated y.qq.com request and bind it to the current XMusic user.',
         hasUin: Boolean(uin),
         hasSessionCookie,
       },
@@ -109,31 +104,14 @@ export function buildQQLoginState(cookieText: string, source: QQLoginState['sour
 export function getQQLoginState(input?: CookieInput): QQLoginState | undefined {
   const explicitCookie = input?.cookie?.trim()
   if (explicitCookie) return buildQQLoginState(explicitCookie, 'request')
-
-  const stored = loadStoredQQLoginState()
-  if (stored) return stored
-
-  if (process.env.QQ_MUSIC_COOKIE?.trim()) {
-    return buildQQLoginState(process.env.QQ_MUSIC_COOKIE, 'env')
-  }
-
   return undefined
-}
-
-function loadStoredQQLoginState(): QQLoginState | undefined {
-  try {
-    const row = db.prepare('SELECT cookie FROM qq_session WHERE id = 1').get() as QQSessionRow | undefined
-    return row ? buildQQLoginState(row.cookie, 'stored') : undefined
-  } catch {
-    return undefined
-  }
 }
 
 export function requireQQLoginState(input?: CookieInput): QQLoginState {
   const state = getQQLoginState(input)
   if (!state) {
     throw new QQMusicError('QQ Music login cookie is required for this endpoint', 401, {
-      actionable: 'Send { "cookie": "..." } to /api/account/import or configure QQ_MUSIC_COOKIE.',
+      actionable: 'Complete QQ authorization for the current XMusic user.',
     })
   }
   return state

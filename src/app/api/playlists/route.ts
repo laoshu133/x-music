@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { searchQQPlaylists } from '@/lib/qq'
+import { isAuthResponse, requireUserAccount } from '@/lib/api-auth'
 
 export const runtime = 'nodejs'
 
@@ -10,6 +11,8 @@ function getPositiveInt(value: string | null, fallback: number, max: number) {
 }
 
 export async function GET(request: Request) {
+  const account = await requireUserAccount()
+  if (isAuthResponse(account)) return account
   const { searchParams } = new URL(request.url)
   const query = searchParams.get('q')?.trim() ?? ''
   if (!query) {

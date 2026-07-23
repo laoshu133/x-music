@@ -1,9 +1,8 @@
 import {
-  getAccountByQQ,
+  getAccountByUserId,
   updateAccountQQCookie,
   type AccountRecord,
 } from '@/lib/db/accounts'
-import { getStoredQQLoginState, updateStoredQQLoginCookie } from '@/lib/db/qq-session'
 import { logServiceEvent } from '@/lib/request-log'
 import { parseQQAccessTokenExpiresAt, parseQQMusickeyCreatedAt } from './account'
 import { QQMusicError } from './http'
@@ -12,7 +11,7 @@ import { refreshQQMusickey, type QQMusickeyRefreshResult } from './session-refre
 const defaultRefreshWindowMs = Number(process.env.QQ_AUTH_AUTO_REFRESH_WINDOW_MS ?? 7 * 24 * 60 * 60 * 1000)
 const defaultRefreshMinIntervalMs = Number(process.env.QQ_AUTH_AUTO_REFRESH_MIN_INTERVAL_MS ?? 6 * 60 * 60 * 1000)
 const defaultRefreshMaxAgeMs = Number(process.env.QQ_AUTH_AUTO_REFRESH_MAX_AGE_MS ?? 24 * 60 * 60 * 1000)
-const lastRefreshAttemptByUin = new Map<string, number>()
+const lastRefreshAttemptByUser = new Map<string, number>()
 
 export interface QQAuthorizationRefreshResult {
   account: AccountRecord
@@ -36,9 +35,9 @@ export async function refreshAccountQQAuthorization(
       actualUin: result.uin,
     })
   }
-  updateStoredSessionIfCurrentAccount(result.uin, result.cookie)
-  const refreshedAccount = updateAccountQQCookie(result.cookie) ?? getAccountByQQ(result.uin) ?? account
+  const refreshedAccount = updateAccountQQCookie(account.userId, result.cookie) ?? getAccountByUserId(account.userId) ?? account
   logServiceEvent('qq_auth_refresh_success', {
+    userId: account.userId,
     qqUin: result.uin,
     changed: result.changed,
     keyRefreshed: result.keyRefreshed,
@@ -69,9 +68,9 @@ export async function refreshAccountQQAuthorizationIfNeeded(
     return { account, attempted: false, refreshed: false }
   }
 
-  lastRefreshAttemptByUin.set(account.qqUin, Date.now())
+  lastRefreshAttemptByUser.set(account.userId, Date.now())
   logServiceEvent('qq_auth_refresh_attempt', {
-    qqUin: account.qqUin,
+    userId: account.userId,
     reason: decision.reason,
     accessTokenExpiresAt: decision.accessTokenExpiresAt,
     musickeyCreatedAt: decision.musickeyCreatedAt,
@@ -89,7 +88,7 @@ export async function refreshAccountQQAuthorizationIfNeeded(
   } catch (error) {
     if (options.force) throw error
     logServiceEvent('qq_auth_refresh_failed', {
-      qqUin: account.qqUin,
+      userId: account.userId,
       reason: decision.reason,
       error: error instanceof Error ? error.message : String(error),
       status: error instanceof QQMusicError ? error.status : undefined,
@@ -150,7 +149,7 @@ export function getAccountQQAuthorizationRefreshDecision(
 
   const now = Date.now()
   const minIntervalMs = options.minIntervalMs ?? defaultRefreshMinIntervalMs
-  const lastAttemptAt = lastRefreshAttemptByUin.get(account.qqUin)
+  const lastAttemptAt = lastRefreshAttemptByUser.get(account.userId)
   if (lastAttemptAt && now - lastAttemptAt < minIntervalMs) {
     return {
       shouldRefresh: false,
@@ -213,15 +212,10 @@ export function getAccountQQAuthorizationRefreshDecision(
   }
 }
 
-function updateStoredSessionIfCurrentAccount(uin: string, cookie: string): void {
-  const stored = getStoredQQLoginState()
-  if (stored?.uin === uin) updateStoredQQLoginCookie(cookie)
-}
-
 function logRefreshSkipped(account: AccountRecord, decision: QQAuthorizationRefreshDecision): void {
   if (!['1', 'true', 'on', 'yes'].includes(process.env.X_MUSIC_QQ_AUTH_REFRESH_LOG_SKIPS?.trim().toLowerCase() ?? '')) return
   logServiceEvent('qq_auth_refresh_skipped', {
-    qqUin: account.qqUin,
+    userId: account.userId,
     reason: decision.reason,
     accessTokenExpiresAt: decision.accessTokenExpiresAt,
     musickeyCreatedAt: decision.musickeyCreatedAt,

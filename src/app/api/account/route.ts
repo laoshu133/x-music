@@ -1,22 +1,21 @@
 import { NextResponse } from 'next/server'
 import { qqMusicErrorResponse } from '@/lib/qq'
 import { summarizeAccount } from '@/lib/db/accounts'
-import { clearCurrentAccount, clearCurrentAccountIfQQAuthExpired, getCurrentAccount } from '@/lib/session'
+import { clearCurrentAccount, getCurrentAccount } from '@/lib/session'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
 export async function GET() {
   try {
-    const account = await getCurrentAccount()
+    const account = await getCurrentAccount({ verifyQQ: false })
     if (account) return NextResponse.json(summarizeAccount(account))
 
     return NextResponse.json({
       loggedIn: false,
-      actionable: 'Scan the QQ login QR code or POST a QQ Music Cookie header string to /api/account/import.',
+      actionable: 'Register or sign in with your XMusic username and password.',
     })
   } catch (error) {
-    await clearCurrentAccountIfQQAuthExpired(error)
     return qqMusicErrorResponse(error)
   }
 }

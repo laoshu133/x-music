@@ -1,81 +1,61 @@
+// Legacy test factory. Production authorization is always bound to an existing user_id.
 import { db } from '@/lib/db'
-import { upsertAccountFromQQCookie } from '@/lib/db/accounts'
-import { buildQQLoginState, parseQQAccessTokenExpiresAt, summarizeQQLoginState, type QQLoginState } from '@/lib/qq/account'
+import { accountToQQLoginState, bindQQAuthorization, getAccountByQQ, getAccountByUserId, updateAccountQQCookie } from '@/lib/db/accounts'
+import { buildQQLoginState, type QQLoginState } from '@/lib/qq/account'
+import { encryptSecret, randomToken } from '@/lib/security'
 
-interface QQSessionRow {
-  cookie: string
-  uin: string
-  encrypted_uin: string | null
-  qqmusic_key: string | null
-  updated_at: string
+const testCurrentKey = 'test.current_qq_user_id'
+
+export function saveQQLoginCookie(cookieText: string, options: { loginIp?: string } = {}): ReturnType<typeof legacySummary> {
+  assertTestOnly()
+  const state = buildQQLoginState(cookieText, 'stored')
+  let account = getAccountByQQ(state.uin)
+  const isNew = !account
+  if (!account) {
+    if (!db.prepare('SELECT 1 FROM users WHERE id = ?').get(state.uin)) {
+      db.prepare(`INSERT INTO users (id, username, password_hash, role, status, last_login_at, last_login_ip) VALUES (?, ?, 'test-only', 'user', 'active', CURRENT_TIMESTAMP, ?)`).run(state.uin, `QQ${state.uin}`, options.loginIp ?? null)
+    }
+    if (!db.prepare('SELECT 1 FROM user_emby_profiles WHERE user_id = ?').get(state.uin)) {
+      db.prepare(`INSERT INTO user_emby_profiles (user_id, player_password_encrypted) VALUES (?, ?)`).run(state.uin, encryptSecret(randomToken(18)))
+    }
+    account = bindQQAuthorization(state.uin, cookieText)
+  } else {
+    account = updateAccountQQCookie(account.userId, cookieText) ?? account
+  }
+  db.prepare(`INSERT INTO app_meta (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value = excluded.value`).run(testCurrentKey, account.userId)
+  return legacySummary(account, isNew ? account.embyPassword : undefined)
 }
 
 export function getStoredQQLoginState(): QQLoginState | undefined {
-  const row = db.prepare('SELECT * FROM qq_session WHERE id = 1').get() as QQSessionRow | undefined
-  if (!row) return undefined
-
-  return {
-    cookie: row.cookie,
-    uin: row.uin,
-    encryptedUin: row.encrypted_uin ?? undefined,
-    qqmusicKey: row.qqmusic_key ?? undefined,
-    accessTokenExpiresAt: parseQQAccessTokenExpiresAt(row.cookie),
-    source: 'stored',
-  }
-}
-
-export function saveQQLoginCookie(cookieText: string, options: { loginIp?: string } = {}) {
-  const state = buildQQLoginState(cookieText, 'stored')
-  const result = upsertAccountFromQQCookie(cookieText, options)
-  db.prepare(`
-    INSERT INTO qq_session (id, cookie, uin, encrypted_uin, qqmusic_key, updated_at)
-    VALUES (1, @cookie, @uin, @encryptedUin, @qqmusicKey, CURRENT_TIMESTAMP)
-    ON CONFLICT(id) DO UPDATE SET
-      cookie = excluded.cookie,
-      uin = excluded.uin,
-      encrypted_uin = excluded.encrypted_uin,
-      qqmusic_key = excluded.qqmusic_key,
-      updated_at = CURRENT_TIMESTAMP
-  `).run({
-    cookie: state.cookie,
-    uin: state.uin,
-    encryptedUin: state.encryptedUin ?? null,
-    qqmusicKey: state.qqmusicKey ?? null,
-  })
-
-  return {
-    ...summarizeQQLoginState(state),
-    nickname: result.account.qqNickname,
-    emby: {
-      username: result.account.embyUsername,
-      hasPassword: Boolean(result.account.embyPassword),
-      userId: result.account.embyUserId,
-      hasAccessToken: Boolean(result.account.embyAccessToken),
-      generatedPassword: result.generatedPassword,
-    },
-  }
+  assertTestOnly()
+  const row = db.prepare('SELECT value FROM app_meta WHERE key = ?').get(testCurrentKey) as { value: string } | undefined
+  const account = row ? getAccountByUserId(row.value) : undefined
+  return account ? accountToQQLoginState(account) : undefined
 }
 
 export function updateStoredQQLoginCookie(cookieText: string): QQLoginState {
-  const state = buildQQLoginState(cookieText, 'stored')
-  db.prepare(`
-    INSERT INTO qq_session (id, cookie, uin, encrypted_uin, qqmusic_key, updated_at)
-    VALUES (1, @cookie, @uin, @encryptedUin, @qqmusicKey, CURRENT_TIMESTAMP)
-    ON CONFLICT(id) DO UPDATE SET
-      cookie = excluded.cookie,
-      uin = excluded.uin,
-      encrypted_uin = excluded.encrypted_uin,
-      qqmusic_key = excluded.qqmusic_key,
-      updated_at = CURRENT_TIMESTAMP
-  `).run({
-    cookie: state.cookie,
-    uin: state.uin,
-    encryptedUin: state.encryptedUin ?? null,
-    qqmusicKey: state.qqmusicKey ?? null,
-  })
-  return state
+  const stored = getStoredQQLoginState()
+  if (!stored) throw new Error('No test QQ authorization')
+  const account = getAccountByQQ(stored.uin)!
+  return accountToQQLoginState(updateAccountQQCookie(account.userId, cookieText)!)
 }
 
 export function clearQQLoginCookie(): void {
-  db.prepare('DELETE FROM qq_session WHERE id = 1').run()
+  if (process.env.NODE_ENV === 'test') db.prepare('DELETE FROM app_meta WHERE key = ?').run(testCurrentKey)
+}
+
+function legacySummary(account: NonNullable<ReturnType<typeof getAccountByQQ>>, generatedPassword?: string) {
+  return {
+    loggedIn: true,
+    source: 'stored' as const,
+    uin: account.qqUin,
+    hasEncryptedUin: Boolean(account.encryptedUin),
+    hasQQMusicKey: Boolean(account.qqmusicKey),
+    nickname: account.qqNickname,
+    emby: { username: account.embyUsername, hasPassword: true, userId: account.embyUserId, hasAccessToken: Boolean(account.embyAccessToken), generatedPassword },
+  }
+}
+
+function assertTestOnly(): void {
+  if (process.env.NODE_ENV !== 'test') throw new Error('Legacy QQ session helpers are test-only')
 }

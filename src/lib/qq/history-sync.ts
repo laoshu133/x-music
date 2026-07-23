@@ -3,16 +3,17 @@ import { resolveMusicUrlWithFallback } from '@/lib/music-url/resolve'
 import { syncQQPlayHistory } from './history'
 
 export async function pushLocalPlayHistoryToQQ(input: {
+  userId?: string
   cookie?: string
   limit?: number
-} = {}): Promise<{
+}): Promise<{
   source: 'qq'
   attempted: number
   synced: number
   failed: number
   errors: Array<{ songmid: string; error: string }>
 }> {
-  const events = listPlayHistory(input.limit ?? 200)
+  const events = listPlayHistory(input.userId ?? (input.limit ?? 200), input.limit ?? 200)
   const errors: Array<{ songmid: string; error: string }> = []
   let synced = 0
 

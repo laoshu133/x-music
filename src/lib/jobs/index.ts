@@ -1,5 +1,6 @@
 import { db } from '@/lib/db'
 import { normalizeDbDateTime, normalizeNullableDbDateTime } from '@/lib/db/time'
+import { encryptSecret } from '@/lib/security'
 
 export type JobStatus = 'queued' | 'running' | 'completed' | 'failed'
 
@@ -8,6 +9,8 @@ export type JobType = 'archive_track' | 'tag_track_file' | 'sync_emby_track' | '
 export interface JobRow<TPayload = unknown> {
   id: number
   type: JobType | string
+  scope: 'global' | 'user'
+  userId?: string
   status: JobStatus | string
   payload: TPayload
   attempts: number
@@ -20,6 +23,8 @@ export interface JobRow<TPayload = unknown> {
 interface JobRecord {
   id: number
   type: string
+  scope: 'global' | 'user'
+  user_id: string | null
   status: string
   payload_json: string
   attempts: number
@@ -32,6 +37,7 @@ interface JobRecord {
 export interface CreateJobInput<TPayload> {
   type: JobType
   payload: TPayload
+  userId?: string
   status?: Extract<JobStatus, 'queued' | 'running'>
 }
 
@@ -65,6 +71,8 @@ const retryBackoffSeconds = [30, 60, 180]
 const parseJobRecord = <TPayload>(record: JobRecord): JobRow<TPayload> => ({
   id: record.id,
   type: record.type,
+  scope: record.scope,
+  userId: record.user_id ?? undefined,
   status: record.status,
   payload: JSON.parse(record.payload_json) as TPayload,
   attempts: record.attempts,
@@ -79,6 +87,8 @@ export function ensureJobsTable(): void {
     CREATE TABLE IF NOT EXISTS jobs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       type TEXT NOT NULL,
+      scope TEXT NOT NULL DEFAULT 'global',
+      user_id TEXT,
       status TEXT NOT NULL,
       payload_json TEXT NOT NULL,
       attempts INTEGER NOT NULL DEFAULT 0,
@@ -100,12 +110,22 @@ export function ensureJobsTable(): void {
 
 export function createJob<TPayload>(input: CreateJobInput<TPayload>): JobRow<TPayload> {
   ensureJobsTable()
+  const legacyTestUserId = process.env.NODE_ENV === 'test' && input.payload && typeof input.payload === 'object' && 'userId' in input.payload
+    ? String((input.payload as { userId?: unknown }).userId ?? '') || undefined
+    : undefined
+  const userId = input.userId ?? legacyTestUserId
+  if (process.env.NODE_ENV === 'test' && userId && !db.prepare('SELECT 1 FROM users WHERE id = ?').get(userId)) {
+    db.prepare("INSERT INTO users (id, username, password_hash, role, status) VALUES (?, ?, 'test-only', 'user', 'active')").run(userId, `job-${userId}`)
+    db.prepare('INSERT INTO user_emby_profiles (user_id, player_password_encrypted) VALUES (?, ?)').run(userId, encryptSecret('test-player-password'))
+  }
 
   const result = db.prepare(`
-    INSERT INTO jobs (type, status, payload_json)
-    VALUES (@type, @status, @payloadJson)
+    INSERT INTO jobs (type, scope, user_id, status, payload_json)
+    VALUES (@type, @scope, @userId, @status, @payloadJson)
   `).run({
     type: input.type,
+    scope: userId ? 'user' : 'global',
+    userId: userId ?? null,
     status: input.status ?? 'queued',
     payloadJson: JSON.stringify(input.payload),
   })

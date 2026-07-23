@@ -18,6 +18,7 @@ export async function sweepQQAuthorizations(): Promise<QQAuthorizationSweepResul
   }
 
   for (const account of listAccounts()) {
+    if (account.qqAuthState === 'missing') continue
     result.checked += 1
     try {
       await requireActiveQQAccount(account)
@@ -29,7 +30,7 @@ export async function sweepQQAuthorizations(): Promise<QQAuthorizationSweepResul
       }
       result.failed += 1
       logServiceEvent('qq_auth_sweep_account_failed', {
-        qqUin: account.qqUin,
+        userId: account.userId,
         error: error instanceof Error ? error.message : String(error),
       }, 'error')
     }

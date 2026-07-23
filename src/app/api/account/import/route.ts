@@ -1,54 +1,23 @@
-import { NextResponse } from 'next/server'
-import { buildQQLoginState, qqMusicErrorResponse, summarizeQQLoginState } from '@/lib/qq'
-import { getAccountByQQ, refreshAccountQQProfile, summarizeAccount } from '@/lib/db/accounts'
-import { saveQQLoginCookie } from '@/lib/db/qq-session'
-import { setCurrentAccount } from '@/lib/session'
-import { readRequestIp } from '@/lib/request-ip'
+import { bindQQAuthorization, getAccountByUserId, refreshAccountQQProfile, summarizeAccount } from '@/lib/db/accounts'
+import { qqMusicErrorResponse } from '@/lib/qq'
+import { getCurrentAccount } from '@/lib/session'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
-type ImportRequest = {
-  cookie?: string
-  persist?: boolean
-}
-
-export async function POST(request: Request) {
-  const contentType = request.headers.get('content-type') ?? ''
-  if (!contentType.includes('application/json')) {
-    return NextResponse.json({ error: 'POST /api/account/import expects application/json' }, { status: 415 })
-  }
-
-  const body = (await request.json().catch(() => undefined)) as ImportRequest | undefined
-  if (!body?.cookie) {
-    return NextResponse.json({ error: 'Missing cookie' }, { status: 400 })
-  }
-
+export async function POST(request: Request): Promise<Response> {
+  const account = await getCurrentAccount({ verifyQQ: false })
+  if (!account) return Response.json({ error: 'Login required', code: 'AUTH_REQUIRED' }, { status: 401 })
+  const body = await request.json().catch(() => undefined) as { cookie?: unknown } | undefined
+  if (typeof body?.cookie !== 'string' || !body.cookie.trim()) return Response.json({ error: 'Missing cookie' }, { status: 400 })
   try {
-    if (body.persist !== false) {
-      const saved = saveQQLoginCookie(body.cookie, { loginIp: readRequestIp(request) })
-      await setCurrentAccount(saved.uin)
-      const profiledAccount = await refreshAccountQQProfile(saved.uin).catch(() => undefined)
-      const account = profiledAccount ?? getAccountByQQ(saved.uin)
-      const accountSummary = account ? summarizeAccount(account) : saved
-      return NextResponse.json({
-        ...accountSummary,
-        emby: {
-          ...saved.emby,
-          ...accountSummary.emby,
-          userId: accountSummary.emby?.userId,
-        },
-        persisted: true,
-      })
-    }
-
-    const state = buildQQLoginState(body.cookie, 'request')
-    return NextResponse.json({
-      ...summarizeQQLoginState(state),
-      persisted: false,
-      actionable: 'This validates the cookie shape without saving it.',
-    })
+    bindQQAuthorization(account.userId, body.cookie)
+    const refreshed = await refreshAccountQQProfile(account.userId).catch(() => undefined)
+    return Response.json(summarizeAccount(refreshed ?? getAccountByUserId(account.userId)!))
   } catch (error) {
+    if (error instanceof Error && error.message === 'QQ_ALREADY_BOUND') {
+      return Response.json({ error: 'This QQ account is already bound to another user', code: 'QQ_ALREADY_BOUND' }, { status: 409 })
+    }
     return qqMusicErrorResponse(error)
   }
 }

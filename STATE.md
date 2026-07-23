@@ -24,7 +24,7 @@ The project is for personal/private deployment. Do not optimize for public multi
 - The canonical Emby gateway is the service root (`/`).
 - Legacy `/mixmusic/emby` and `/x-music/emby` compatibility is intentionally not maintained.
 - The virtual music library ID is `x-music-music`.
-- The account session cookie is `x_music_account`.
+- The account session cookie is `x_music_session` and contains an opaque token rather than a QQ UIN.
 - The gateway source response header is `x-x-music-source`.
 - Default local development port is `3004`.
 - Default Docker and production web port is `8098`.
@@ -36,15 +36,16 @@ The project is for personal/private deployment. Do not optimize for public multi
 - Docker image name is `x-music-app:latest`.
 - XMusic branding is reflected in UI, metadata, Emby server info, worker logs, README, and `.env.example`.
 - Root-level Emby-style HTTP routes are handled by `src/app/[...path]/route.ts`.
-- Management UI is focused on QQ login, Emby connection details, runtime config, ampcast launch, and status checks.
+- Management UI uses XMusic registration/login first, followed by per-user QQ authorization and Emby connection details.
 
 ## Emby Gateway Progress
 
 - Local Emby authentication is implemented.
-- One account is created per QQ login.
-- Gateway usernames are normalized as `QQ${QQ_UID}`.
+- XMusic users are independent from QQ identities; the first registered user is the administrator.
+- Every user manages one QQ authorization shared only across that user's sessions.
+- Gateway usernames are the canonical XMusic usernames and never depend on QQ UIN.
 - Existing upstream Emby users are looked up by saved `embyUserId` first, then by username.
-- Existing bound upstream users are renamed to the normalized `QQ${QQ_UID}` name when needed.
+- Existing bound upstream users are renamed to the canonical XMusic username when needed.
 - Upstream Emby user policy is reapplied on bind/login:
   - non-admin;
   - all channels disabled;

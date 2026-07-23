@@ -10,5 +10,4 @@ export interface TagTrackFileJobPayload {
   artist?: string
   album?: string
   albumId?: string
-  qqUin?: string
 }

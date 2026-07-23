@@ -2,7 +2,7 @@ import { db } from '@/lib/db'
 import { getPlayableTrackFile, isPlayableAudioFileName, isPlayableAudioPath, markMissingTrackFile } from '@/lib/cache/store'
 import { deleteCachedResourcesForTrack } from '@/lib/cache/resources'
 import { appConfig } from '@/lib/config'
-import { getAccountByQQ, type AccountRecord } from '@/lib/db/accounts'
+import { getAccountByUserId, type AccountRecord } from '@/lib/db/accounts'
 import { getFavoriteStatusForAccount } from '@/lib/db/favorites'
 import path from 'node:path'
 import { rmdir, rm } from 'node:fs/promises'
@@ -111,11 +111,15 @@ async function processClaimedEmbySyncJob(
   behavior: { throwOnError: boolean },
 ): Promise<void> {
   try {
-    const account = job.payload.qqUin ? getAccountByQQ(job.payload.qqUin) : undefined
+    const account = job.userId ? getAccountByUserId(job.userId) : undefined
+    if (!account) {
+      failJob(job.id, 'User for Emby sync job no longer exists')
+      return
+    }
     if (!hasAccountUpstreamEmby(account)) {
       const config = embyConfigForAccount(account)
       if (!config.sourceWebdavDsn) {
-        const message = embySyncConfigErrorMessage(job.payload, account)
+        const message = embySyncConfigErrorMessage(job.payload, account, job.userId)
         console.warn(message)
         failJob(job.id, message)
         return
@@ -125,7 +129,7 @@ async function processClaimedEmbySyncJob(
     const row = await waitForCachedMedia(job.payload, {
       timeoutMs: options.cacheWaitMs,
       pollIntervalMs: options.cachePollIntervalMs,
-      requireLibraryFinalPath: shouldRequireLibraryFinalPath(job.payload),
+      requireLibraryFinalPath: Boolean(account?.embySourceWebdavDsn),
     })
     if (row?.unsupportedPath) {
       failJob(job.id, `Cached file format is not syncable to Emby: ${row.unsupportedPath}`)
@@ -201,7 +205,7 @@ async function processClaimedEmbySyncJob(
     }
 
     upsertRemoteMapping({
-      qqUin: account?.qqUin,
+      userId: account.userId,
       localType: 'track',
       localKey: `${job.payload.source}:${job.payload.songmid}`,
       remote: 'emby',
@@ -265,11 +269,12 @@ async function processClaimedEmbySyncJob(
 function embySyncConfigErrorMessage(
   payload: SyncEmbyTrackJobPayload,
   account: AccountRecord | undefined,
+  userId?: string,
 ): string {
   return [
     'User Emby server or source WebDAV is not configured',
     `song=${payload.source}:${payload.songmid}`,
-    `qqUin=${payload.qqUin ?? '<missing>'}`,
+    `userId=${userId ?? '<missing>'}`,
     `accountFound=${account ? 'yes' : 'no'}`,
     `hasEmby=${hasAccountUpstreamEmby(account) ? 'yes' : 'no'}`,
     `hasSourceWebdav=${embyConfigForAccount(account).sourceWebdavDsn ? 'yes' : 'no'}`,
@@ -282,14 +287,16 @@ function recordWebdavSyncEvent(input: {
   embyPath: string
   uploadedPaths: string[]
 }): void {
+  if (!input.account) return
   db.prepare(`
-    INSERT INTO sync_events (type, status, payload_json, updated_at)
-    VALUES (@type, @status, @payloadJson, CURRENT_TIMESTAMP)
+    INSERT INTO sync_events (user_id, type, status, payload_json, updated_at)
+    VALUES (@userId, @type, @status, @payloadJson, CURRENT_TIMESTAMP)
   `).run({
+    userId: input.account.userId,
     type: 'emby_webdav',
     status: input.uploadedPaths.length > 0 ? 'uploaded' : 'skipped_existing',
     payloadJson: JSON.stringify({
-      qqUin: input.account?.qqUin,
+      userId: input.account.userId,
       source: input.payload.source,
       songmid: input.payload.songmid,
       embyPath: input.embyPath,
@@ -299,10 +306,11 @@ function recordWebdavSyncEvent(input: {
 }
 
 function upsertPlaylistMapping(playlistId: string | undefined, remoteId: string, name: string, account?: AccountRecord): void {
+  if (!account) return
   const decoded = playlistId ? decodeVirtualId(playlistId) : undefined
   if (!decoded || decoded.kind !== 'qq-playlist') return
   upsertRemoteMapping({
-    qqUin: account?.qqUin,
+    userId: account.userId,
     localType: 'playlist',
     localKey: `qq:${decoded.id}`,
     remote: 'emby',
@@ -319,7 +327,7 @@ async function syncFavoriteStateAfterMapping(input: {
 }): Promise<void> {
   const embyUserId = input.account?.embyUserId
   if (!embyUserId) return
-  const status = getFavoriteStatusForAccount(input.source, input.songmid, input.account?.qqUin)
+  const status = getFavoriteStatusForAccount(input.source, input.songmid, input.account?.userId)
   if (!status.desiredState) return
   await setEmbyFavorite({
     userId: embyUserId,
@@ -348,18 +356,18 @@ async function waitForCachedMedia(
   }
 }
 
-function shouldRequireLibraryFinalPath(payload?: Pick<SyncEmbyTrackJobPayload, 'qqUin'>): boolean {
-  const account = payload?.qqUin ? getAccountByQQ(payload.qqUin) : undefined
+function shouldRequireLibraryFinalPath(userId?: string): boolean {
+  const account = userId ? getAccountByUserId(userId) : undefined
   return Boolean(account?.embySourceWebdavDsn)
 }
 
-export function hasEmbySyncableCachedMedia(input: Pick<SyncEmbyTrackJobPayload, 'source' | 'songmid' | 'musicInfo'> & Pick<Partial<SyncEmbyTrackJobPayload>, 'qqUin'>): boolean {
+export function hasEmbySyncableCachedMedia(input: Pick<SyncEmbyTrackJobPayload, 'source' | 'songmid' | 'musicInfo'> & { userId?: string }): boolean {
   const payload = input as SyncEmbyTrackJobPayload
   const row = getBestCachedMediaForSync(payload, syncQualityFallbacks(payload), {
-    requireLibraryFinalPath: shouldRequireLibraryFinalPath(payload),
+    requireLibraryFinalPath: shouldRequireLibraryFinalPath(input.userId),
   })
   return Boolean(row && isSyncableCachedMedia(row, {
-    requireLibraryFinalPath: shouldRequireLibraryFinalPath(payload),
+    requireLibraryFinalPath: shouldRequireLibraryFinalPath(input.userId),
   }))
 }
 

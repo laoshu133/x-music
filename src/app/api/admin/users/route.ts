@@ -9,27 +9,27 @@ export async function GET(request: Request): Promise<Response> {
   if (forbidden) return forbidden
 
   const url = new URL(request.url)
-  const qqUin = url.searchParams.get('qqUin')
+  const userId = url.searchParams.get('userId')
   const section = url.searchParams.get('section')
-  if (qqUin) {
+  if (userId) {
     const page = positiveInt(url.searchParams.get('page'), 1)
     const limit = positiveInt(url.searchParams.get('limit'), 50)
     if (section === 'profile') {
-      const profile = getAccountProfile(qqUin)
+      const profile = getAccountProfile(userId)
       if (!profile) return Response.json({ error: 'User not found' }, { status: 404 })
       return Response.json(profile)
     }
     if (section === 'favorites') {
-      const favorites = await getAccountFavorites(qqUin, page, limit)
+      const favorites = await getAccountFavorites(userId, page, limit)
       if (!favorites) return Response.json({ error: 'User not found' }, { status: 404 })
       return Response.json(favorites)
     }
     if (section === 'plays') {
-      const recentPlays = getAccountRecentPlays(qqUin, page, limit)
+      const recentPlays = getAccountRecentPlays(userId, page, limit)
       if (!recentPlays) return Response.json({ error: 'User not found' }, { status: 404 })
       return Response.json(recentPlays)
     }
-    const detail = await getAccountDetail(qqUin)
+    const detail = await getAccountDetail(userId)
     if (!detail) return Response.json({ error: 'User not found' }, { status: 404 })
     return Response.json(detail)
   }

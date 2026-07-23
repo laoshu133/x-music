@@ -16,7 +16,6 @@ const envSchema = z.object({
   TRACK_CACHE_FAILED_TTL_DAYS: z.string().default('7'),
   TRACK_CACHE_MAX_BYTES: z.string().default(String(20 * 1024 * 1024 * 1024)),
   AMPCAST_URL: z.string().url().default(defaultAmpcastUrl),
-  ADMIN_QQ_UINS: z.string().default(''),
 })
 
 const env = envSchema.parse(process.env)
@@ -39,9 +38,6 @@ export const appConfig = {
   get ampcastUrl() {
     return currentEnv().AMPCAST_URL
   },
-  get adminQQUins() {
-    return parseAdminQQUins(currentEnv().ADMIN_QQ_UINS)
-  },
   get trackCacheStagingTtlHours() {
     return parseNonNegativeNumber(currentEnv().TRACK_CACHE_STAGING_TTL_HOURS, 6)
   },
@@ -55,13 +51,6 @@ export const appConfig = {
     return parseNonNegativeNumber(currentEnv().TRACK_CACHE_MAX_BYTES, 20 * 1024 * 1024 * 1024)
   },
 } as const
-
-function parseAdminQQUins(value: string): string[] {
-  return value
-    .split(/[,\s;]+/)
-    .map(item => item.trim().replace(/^o/i, ''))
-    .filter(Boolean)
-}
 
 function parseNonNegativeNumber(value: string | undefined, fallback: number): number {
   const parsed = Number(value)

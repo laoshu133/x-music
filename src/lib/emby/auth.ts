@@ -62,14 +62,17 @@ export async function ensureUpstreamEmbyUserForAccount(account: AccountRecord): 
   if (!hasUpstreamEmbyConfigured(account)) return account
 
   const existingById = account.embyUserId ? await findUpstreamUserById(account, account.embyUserId).catch(() => undefined) : undefined
-  const existing = existingById ?? await findUpstreamUserByName(account, account.embyUsername)
+  if (!account.embyUserId && await findUpstreamUserByName(account, account.embyUsername)) {
+    throw new Error(`Upstream Emby username is already in use: ${account.embyUsername}`)
+  }
+  const existing = existingById
   const userId = existing?.Id ?? await createUpstreamUser(account, account.embyUsername)
   if (userId && existing?.Name && existing.Name !== account.embyUsername) {
     await updateUpstreamUserName(account, userId, account.embyUsername).catch(() => undefined)
   }
   if (userId) await applyRestrictedUserPolicy(account, userId)
   const accessToken = userId ? await authenticateUpstreamUser(account, account.embyUsername).catch(() => undefined) : undefined
-  updateAccountEmbyAuth({ qqUin: account.qqUin, embyUserId: userId, embyAccessToken: accessToken })
+  updateAccountEmbyAuth({ userId: account.userId, embyUserId: userId, embyAccessToken: accessToken })
   return {
     ...account,
     embyUserId: userId,
@@ -161,7 +164,7 @@ function writeCachedMusicLibraryMapping(account: AccountRecord | undefined, mapp
 }
 
 function upstreamMusicLibraryMappingKey(account?: AccountRecord): string {
-  return account ? `${UPSTREAM_MUSIC_LIBRARY_MAPPING_KEY}.${account.qqUin}` : UPSTREAM_MUSIC_LIBRARY_MAPPING_KEY
+  return account ? `${UPSTREAM_MUSIC_LIBRARY_MAPPING_KEY}.${account.userId}` : UPSTREAM_MUSIC_LIBRARY_MAPPING_KEY
 }
 
 async function findMusicLibrariesFromVirtualFolders(account?: AccountRecord): Promise<EmbyLibraryCandidate[]> {

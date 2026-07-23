@@ -1,15 +1,17 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { clearQQLoginCookie, saveQQLoginCookie } from '@/lib/db/qq-session'
 
 const originalFetch = globalThis.fetch
 
 test.afterEach(() => {
   globalThis.fetch = originalFetch
   delete process.env.QQ_MUSIC_COOKIE
+  clearQQLoginCookie()
 })
 
 test('recommendations route separates daily and guess sources', async () => {
-  process.env.QQ_MUSIC_COOKIE = 'uin=o123456; qm_keyst=test-key; euin=encrypted-uin'
+  saveQQLoginCookie('uin=o123456; qm_keyst=test-key; euin=encrypted-uin')
   const route = await import('@/app/api/recommendations/route')
   const requests: Array<{ url: string; body?: any }> = []
 

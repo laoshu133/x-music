@@ -2,7 +2,7 @@ import { markRequestSource } from '@/lib/request-log'
 import { listAccounts, markAccountActive } from '@/lib/db/accounts'
 import { embyAuthorizationHeader, getDefaultUpstreamMusicLibraryId, getEmbyAccessToken } from './auth'
 import { embyConfigForAccount } from './config'
-import { createLocalAccessToken, readEmbyAccessToken } from './tokens'
+import { findAccountByAccessToken, localEmbyUserId, readEmbyAccessToken } from './tokens'
 
 const MUSIC_LIBRARY_ID = 'x-music-music'
 
@@ -36,6 +36,7 @@ export async function proxyToUpstreamEmby(request: Request, embyPath: string): P
   const incomingUrl = new URL(request.url)
   const upstreamUrl = new URL(settings.baseUrl)
   upstreamUrl.pathname = joinPaths(upstreamUrl.pathname, embyPath)
+  applyLocalUserMapping(upstreamUrl, account)
   upstreamUrl.search = incomingUrl.search
   await applyLocalLibraryMapping(upstreamUrl, account)
 
@@ -65,6 +66,12 @@ export async function proxyToUpstreamEmby(request: Request, embyPath: string): P
   }), 'upstream')
 }
 
+function applyLocalUserMapping(url: URL, account: ReturnType<typeof findAccountForRequest>): void {
+  if (!account?.embyUserId) return
+  const localId = localEmbyUserId(account.userId)
+  url.pathname = url.pathname.replace(`/Users/${localId}`, `/Users/${account.embyUserId}`)
+}
+
 function responseHeadersForDecodedBody(headers: Headers): Headers {
   const result = new Headers(headers)
   for (const header of decodedBodyHeaders) {
@@ -76,8 +83,8 @@ function responseHeadersForDecodedBody(headers: Headers): Headers {
 function findAccountForRequest(request: Request) {
   const token = readEmbyAccessToken(request)
   if (!token) return undefined
-  const account = listAccounts().find(account => token === createLocalAccessToken(account))
-  if (account) markAccountActive(account.qqUin)
+  const account = findAccountByAccessToken(token)
+  if (account) markAccountActive(account.userId)
   return account
 }
 

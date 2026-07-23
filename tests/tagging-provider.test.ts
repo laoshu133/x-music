@@ -12,6 +12,8 @@ import { createTaggingProvider, taggingInternals } from '@/lib/tagging/provider'
 import type { TagTrackFileJobPayload } from '@/lib/tagging/types'
 import type { MusicInfo } from '@/lib/types'
 import type { IAudioMetadata } from 'music-metadata'
+import { saveQQLoginCookie } from '@/lib/db/qq-session'
+import { requestUserTrackSync } from '@/lib/emby/sync'
 
 const payload: TagTrackFileJobPayload = {
   trackFileId: 1,
@@ -157,7 +159,7 @@ test('inline tagging drains queued builtin tag jobs', async () => {
   await fs.access(row!.final_path)
 })
 
-test('manual tag job processing preserves qq account context for Emby sync', async () => {
+test('manual tag job processing preserves XMusic user context for Emby sync', async () => {
   await fs.mkdir(appConfig.inboxDir, { recursive: true })
   const songmid = `TAG_MANUAL_${Date.now()}`
   const rawPath = path.join(appConfig.inboxDir, `manual-${Date.now()}.txt`)
@@ -173,6 +175,8 @@ test('manual tag job processing preserves qq account context for Emby sync', asy
   }
   const track = ensureTrack(musicInfo)
   const trackFile = upsertTrackFileStatus(track.id, '128k', 'tagging', { rawPath, finalPath: rawPath })
+  saveQQLoginCookie('uin=o700003; qm_keyst=test-key')
+  requestUserTrackSync('700003', track.id, 'manual')
   const job = createJob({
     type: 'tag_track_file',
     payload: {
@@ -184,7 +188,6 @@ test('manual tag job processing preserves qq account context for Emby sync', asy
       title: musicInfo.name,
       artist: musicInfo.singer,
       album: musicInfo.albumName,
-      qqUin: 'manual-context-uin',
     },
   })
 
@@ -192,14 +195,15 @@ test('manual tag job processing preserves qq account context for Emby sync', asy
     await processTagTrackFileJobById(job.id)
 
     const syncJob = db.prepare(`
-      SELECT payload_json AS payloadJson
+      SELECT user_id AS userId, payload_json AS payloadJson
       FROM jobs
       WHERE type = 'sync_emby_track'
         AND json_extract(payload_json, '$.songmid') = ?
       LIMIT 1
-    `).get(songmid) as { payloadJson: string } | undefined
-    const syncPayload = JSON.parse(syncJob?.payloadJson ?? '{}') as { qqUin?: string }
-    assert.equal(syncPayload.qqUin, 'manual-context-uin')
+    `).get(songmid) as { userId: string; payloadJson: string } | undefined
+    assert.equal(syncJob?.userId, '700003')
+    const syncPayload = JSON.parse(syncJob?.payloadJson ?? '{}') as Record<string, unknown>
+    assert.equal('qqUin' in syncPayload, false)
   } finally {
     db.prepare("DELETE FROM jobs WHERE json_extract(payload_json, '$.songmid') = ?").run(songmid)
     db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run(songmid)
