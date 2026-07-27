@@ -847,19 +847,21 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
                 />
               </>
             ) : (
-              <QQAuthorizationPanel
-                account={account}
-                cookieText={cookieText}
-                mobileAuthorizeUrl={mobileAuthorizeUrl}
-                mobileAuthUrl={mobileAuthUrl}
-                onCookieTextChange={setCookieText}
-                onMobileAuthUrlChange={setMobileAuthUrl}
-                onLogin={login}
-                onCompleteMobileAuth={completeMobileAuthLogin}
-                loginQr={loginQr}
-                loginQrPhase={loginQrPhase}
-                onRequestLoginQr={requestLoginQr}
-              />
+              <div className="qq-auth-layout">
+                <QQAuthorizationPanel
+                  account={account}
+                  cookieText={cookieText}
+                  mobileAuthorizeUrl={mobileAuthorizeUrl}
+                  mobileAuthUrl={mobileAuthUrl}
+                  onCookieTextChange={setCookieText}
+                  onMobileAuthUrlChange={setMobileAuthUrl}
+                  onLogin={login}
+                  onCompleteMobileAuth={completeMobileAuthLogin}
+                  loginQr={loginQr}
+                  loginQrPhase={loginQrPhase}
+                  onRequestLoginQr={requestLoginQr}
+                />
+              </div>
             )}
           </section>
         )}

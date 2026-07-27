@@ -1051,8 +1051,16 @@ a {
   line-height: 1.2;
 }
 
+.qq-auth-layout {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 960px);
+  justify-content: center;
+}
+
 .qq-auth-panel {
-  width: min(760px, 100%);
+  width: 100%;
   min-width: 0;
   display: grid;
   gap: 18px;
@@ -1749,7 +1757,9 @@ a {
 .users-table {
   border: 1px solid var(--line);
   border-radius: 8px;
+  background: var(--surface);
   overflow: auto;
+  box-shadow: 0 1px 0 rgba(28, 43, 37, 0.02);
 }
 
 .job-row,
@@ -1777,6 +1787,7 @@ a {
 .user-row {
   grid-template-columns: minmax(210px, 1.4fr) 100px 76px 76px 132px 132px 132px;
   min-width: 900px;
+  background: var(--surface);
   padding: 12px 14px;
 }
 
@@ -1805,7 +1816,8 @@ button.user-row.active {
   box-shadow: inset 3px 0 0 var(--accent);
 }
 
-.jobs-table > p {
+.jobs-table > p,
+.users-table > p {
   padding: 14px;
 }
 
