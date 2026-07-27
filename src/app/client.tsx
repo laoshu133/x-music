@@ -387,6 +387,7 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
   const [embyIncrementalSync, setEmbyIncrementalSync] = useState<ApiState<IncrementalEmbySyncResult>>(emptyState)
   const [showEmbySyncPrompt, setShowEmbySyncPrompt] = useState(false)
   const loginQrCheckInFlightRef = useRef(false)
+  const navigationRef = useRef<HTMLElement | null>(null)
   const [configDraft, setConfigDraft] = useState<ConfigDraft>({
     qqEnabled: true,
     qqSyncFavorites: true,
@@ -711,6 +712,15 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
   }, [sidebarCollapsed])
 
   useEffect(() => {
+    const compactNavigation = window.matchMedia?.('(max-width: 980px)').matches ?? window.innerWidth <= 980
+    if (!compactNavigation) return
+    navigationRef.current?.querySelector<HTMLButtonElement>('button.active')?.scrollIntoView({
+      block: 'nearest',
+      inline: 'center',
+    })
+  }, [view])
+
+  useEffect(() => {
     if (account.data?.loggedIn && !isViewAllowed(routeView, account.data)) {
       setView('home')
       if (routeView !== 'home') router.replace('/')
@@ -798,7 +808,7 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
             {sidebarCollapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
           </button>
         </div>
-        <nav className="tabs" aria-label="主导航">
+        <nav className="tabs" aria-label="主导航" ref={navigationRef}>
           {views.filter(key => isViewVisible(key, account.data)).map(key => {
             const Icon = viewMeta[key].icon
             const available = isViewAllowed(key, account.data)

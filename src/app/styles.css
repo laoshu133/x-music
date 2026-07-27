@@ -2263,10 +2263,15 @@ button.user-row.active {
 
   .sidebar .tabs,
   .sidebar-collapsed .tabs {
+    width: 100%;
+    min-width: 0;
     display: flex;
     gap: 4px;
     overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scroll-snap-type: x proximity;
     scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
   }
 
   .sidebar .tabs::-webkit-scrollbar {
@@ -2280,6 +2285,7 @@ button.user-row.active {
     grid-template-columns: 20px auto;
     gap: 6px;
     padding: 0 10px;
+    scroll-snap-align: center;
   }
 
   .sidebar .tabs button span,
@@ -2289,7 +2295,9 @@ button.user-row.active {
 
   .sidebar .account-panel,
   .sidebar-collapsed .account-panel {
+    width: 44px;
     display: block;
+    justify-self: end;
     border-top: 0;
     padding: 0;
   }
@@ -2356,14 +2364,20 @@ button.user-row.active {
   .app-shell,
   .app-shell.sidebar-collapsed {
     padding: 8px;
+    padding:
+      max(8px, env(safe-area-inset-top))
+      max(8px, env(safe-area-inset-right))
+      max(8px, env(safe-area-inset-bottom))
+      max(8px, env(safe-area-inset-left));
   }
 
   .sidebar,
   .sidebar-collapsed .sidebar {
     top: 8px;
+    top: max(8px, env(safe-area-inset-top));
     grid-template-columns: minmax(0, 1fr) 44px;
-    grid-template-rows: 44px 42px;
-    gap: 8px;
+    grid-template-rows: 44px 46px;
+    gap: 6px;
   }
 
   .sidebar .brand-lockup,
@@ -2384,6 +2398,8 @@ button.user-row.active {
   .sidebar .brand-copy span {
     display: block;
     overflow: hidden;
+    font-size: 11px;
+    line-height: 1.35;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -2392,6 +2408,7 @@ button.user-row.active {
   .sidebar-collapsed .tabs {
     grid-column: 1 / -1;
     grid-row: 2;
+    gap: 2px;
   }
 
   .sidebar .brand-lockup,
@@ -2408,10 +2425,28 @@ button.user-row.active {
 
   .sidebar .tabs button,
   .sidebar-collapsed .tabs button {
-    min-width: 88px;
-    min-height: 40px;
-    padding: 0 8px;
-    font-size: 13px;
+    min-width: 64px;
+    min-height: 46px;
+    grid-template-columns: 1fr;
+    grid-template-rows: 18px 14px;
+    justify-items: center;
+    gap: 2px;
+    padding: 4px 7px;
+    font-size: 11px;
+    line-height: 1;
+  }
+
+  .sidebar .tabs button svg,
+  .sidebar-collapsed .tabs button svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  .sidebar .tabs button span,
+  .sidebar-collapsed .tabs button span {
+    max-width: 100%;
+    overflow: visible;
+    text-overflow: clip;
   }
 
   .login-screen {
