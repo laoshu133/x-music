@@ -17,6 +17,7 @@ import {
   Link2,
   LogIn,
   LogOut,
+  Menu,
   MonitorPlay,
   PlayCircle,
   RefreshCw,
@@ -27,6 +28,7 @@ import {
   Workflow,
   UsersRound,
   UserRound,
+  X,
 } from 'lucide-react'
 import { useRouter, useSearchParams } from 'next/navigation'
 
@@ -380,6 +382,7 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
   const [message, setMessage] = useState(initialAccount.systemError ? initialAccount.actionable ?? '系统出错，请稍后重试。' : '')
   const [browserOrigin, setBrowserOrigin] = useState('')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(initialSidebarCollapsed)
+  const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false)
   const [embyPasswordDraft, setEmbyPasswordDraft] = useState('')
   const [embyDsnDraft, setEmbyDsnDraft] = useState('')
   const [embyWebdavDraft, setEmbyWebdavDraft] = useState('')
@@ -626,6 +629,7 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
 
   const openView = (next: View) => {
     setMessage('')
+    setMobileNavigationOpen(false)
     setView(next)
     router.push(next === 'home' ? '/' : `/?view=${next}`)
     loadViewData(next)
@@ -712,7 +716,8 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
   }, [sidebarCollapsed])
 
   useEffect(() => {
-    const compactNavigation = window.matchMedia?.('(max-width: 980px)').matches ?? window.innerWidth <= 980
+    const compactNavigation = window.matchMedia?.('(min-width: 641px) and (max-width: 980px)').matches
+      ?? (window.innerWidth > 640 && window.innerWidth <= 980)
     if (!compactNavigation) return
     navigationRef.current?.querySelector<HTMLButtonElement>('button.active')?.scrollIntoView({
       block: 'nearest',
@@ -795,7 +800,7 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
 
   return (
     <main className={`app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
-      <aside className="sidebar">
+      <aside className={`sidebar ${mobileNavigationOpen ? 'mobile-nav-open' : ''}`}>
         <div className="brand-lockup">
           <div className="brand-mark">
             <img src="/public/logo.svg" alt="" />
@@ -808,7 +813,18 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
             {sidebarCollapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
           </button>
         </div>
-        <nav className="tabs" aria-label="主导航" ref={navigationRef}>
+        <button
+          type="button"
+          className="mobile-navigation-button"
+          onClick={() => setMobileNavigationOpen(value => !value)}
+          aria-expanded={mobileNavigationOpen}
+          aria-controls="main-navigation"
+          aria-label={mobileNavigationOpen ? '收起导航' : '展开导航'}
+          title={mobileNavigationOpen ? '收起导航' : '展开导航'}
+        >
+          {mobileNavigationOpen ? <X size={18} /> : <Menu size={18} />}
+        </button>
+        <nav id="main-navigation" className="tabs" aria-label="主导航" ref={navigationRef}>
           {views.filter(key => isViewVisible(key, account.data)).map(key => {
             const Icon = viewMeta[key].icon
             const available = isViewAllowed(key, account.data)
