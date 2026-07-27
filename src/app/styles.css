@@ -555,10 +555,6 @@ a {
   width: min(440px, 100%);
 }
 
-.qq-login-card {
-  width: min(760px, 100%);
-}
-
 .system-auth-form {
   display: grid;
   gap: 7px;
@@ -795,10 +791,6 @@ a {
   gap: 10px;
   border-top: 1px solid var(--line);
   padding-top: 12px;
-}
-
-.auth-logout {
-  justify-self: start;
 }
 
 .mobile-auth-form label {
@@ -1057,6 +1049,33 @@ a {
 .home-overview h2 {
   font-size: 24px;
   line-height: 1.2;
+}
+
+.qq-auth-panel {
+  width: min(760px, 100%);
+  min-width: 0;
+  display: grid;
+  gap: 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 24px;
+  box-shadow: var(--shadow-soft);
+}
+
+.qq-auth-heading {
+  display: grid;
+  gap: 6px;
+}
+
+.qq-auth-heading h2 {
+  font-size: 24px;
+  line-height: 1.2;
+}
+
+.qq-auth-heading p {
+  max-width: 600px;
+  font-size: 14px;
 }
 
 .player-layout {
@@ -2336,6 +2355,11 @@ button.user-row.active {
   .login-card {
     gap: 20px;
     padding: 22px;
+  }
+
+  .qq-auth-panel {
+    gap: 16px;
+    padding: 18px;
   }
 
   .system-auth-form {

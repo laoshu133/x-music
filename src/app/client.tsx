@@ -360,7 +360,7 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
   const router = useRouter()
   const searchParams = useSearchParams()
   const routeView = parseView(searchParams.get('view'))
-  const [view, setView] = useState<View>(routeView)
+  const [view, setView] = useState<View>(() => isViewAllowed(routeView, initialAccount) ? routeView : 'home')
   const [cookieText, setCookieText] = useState('')
   const [systemUsername, setSystemUsername] = useState('')
   const [systemPassword, setSystemPassword] = useState('')
@@ -497,14 +497,24 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
 
   const login = async () => {
     setMessage('')
-    await run(s => setAccount(s), () => fetchJson<AccountState>('/api/account/import', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ cookie: cookieText, persist: true }),
-    }))
-    setCookieText('')
-    await loadAdminConfig()
-    await loadAccountEmbyConfig()
+    setAccount(current => ({ loading: true, error: '', data: current.data }))
+    try {
+      const result = await fetchJson<AccountState>('/api/account/import', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ cookie: cookieText, persist: true }),
+      })
+      setAccount({ loading: false, error: '', data: result })
+      setCookieText('')
+      await loadAdminConfig()
+      await loadAccountEmbyConfig()
+    } catch (error) {
+      setAccount(current => ({
+        loading: false,
+        error: error instanceof Error ? error.message : String(error),
+        data: current.data,
+      }))
+    }
   }
 
   const authenticateSystemAccount = async () => {
@@ -621,6 +631,8 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
   }
 
   const loadViewData = (next: View) => {
+    if (!isViewAllowed(next, account.data)) return
+    if (!account.data?.qq?.authorized && next === 'home') return
     if (next === 'home' || next === 'player' || next === 'config') loadAdminConfig()
     if (next === 'home' || next === 'player' || next === 'config') loadAccountEmbyConfig()
     if (next === 'status') {
@@ -699,12 +711,17 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
   }, [sidebarCollapsed])
 
   useEffect(() => {
+    if (account.data?.loggedIn && !isViewAllowed(routeView, account.data)) {
+      setView('home')
+      if (routeView !== 'home') router.replace('/')
+      return
+    }
     setView(routeView)
-    if (account.data?.loggedIn && account.data.qq?.authorized) loadViewData(routeView)
+    if (account.data?.loggedIn && isViewAllowed(routeView, account.data)) loadViewData(routeView)
   }, [routeView, account.data?.loggedIn, account.data?.qq?.authorized])
 
   useEffect(() => {
-    if (!account.data?.loggedIn || !account.data.qq?.authorized) return
+    if (!account.data?.loggedIn) return
     if (!isViewAllowed(view, account.data)) openView('home')
   }, [account.data?.loggedIn, account.data?.qq?.authorized, account.data?.isAdmin, view])
 
@@ -766,28 +783,6 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
     )
   }
 
-  if (!account.data.qq?.authorized) {
-    return (
-      <main className="login-screen">
-        <LoginPage
-          account={account}
-          cookieText={cookieText}
-          mobileAuthorizeUrl={mobileAuthorizeUrl}
-          mobileAuthUrl={mobileAuthUrl}
-          onCookieTextChange={setCookieText}
-          onMobileAuthUrlChange={setMobileAuthUrl}
-          onLogin={login}
-          onCompleteMobileAuth={completeMobileAuthLogin}
-          loginQr={loginQr}
-          loginQrPhase={loginQrPhase}
-          onRequestLoginQr={requestLoginQr}
-          message={message}
-          onLogout={logout}
-        />
-      </main>
-    )
-  }
-
   return (
     <main className={`app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
       <aside className="sidebar">
@@ -804,10 +799,17 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
           </button>
         </div>
         <nav className="tabs" aria-label="主导航">
-          {views.filter(key => isViewAllowed(key, account.data)).map(key => {
+          {views.filter(key => isViewVisible(key, account.data)).map(key => {
             const Icon = viewMeta[key].icon
+            const available = isViewAllowed(key, account.data)
             return (
-              <button key={key} className={view === key ? 'active' : ''} onClick={() => openView(key)}>
+              <button
+                key={key}
+                className={view === key ? 'active' : ''}
+                onClick={() => openView(key)}
+                disabled={!available}
+                title={available ? undefined : '绑定 QQ 音乐后可用'}
+              >
                 <Icon size={17} />
                 <span>{viewMeta[key].label}</span>
               </button>
@@ -831,16 +833,34 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
 
         {view === 'home' && (
           <section className="workspace">
-            <Status state={adminConfig} />
-            <HomePanel
-              account={account.data}
-              connection={connectionInfo}
-              playerPath={EMBEDDED_PLAYER_AUTO_INIT_PATH}
-              ampcastOfficialUrl={ampcastOfficialUrl}
-              accountRefresh={accountRefresh}
-              onOpenConfig={() => openView('config')}
-              onRefreshQQAuthorization={refreshQQAuthorization}
-            />
+            {account.data.qq?.authorized ? (
+              <>
+                <Status state={adminConfig} />
+                <HomePanel
+                  account={account.data}
+                  connection={connectionInfo}
+                  playerPath={EMBEDDED_PLAYER_AUTO_INIT_PATH}
+                  ampcastOfficialUrl={ampcastOfficialUrl}
+                  accountRefresh={accountRefresh}
+                  onOpenConfig={() => openView('config')}
+                  onRefreshQQAuthorization={refreshQQAuthorization}
+                />
+              </>
+            ) : (
+              <QQAuthorizationPanel
+                account={account}
+                cookieText={cookieText}
+                mobileAuthorizeUrl={mobileAuthorizeUrl}
+                mobileAuthUrl={mobileAuthUrl}
+                onCookieTextChange={setCookieText}
+                onMobileAuthUrlChange={setMobileAuthUrl}
+                onLogin={login}
+                onCompleteMobileAuth={completeMobileAuthLogin}
+                loginQr={loginQr}
+                loginQrPhase={loginQrPhase}
+                onRequestLoginQr={requestLoginQr}
+              />
+            )}
           </section>
         )}
 
@@ -932,6 +952,13 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
 }
 
 function isViewAllowed(view: View, account?: AccountState | null): boolean {
+  if (!isViewVisible(view, account)) return false
+  if (view === 'users' || view === 'jobs') return Boolean(account?.isAdmin)
+  if (view === 'home') return true
+  return Boolean(account?.qq?.authorized)
+}
+
+function isViewVisible(view: View, account?: AccountState | null): boolean {
   if (view === 'users' || view === 'jobs') return Boolean(account?.isAdmin)
   return true
 }
@@ -984,7 +1011,7 @@ function SystemLoginPage({ account, username, password, mode, onUsernameChange, 
   )
 }
 
-function LoginPage({
+function QQAuthorizationPanel({
   account,
   cookieText,
   mobileAuthorizeUrl,
@@ -996,8 +1023,6 @@ function LoginPage({
   loginQr,
   loginQrPhase,
   onRequestLoginQr,
-  message,
-  onLogout,
 }: {
   account: ApiState<AccountState>
   cookieText: string
@@ -1010,8 +1035,6 @@ function LoginPage({
   loginQr: ApiState<LoginQrState>
   loginQrPhase: LoginQrPhase
   onRequestLoginQr: () => void
-  message: string
-  onLogout: () => void
 }) {
   const [loginMethod, setLoginMethod] = useState<'qr' | 'mobile' | 'cookie'>('qr')
   const qrDisabled = loginQrPhase === 'expired' || loginQrPhase === 'error'
@@ -1022,7 +1045,7 @@ function LoginPage({
     : loginQrPhase === 'expired'
       ? '已失效'
       : loginQrPhase === 'error'
-        ? '登录异常'
+        ? '授权异常'
         : loginQr.data
           ? '等待扫码'
           : ''
@@ -1032,28 +1055,23 @@ function LoginPage({
   }, [])
 
   return (
-    <section className="login-card qq-login-card">
-      <div className="brand-lockup login-brand">
-        <div className="brand-mark">
-          <img src="/public/logo.svg" alt="" />
-        </div>
-        <div>
-          <h1>XMusic</h1>
-          <span>绑定 QQ 音乐</span>
-        </div>
-      </div>
-      <div className="login-tabs" role="tablist" aria-label="登录方式">
+    <section className="qq-auth-panel">
+      <header className="qq-auth-heading">
+        <h2>绑定 QQ 音乐</h2>
+        <p>绑定后即可使用播放器，并同步你的收藏、歌单和播放记录。</p>
+      </header>
+      <div className="login-tabs" role="tablist" aria-label="QQ 绑定方式">
         <button
           type="button"
           className={loginMethod === 'qr' ? 'active' : ''}
           role="tab"
           aria-selected={loginMethod === 'qr'}
-          title="扫码登录"
-          aria-label="扫码登录"
+          title="扫码授权"
+          aria-label="扫码授权"
           onClick={() => setLoginMethod('qr')}
         >
           <LogIn size={16} />
-          <span>扫码登录</span>
+          <span>扫码授权</span>
         </button>
         <button
           type="button"
@@ -1087,7 +1105,7 @@ function LoginPage({
               <div className="qr-login large">
                 <div className="qr-visual">
                   <div className={`qr-code ${qrDisabled ? 'disabled' : ''}`}>
-                    <img src={loginQr.data.img} alt="QQ 登录二维码" />
+                    <img src={loginQr.data.img} alt="QQ 授权二维码" />
                   </div>
                 </div>
                 <div className="qr-copy">
@@ -1099,7 +1117,7 @@ function LoginPage({
                 </div>
               </div>
             ) : (
-              <button onClick={onRequestLoginQr} disabled={loginQr.loading}><LogIn size={16} />获取登录二维码</button>
+              <button onClick={onRequestLoginQr} disabled={loginQr.loading}><LogIn size={16} />获取二维码</button>
             )}
             <Status state={loginQr} />
           </section>
@@ -1127,7 +1145,7 @@ function LoginPage({
                 onChange={event => onMobileAuthUrlChange(event.target.value)}
                 placeholder="粘贴授权后的页面地址"
               />
-              <button type="submit" disabled={account.loading || !mobileAuthUrl.trim()}><KeyRound size={16} />完成登录</button>
+              <button type="submit" disabled={account.loading || !mobileAuthUrl.trim()}><KeyRound size={16} />完成绑定</button>
             </form>
           </section>
         ) : (
@@ -1137,9 +1155,7 @@ function LoginPage({
           </section>
         )}
       </div>
-      {message ? <p className="status notice">{message}</p> : null}
       <Status state={account} />
-      <button className="secondary-button auth-logout" onClick={onLogout}><LogOut size={16} />退出帐号</button>
     </section>
   )
 }
