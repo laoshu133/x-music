@@ -27,7 +27,7 @@ export async function getInitialAccount() {
     ? summarizeAccount(account)
     : {
         loggedIn: false,
-      actionable: 'Register or sign in with your XMusic username and password.',
+        actionable: '请注册或登录 XMusic 帐号。',
       }
 }
 

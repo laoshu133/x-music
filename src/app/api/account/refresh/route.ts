@@ -9,8 +9,8 @@ export const dynamic = 'force-dynamic'
 
 export async function POST() {
   const account = await getCurrentAccount({ verifyQQ: false })
-  if (!account) return NextResponse.json({ error: 'Login required', code: 'AUTH_REQUIRED' }, { status: 401 })
-  if (account.qqAuthState === 'missing') return NextResponse.json({ error: 'QQ authorization required', code: 'QQ_AUTH_REQUIRED' }, { status: 428 })
+  if (!account) return NextResponse.json({ error: '请先登录', code: 'AUTH_REQUIRED' }, { status: 401 })
+  if (account.qqAuthState === 'missing') return NextResponse.json({ error: '请先完成 QQ 授权', code: 'QQ_AUTH_REQUIRED' }, { status: 428 })
   try {
     const refreshed = await refreshAccountQQAuthorization(account)
     const state = buildQQLoginState(refreshed.result.cookie, 'request')

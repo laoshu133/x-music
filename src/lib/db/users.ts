@@ -63,7 +63,7 @@ export async function createUser(input: { username: string; password: string; lo
       `).run(userId, encryptSecret(playerPassword))
     }).immediate()
   } catch (error) {
-    if (String(error).includes('UNIQUE constraint failed: users.username')) throw new UsernameTakenError('Username is already registered')
+    if (String(error).includes('UNIQUE constraint failed: users.username')) throw new UsernameTakenError('该用户名已被使用')
     throw error
   }
 
@@ -117,13 +117,13 @@ export function isAdminUser(user: Pick<UserRecord, 'role' | 'status'> | undefine
 export function normalizeUsername(value: string): string {
   const username = value.trim().toLowerCase()
   if (!/^[a-z0-9][a-z0-9._-]{2,31}$/.test(username)) {
-    throw new UsernameValidationError('Username must be 3-32 lowercase letters, numbers, dots, underscores, or hyphens')
+    throw new UsernameValidationError('用户名格式不正确')
   }
   return username
 }
 
 function validatePassword(password: string): void {
-  if (password.length < 8 || password.length > 128) throw new Error('Password must be 8-128 characters')
+  if (password.length < 8 || password.length > 128) throw new Error('密码长度需为 8 到 128 位')
 }
 
 function rowToUser(row: UserRow): UserRecord {

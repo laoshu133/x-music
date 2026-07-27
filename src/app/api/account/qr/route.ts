@@ -9,7 +9,7 @@ export const dynamic = 'force-dynamic'
 export async function GET() {
   const account = await getCurrentAccount({ verifyQQ: false })
   if (!account) {
-    return NextResponse.json({ error: 'Login required', code: 'AUTH_REQUIRED' }, { status: 401 })
+    return NextResponse.json({ error: '请先登录', code: 'AUTH_REQUIRED' }, { status: 401 })
   }
   try {
     const qr = await getQQLoginQr()

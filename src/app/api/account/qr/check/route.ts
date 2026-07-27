@@ -9,9 +9,9 @@ export const dynamic = 'force-dynamic'
 
 export async function POST(request: Request) {
   const account = await getCurrentAccount({ verifyQQ: false })
-  if (!account) return NextResponse.json({ error: 'Login required', code: 'AUTH_REQUIRED' }, { status: 401 })
+  if (!account) return NextResponse.json({ error: '请先登录', code: 'AUTH_REQUIRED' }, { status: 401 })
   const body = await request.json().catch(() => undefined) as { attemptId?: string } | undefined
-  if (!body?.attemptId) return NextResponse.json({ error: 'Missing authorization attempt' }, { status: 400 })
+  if (!body?.attemptId) return NextResponse.json({ error: '二维码已失效，请刷新' }, { status: 400 })
   try {
     const attempt = readQQAuthAttempt<{ ptqrtoken: string | number; qrsig: string }>({ id: body.attemptId, userId: account.userId, method: 'qr' })
     const result = await checkQQLoginQr(attempt)
@@ -22,7 +22,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ ...result, account: summarizeAccount(refreshed ?? getAccountByUserId(account.userId)!) })
   } catch (error) {
     if (error instanceof Error && error.message === 'QQ_ALREADY_BOUND') {
-      return NextResponse.json({ error: 'This QQ account is already bound to another user', code: 'QQ_ALREADY_BOUND' }, { status: 409 })
+      return NextResponse.json({ error: '该 QQ 已绑定其他帐号', code: 'QQ_ALREADY_BOUND' }, { status: 409 })
     }
     return qqMusicErrorResponse(error)
   }

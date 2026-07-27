@@ -4,7 +4,6 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ComponentType } from 'react'
 import {
   Activity,
-  BadgeCheck,
   ChevronLeft,
   ChevronRight,
   CheckCircle2,
@@ -19,13 +18,11 @@ import {
   LogIn,
   LogOut,
   MonitorPlay,
-  Music2,
   PlayCircle,
   RefreshCw,
   Heart,
   Trash2,
   Settings,
-  Sparkles,
   Smartphone,
   Workflow,
   UsersRound,
@@ -329,9 +326,9 @@ const fetchJson = async <T,>(url: string, init?: RequestInit): Promise<T> => {
 const viewMeta: Record<View, { label: string; icon: ComponentType<{ size?: number }> }> = {
   home: { label: '首页', icon: Home },
   player: { label: '播放器', icon: MonitorPlay },
-  config: { label: '配置', icon: Settings },
+  config: { label: '设置', icon: Settings },
   status: { label: '状态', icon: Activity },
-  users: { label: '用户管理', icon: UsersRound },
+  users: { label: '用户', icon: UsersRound },
   jobs: { label: '任务', icon: Workflow },
 }
 
@@ -606,11 +603,7 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
       const result = await fetchJson<AccountRefreshResult>('/api/account/refresh', { method: 'POST' })
       setAccountRefresh({ loading: false, error: '', data: result })
       if (result.account) setAccount({ loading: false, error: '', data: result.account })
-      setMessage(result.keyRefreshed
-        ? 'QQ 音乐 key 已刷新'
-        : result.tokenRefreshed
-          ? 'QQ access token 已刷新；本次未下发新的 QQ 音乐 key'
-          : 'QQ 音乐授权已校验，当前 key 仍可用')
+      setMessage('QQ 授权已刷新')
     } catch (error) {
       setAccountRefresh({
         loading: false,
@@ -860,8 +853,7 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
 
         {view === 'config' && (
           <section className="workspace">
-            <div className="section-head">
-              <h3>服务配置</h3>
+            <div className="view-actions">
               <IconButton label="刷新" onClick={loadAdminConfig} disabled={adminConfig.loading}><RefreshCw size={16} /></IconButton>
             </div>
             <Status state={adminConfig} />
@@ -890,11 +882,8 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
 
         {view === 'status' && (
           <section className="workspace">
-            <div className="section-head">
-              <h3>运行状态</h3>
-              <div className="toolbar">
-                <IconButton label="刷新" onClick={() => { loadHealth(); loadFavoriteStatus() }} disabled={health.loading || favoriteStatus.loading}><RefreshCw size={16} /></IconButton>
-              </div>
+            <div className="view-actions">
+              <IconButton label="刷新" onClick={() => { loadHealth(); loadFavoriteStatus() }} disabled={health.loading || favoriteStatus.loading}><RefreshCw size={16} /></IconButton>
             </div>
             <Status state={health} />
             {health.data ? (
@@ -912,8 +901,7 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
 
         {view === 'jobs' && (
           <section className="workspace">
-            <div className="section-head">
-              <h3>任务列表</h3>
+            <div className="view-actions">
               <div className="toolbar">
                 <button className="secondary-button compact-button" onClick={() => clearJobs('failed')} disabled={jobs.loading || !jobs.data?.summary.failed}>
                   <Trash2 size={15} />清空已失败
@@ -931,8 +919,7 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
 
         {view === 'users' && (
           <section className="workspace">
-            <div className="section-head">
-              <h3>用户列表</h3>
+            <div className="view-actions">
               <IconButton label="刷新" onClick={loadUsers} disabled={users.loading}><RefreshCw size={16} /></IconButton>
             </div>
             <Status state={users} />
@@ -964,16 +951,9 @@ function SystemLoginPage({ account, username, password, mode, onUsernameChange, 
 
   return (
     <section className="login-card system-login-card">
-      <div className="login-card-header">
-        <div className="brand-lockup login-brand">
-          <div className="brand-mark"><img src="/public/logo.svg" alt="" /></div>
-          <div><h1>XMusic</h1><span>把音乐装进自己口袋</span></div>
-        </div>
-        <div className="auth-intro">
-          <span className="eyebrow">XMusic Account</span>
-          <h2>{mode === 'register' ? '创建帐号' : '欢迎回来'}</h2>
-          <p>{mode === 'register' ? '注册后绑定你的 QQ 音乐授权。' : '登录后继续管理你的音乐服务。'}</p>
-        </div>
+      <div className="brand-lockup login-brand">
+        <div className="brand-mark"><img src="/public/logo.svg" alt="" /></div>
+        <div><h1>XMusic</h1></div>
       </div>
       <div className="login-tabs" role="tablist" aria-label="帐号操作">
         <button type="button" className={mode === 'login' ? 'active' : ''} aria-selected={mode === 'login'} onClick={() => onModeChange('login')}><LogIn size={16} /><span>登录</span></button>
@@ -983,12 +963,12 @@ function SystemLoginPage({ account, username, password, mode, onUsernameChange, 
         <label htmlFor="system-username">用户名</label>
         <div className="auth-input-shell">
           <UserRound size={17} />
-          <input id="system-username" autoComplete="username" value={username} onChange={event => onUsernameChange(event.target.value)} placeholder="3-32 位字母、数字或 ._-" />
+          <input id="system-username" autoComplete="username" value={username} onChange={event => onUsernameChange(event.target.value)} placeholder="请输入用户名" />
         </div>
         <label htmlFor="system-password">密码</label>
         <div className="auth-input-shell">
           <KeyRound size={17} />
-          <input id="system-password" type={showPassword ? 'text' : 'password'} autoComplete={mode === 'register' ? 'new-password' : 'current-password'} value={password} onChange={event => onPasswordChange(event.target.value)} placeholder="至少 8 位" />
+          <input id="system-password" type={showPassword ? 'text' : 'password'} autoComplete={mode === 'register' ? 'new-password' : 'current-password'} value={password} onChange={event => onPasswordChange(event.target.value)} placeholder="请输入密码" />
           <button type="button" className="auth-input-action" onClick={() => setShowPassword(value => !value)} aria-label={showPassword ? '隐藏密码' : '显示密码'} title={showPassword ? '隐藏密码' : '显示密码'}>
             {showPassword ? <EyeOff size={17} /> : <Eye size={17} />}
           </button>
@@ -998,7 +978,7 @@ function SystemLoginPage({ account, username, password, mode, onUsernameChange, 
           {mode === 'register' ? '创建帐号' : '登录'}
         </button>
       </form>
-      {mode === 'register' ? <p className="auth-footnote">首个注册帐号将成为系统管理员。</p> : null}
+      {mode === 'register' ? <p className="auth-footnote">首次注册将自动获得管理员权限。</p> : null}
       {message ? <p className="status notice auth-status">{message}</p> : null}
       <div className="auth-status"><Status state={account} /></div>
     </section>
@@ -1054,20 +1034,13 @@ function LoginPage({
 
   return (
     <section className="login-card qq-login-card">
-      <div className="login-card-header">
-        <div className="brand-lockup login-brand">
-          <div className="brand-mark">
-            <img src="/public/logo.svg" alt="" />
-          </div>
-          <div>
-            <h1>XMusic</h1>
-            <span>把音乐装进自己口袋</span>
-          </div>
+      <div className="brand-lockup login-brand">
+        <div className="brand-mark">
+          <img src="/public/logo.svg" alt="" />
         </div>
-        <div className="auth-intro">
-          <span className="eyebrow">QQ Authorization</span>
-          <h2>完成 QQ 授权</h2>
-          <p>授权仅归属于当前 XMusic 帐号。</p>
+        <div>
+          <h1>XMusic</h1>
+          <span>绑定 QQ 音乐</span>
         </div>
       </div>
       <div className="login-tabs" role="tablist" aria-label="登录方式">
@@ -1100,18 +1073,17 @@ function LoginPage({
           className={loginMethod === 'cookie' ? 'active' : ''}
           role="tab"
           aria-selected={loginMethod === 'cookie'}
-          title="Cookie 登录"
-          aria-label="Cookie 登录"
+          title="Cookie"
+          aria-label="Cookie"
           onClick={() => setLoginMethod('cookie')}
         >
           <KeyRound size={16} />
-          <span>Cookie 登录</span>
+          <span>Cookie</span>
         </button>
       </div>
       <div className="login-methods">
         {loginMethod === 'qr' ? (
           <section role="tabpanel">
-            <h2>QQ 扫码登录</h2>
             {loginQr.data ? (
               <div className="qr-login large">
                 <div className="qr-visual">
@@ -1121,7 +1093,7 @@ function LoginPage({
                 </div>
                 <div className="qr-copy">
                   {qrStatusText ? <p className={`qr-status ${qrDisabled ? 'attention' : ''}`}>{qrStatusText}</p> : null}
-                  <p className="qr-hint">请用手机 QQ 扫码；手机打开需换设备扫码。</p>
+                  <p className="qr-hint">打开手机 QQ 扫描二维码</p>
                   <div className="qr-actions">
                     <button onClick={onRequestLoginQr} disabled={loginQr.loading || account.loading}><RefreshCw size={16} />刷新二维码</button>
                   </div>
@@ -1134,8 +1106,7 @@ function LoginPage({
           </section>
         ) : loginMethod === 'mobile' ? (
           <section role="tabpanel">
-            <h2>QQ 手机授权</h2>
-            <p className="login-help">手机打开时可直接完成 QQ 授权；如果授权后停在 QQ 音乐空白页，把地址栏完整 URL 粘贴回来完成登录。</p>
+            <p className="login-help">授权后如果没有自动返回，请粘贴当前页面地址。</p>
             <div className="mobile-auth-actions">
               <a className="primary-link" href={mobileAuthorizeUrl} target="_blank" rel="noreferrer">
                 <ExternalLink size={16} />
@@ -1149,20 +1120,19 @@ function LoginPage({
                 onCompleteMobileAuth()
               }}
             >
-              <label htmlFor="login-mobile-auth-url">授权后的完整 URL</label>
+              <label htmlFor="login-mobile-auth-url">授权页面地址</label>
               <textarea
                 id="login-mobile-auth-url"
                 name="url"
                 value={mobileAuthUrl}
                 onChange={event => onMobileAuthUrlChange(event.target.value)}
-                placeholder="https://y.qq.com/portal/wx_redirect.html?...&code=..."
+                placeholder="粘贴授权后的页面地址"
               />
               <button type="submit" disabled={account.loading || !mobileAuthUrl.trim()}><KeyRound size={16} />完成登录</button>
             </form>
           </section>
         ) : (
           <section role="tabpanel">
-            <h2>备用登录</h2>
             <textarea value={cookieText} onChange={event => onCookieTextChange(event.target.value)} placeholder="粘贴 QQ 音乐 Cookie" />
             <button onClick={onLogin} disabled={account.loading || !cookieText.trim()}><KeyRound size={16} />保存 Cookie</button>
           </section>
@@ -1170,7 +1140,7 @@ function LoginPage({
       </div>
       {message ? <p className="status notice">{message}</p> : null}
       <Status state={account} />
-      <button className="secondary-button auth-logout" onClick={onLogout}><LogOut size={16} />退出系统帐号</button>
+      <button className="secondary-button auth-logout" onClick={onLogout}><LogOut size={16} />退出帐号</button>
     </section>
   )
 }
@@ -1250,28 +1220,21 @@ function HomePanel({
 
   return (
     <div className="home-layout">
-      <section className="hero-panel">
-        <p className="eyebrow">XMusic</p>
-        <h3>把音乐装进自己口袋</h3>
-        <p>连接 QQ 音乐和 Emby，打通收藏、歌单、记录，让音乐跟着你走。</p>
-        <div className="hero-actions">
+      <section className="home-overview">
+        <h2>音乐服务</h2>
+        <div className="toolbar">
           <a className="primary-link" href={playerPath} target="_blank" rel="noreferrer"><ExternalLink size={16} />打开播放器</a>
-          <button className="secondary-button" onClick={onOpenConfig}><Settings size={16} />管理连接</button>
+          <button className="secondary-button" onClick={onOpenConfig}><Settings size={16} />设置</button>
         </div>
-      </section>
-      <section className="benefit-grid">
-        <BenefitCard icon={Music2} title="随身曲库" text="熟悉的歌，换个地方继续听。" />
-        <BenefitCard icon={BadgeCheck} title="自己掌控" text="用自己的服务，连自己的播放器。" />
-        <BenefitCard icon={Sparkles} title="少点折腾" text="同步收藏和记录，打开就听。" />
       </section>
       <section className="connect-panel">
         <div className="section-head">
-          <h3>播放器连接</h3>
+          <h3>播放器</h3>
           <button className="secondary-button compact-button" onClick={onOpenConfig}><Settings size={15} />管理</button>
         </div>
         <div className="connection-copy-grid">
-          <InfoCard icon={Link2} title="服务器地址" value={connection.server || '-'} copyValue={connection.server} />
-          <InfoCard icon={UserRound} title="播放器帐号" value={connection.username || '-'} copyValue={connection.username} />
+          <InfoCard icon={Link2} title="地址" value={connection.server || '-'} copyValue={connection.server} />
+          <InfoCard icon={UserRound} title="用户名" value={connection.username || '-'} copyValue={connection.username} />
           <InfoCard icon={KeyRound} title="密码" value={maskedSecret(connection.password)} copyValue={connection.password} />
         </div>
       </section>
@@ -1285,27 +1248,19 @@ function HomePanel({
         </div>
         <div className="status-table">
           <div>
-            <span>最近刷新</span>
+            <span>上次刷新</span>
             <strong>{accountRefresh.data?.refreshedAt ? formatDateTime(accountRefresh.data.refreshedAt) : '-'}</strong>
-            <small>{accountRefresh.data
-              ? accountRefresh.data.keyRefreshed
-                ? '已更新 QQ Music key'
-                : accountRefresh.data.tokenRefreshed
-                  ? '已更新 QQ access token'
-                  : 'Key 可继续使用'
-              : '用于延长 QQ 音乐登录态'}</small>
           </div>
           <div>
-            <span>授权到期</span>
+            <span>有效期</span>
             <strong>{accessTokenExpiresAt ? formatDateTime(accessTokenExpiresAt) : '未知'}</strong>
-            <small>{accessTokenExpiresAt ? '来自 QQ access token 过期时间' : '当前 Cookie 未包含明确到期时间'}</small>
           </div>
         </div>
         <Status state={accountRefresh} />
       </section>
       <section className="connect-panel">
         <div className="section-head">
-          <h3>推荐播放器</h3>
+          <h3>其他播放器</h3>
         </div>
         <div className="player-support-grid">
           {playerRecommendations.map(player => (
@@ -1316,9 +1271,6 @@ function HomePanel({
           ))}
         </div>
       </section>
-      <div className="home-footer-link">
-        <a className="subtle-link" href="/architecture"><Workflow size={14} />架构说明</a>
-      </div>
     </div>
   )
 }
@@ -1377,15 +1329,15 @@ function ConfigPanel({
   return (
     <div className="config-grid">
       <section>
-        <h3>播放器连接</h3>
+        <h3>播放器</h3>
         <dl className="connection-list">
           <div>
-            <dt>服务器地址</dt>
-            <dd><span>{connection.server || '-'}</span><CopyButton value={connection.server} label="复制服务器地址" iconOnly /></dd>
+            <dt>地址</dt>
+            <dd><span>{connection.server || '-'}</span><CopyButton value={connection.server} label="复制地址" iconOnly /></dd>
           </div>
           <div>
-            <dt>播放器帐号</dt>
-            <dd><span>{connection.username || '-'}</span><CopyButton value={connection.username} label="复制播放器帐号" iconOnly /></dd>
+            <dt>用户名</dt>
+            <dd><span>{connection.username || '-'}</span><CopyButton value={connection.username} label="复制用户名" iconOnly /></dd>
           </div>
           <div>
             <dt>密码</dt>
@@ -1394,7 +1346,7 @@ function ConfigPanel({
                 type={showPassword ? 'text' : 'password'}
                 value={passwordDraft}
                 onChange={event => onPasswordChange(event.target.value)}
-                placeholder="输入播放器密码"
+                placeholder="请输入密码"
               />
               <span className="inline-actions">
                 <IconButton label={showPassword ? '隐藏密码' : '显示密码'} onClick={() => setShowPassword(value => !value)} disabled={!passwordDraft}>
@@ -1408,16 +1360,16 @@ function ConfigPanel({
         <Status state={embyConfig} />
       </section>
       <section>
-        <h3>上游 Emby</h3>
+        <h3>Emby</h3>
         <dl className="connection-list">
           <div>
-            <dt>Emby DSN</dt>
+            <dt>服务器地址</dt>
             <dd>
               <input
                 type="url"
                 value={embyDsnDraft}
                 onChange={event => onEmbyDsnChange(event.target.value)}
-                placeholder="https://username:password@emby.example.com:8096"
+                placeholder="请输入 Emby 服务器地址"
               />
             </dd>
           </div>
@@ -1428,12 +1380,12 @@ function ConfigPanel({
                 type="url"
                 value={embyWebdavDraft}
                 onChange={event => onEmbyWebdavChange(event.target.value)}
-                placeholder="https://user:password@example.com/dav/music"
+                placeholder="请输入 WebDAV 地址"
               />
             </dd>
           </div>
           <div>
-            <dt>代理超时</dt>
+            <dt>连接超时</dt>
             <dd>
               <input
                 type="number"
@@ -1450,7 +1402,7 @@ function ConfigPanel({
         <h3>QQ 音乐</h3>
         <label className="check-row">
           <input type="checkbox" checked={draft.qqEnabled} onChange={event => patch({ qqEnabled: event.target.checked })} />
-          <span>启用 QQ 帐号能力</span>
+          <span>启用 QQ 音乐</span>
         </label>
         <label className="check-row">
           <input type="checkbox" checked={draft.qqSyncFavorites} onChange={event => patch({ qqSyncFavorites: event.target.checked })} />
@@ -1466,16 +1418,16 @@ function ConfigPanel({
         </label>
         {showSyncPrompt ? (
           <div className="sync-prompt">
-            <p>已添加上游 Emby。建议先执行一次同步至 Emby。</p>
+            <p>Emby 已连接，可以开始同步。</p>
             <div className="toolbar">
               <button className="secondary-button compact-button" onClick={onDismissSyncPrompt}>稍后</button>
-              <button className="compact-button" onClick={onIncrementalSync} disabled={incrementalSync.loading}><Workflow size={15} />同步至 Emby</button>
+              <button className="compact-button" onClick={onIncrementalSync} disabled={incrementalSync.loading}><Workflow size={15} />立即同步</button>
             </div>
           </div>
         ) : null}
         <div className="toolbar">
           <button className="secondary-button compact-button" onClick={onIncrementalSync} disabled={incrementalSync.loading || !embyDsnDraft.trim()}>
-            <Workflow size={15} />同步至 Emby
+            <Workflow size={15} />立即同步
           </button>
         </div>
         <Status state={incrementalSync} />
@@ -1514,9 +1466,8 @@ function HealthPanel({
     <div className="ops-layout">
       <section className={health.ok ? 'status-banner ok' : 'status-banner attention'}>
         <div>
-          <span>{health.ok ? 'OK' : 'Needs Attention'}</span>
-          <h3>{health.ok ? '当前账号链路正常' : '需要处理运行问题'}</h3>
-          <p>最后检查 {formatDateTime(health.checkedAt)}</p>
+          <h3>{health.ok ? '运行正常' : '需要处理'}</h3>
+          <p>更新于 {formatDateTime(health.checkedAt)}</p>
         </div>
         <div className="toolbar">
           {!health.account.embyConfigured || !health.account.webdavConfigured || health.account.qqAuthState !== 'active'
@@ -1528,15 +1479,15 @@ function HealthPanel({
 
       <section className="metric-grid">
         <MetricCard icon={UserRound} label="QQ 授权" value={qqAuthLabel(health.account.qqAuthState)} detail={accountLabel} tone={health.account.qqAuthState === 'active' ? 'ok' : 'bad'} />
-        <MetricCard icon={KeyRound} label="音源 URL" value={health.config.missing.length ? '缺少配置' : '可用'} detail={health.config.missing.length ? health.config.missing.join(', ') : 'LX 音源已就绪'} tone={health.config.missing.length ? 'bad' : 'ok'} />
-        <MetricCard icon={MonitorPlay} label="账号 Emby" value={health.account.embyConfigured ? '已配置' : '未配置'} detail={health.account.webdavConfigured ? 'WebDAV 已配置' : 'WebDAV 未配置'} tone={health.account.embyConfigured ? health.account.webdavConfigured ? 'ok' : 'warn' : 'warn'} />
-        <MetricCard icon={Workflow} label="转存链路" value={pipelineLabel(pipelineTone)} detail={`${archiveJob.queued + embySyncJob.queued + tagJob.queued} 等待 · ${archiveJob.failed + embySyncJob.failed + tagJob.failed} 失败`} tone={pipelineTone} />
+        <MetricCard icon={KeyRound} label="音源" value={health.config.missing.length ? '未配置' : '可用'} detail={health.config.missing.length ? '请检查设置' : undefined} tone={health.config.missing.length ? 'bad' : 'ok'} />
+        <MetricCard icon={MonitorPlay} label="Emby" value={health.account.embyConfigured ? '已连接' : '未连接'} detail={health.account.webdavConfigured ? '存储已连接' : undefined} tone={health.account.embyConfigured ? health.account.webdavConfigured ? 'ok' : 'warn' : 'warn'} />
+        <MetricCard icon={Workflow} label="任务" value={pipelineLabel(pipelineTone)} detail={`${archiveJob.queued + embySyncJob.queued + tagJob.queued} 等待 · ${archiveJob.failed + embySyncJob.failed + tagJob.failed} 失败`} tone={pipelineTone} />
       </section>
 
       <section className="ops-grid">
         <article>
           <div className="section-head compact-head">
-            <h3>当前账号配置</h3>
+            <h3>帐号</h3>
             <button className="secondary-button compact-button" onClick={onOpenConfig}>
               <Settings size={15} />管理
             </button>
@@ -1545,29 +1496,25 @@ function HealthPanel({
             <div>
               <span>QQ 用户</span>
               <strong>{accountLabel}</strong>
-              <small>{health.account.qqAuthState === 'active' ? '授权有效' : health.account.qqAuthError ?? '需要重新授权'}</small>
             </div>
             <div>
-              <span>Emby 网关账号</span>
+              <span>播放器用户名</span>
               <strong>{health.account.embyGatewayUsername ?? '-'}</strong>
-              <small>播放器连接使用的本地账号</small>
             </div>
             <div>
-              <span>上游 Emby</span>
-              <strong>{health.account.embyConfigured ? '已配置' : '未配置'}</strong>
-              <small>{health.account.embyDsnConfigured ? 'DSN 已保存' : 'DSN 未填写'}</small>
+              <span>Emby</span>
+              <strong>{health.account.embyConfigured ? '已连接' : '未连接'}</strong>
             </div>
             <div>
-              <span>WebDAV 存储</span>
-              <strong>{health.account.webdavConfigured ? '已配置' : '未配置'}</strong>
-              <small>超时 {health.account.proxyTimeoutMs ?? 30000} ms</small>
+              <span>WebDAV</span>
+              <strong>{health.account.webdavConfigured ? '已连接' : '未连接'}</strong>
             </div>
           </div>
         </article>
 
         <article>
           <div className="section-head compact-head">
-            <h3>转存链路</h3>
+            <h3>同步任务</h3>
             {isAdmin ? <button className="secondary-button compact-button" onClick={onOpenJobs}><Workflow size={15} />任务</button> : null}
           </div>
           <div className="status-table">
@@ -1575,9 +1522,9 @@ function HealthPanel({
             <JobMetricRow label="Emby 同步" metrics={embySyncJob} />
             <JobMetricRow label="标签整理" metrics={tagJob} />
             <div>
-              <span>WebDAV 最近 7 天</span>
+              <span>近 7 天上传</span>
               <strong>{health.sync.webdav.uploaded + health.sync.webdav.skippedExisting}</strong>
-              <small>{health.sync.webdav.uploaded} 次上传 · {health.sync.webdav.skippedExisting} 次远端已存在跳过</small>
+              <small>{health.sync.webdav.uploaded} 上传 · {health.sync.webdav.skippedExisting} 已存在</small>
             </div>
           </div>
           {health.sync.recentFailures.length ? (
@@ -1602,24 +1549,21 @@ function HealthPanel({
           <Status state={favoriteStatus} />
           <div className="status-table">
             <div>
-              <span>QQ 源收藏数</span>
+              <span>QQ 收藏</span>
               <strong>{favoriteStatus.data?.qqTotal ?? '-'}</strong>
-              <small>QQ 音乐实时读取</small>
             </div>
             <div>
-              <span>Emby 源收藏数</span>
+              <span>Emby 收藏</span>
               <strong>{health.account.embyConfigured ? favoriteStatus.data?.embyTotal ?? '-' : '不适用'}</strong>
-              <small>{health.account.embyConfigured ? '当前 Emby 用户收藏' : '当前账号未配置上游 Emby'}</small>
             </div>
             <div>
               <span>等待同步</span>
               <strong>{health.favorites.pendingCount}</strong>
-              <small>本地收藏队列</small>
             </div>
             <div>
               <span>同步失败</span>
               <strong>{health.favorites.failedCount}</strong>
-              <small>{health.favorites.failedCount ? '需要检查任务详情' : '无需处理'}</small>
+              <small>{health.favorites.failedCount ? '请查看任务' : '无需处理'}</small>
             </div>
           </div>
         </article>
@@ -1638,7 +1582,7 @@ function HealthPanel({
                 <div key={quality}>
                   <span>{qualityLabel(quality)}</span>
                   <strong>{item?.total ?? 0}</strong>
-                  <small>{formatBytes(item?.bytes ?? 0)} · ready {item?.byStatus.ready ?? 0} · failed {item?.byStatus.failed ?? 0}</small>
+                  <small>{formatBytes(item?.bytes ?? 0)} · 可用 {item?.byStatus.ready ?? 0} · 失败 {item?.byStatus.failed ?? 0}</small>
                 </div>
               )
             })}
@@ -1756,24 +1700,24 @@ function JobsPanel({ jobs }: { jobs: JobsResult }) {
   return (
     <div className="jobs-layout">
       <section className="metric-grid">
-        <MetricCard icon={Workflow} label="Total" value={String(jobs.summary.total)} detail="all jobs" tone="ok" />
-        <MetricCard icon={RefreshCw} label="Queued" value={String(jobs.summary.queued)} detail={`${jobs.summary.running} running`} tone={jobs.summary.queued ? 'warn' : 'ok'} />
-        <MetricCard icon={CheckCircle2} label="Completed" value={String(jobs.summary.completed)} detail="finished jobs" tone="ok" />
-        <MetricCard icon={Activity} label="Failed" value={String(jobs.summary.failed)} detail="needs action" tone={jobs.summary.failed ? 'bad' : 'ok'} />
+        <MetricCard icon={Workflow} label="全部" value={String(jobs.summary.total)} tone="ok" />
+        <MetricCard icon={RefreshCw} label="等待" value={String(jobs.summary.queued)} detail={`${jobs.summary.running} 进行中`} tone={jobs.summary.queued ? 'warn' : 'ok'} />
+        <MetricCard icon={CheckCircle2} label="已完成" value={String(jobs.summary.completed)} tone="ok" />
+        <MetricCard icon={Activity} label="失败" value={String(jobs.summary.failed)} detail={jobs.summary.failed ? '需要处理' : undefined} tone={jobs.summary.failed ? 'bad' : 'ok'} />
       </section>
 
       <section className="jobs-table">
         <div className="job-row header">
-          <span>ID</span>
-          <span>Type</span>
-          <span>Status</span>
-          <span>Attempts</span>
-          <span>Updated</span>
+          <span>编号</span>
+          <span>类型</span>
+          <span>状态</span>
+          <span>尝试</span>
+          <span>更新时间</span>
         </div>
         {jobs.items.map(job => (
           <button className={`job-row ${selectedJob?.id === job.id ? 'active' : ''}`} key={job.id} onClick={() => setSelectedJob(job)}>
             <span>#{job.id}</span>
-            <span>{job.type}</span>
+            <span>{jobTypeLabel(job.type)}</span>
             <span><StatusBadge status={job.status} /></span>
             <span>{job.attempts}</span>
             <span>{formatDateTime(job.updatedAt)}</span>
@@ -1908,10 +1852,7 @@ function UserDetailDialog({
     <div className="dialog-backdrop" role="presentation" onClick={onClose}>
       <section className="user-detail dialog-panel" role="dialog" aria-modal="true" aria-labelledby="user-detail-title" onClick={event => event.stopPropagation()}>
         <div className="user-detail-head">
-          <div>
-            <h3 id="user-detail-title">{accountTitle}</h3>
-            <p>{account.embyUserId ?? '未绑定 Emby ID'}</p>
-          </div>
+          <h3 id="user-detail-title">{accountTitle}</h3>
           <button className="secondary-button compact-button" onClick={onClose}>关闭</button>
         </div>
         <div className="detail-tabs" role="tablist" aria-label="用户详情">
@@ -1934,16 +1875,21 @@ function UserDetailDialog({
               <div><dt>昵称</dt><dd><span>{account.qqNickname ?? '-'}</span></dd></div>
               <div><dt>用户名</dt><dd><span>{account.username}</span></dd></div>
               <div><dt>QQ</dt><dd><span>{account.qqUin ?? '-'}</span></dd></div>
-              <div><dt>Emby ID</dt><dd><span>{account.embyUserId ?? '-'}</span></dd></div>
-              <div><dt>播放器帐号</dt><dd><span>{account.embyUsername}</span></dd></div>
+              <div><dt>播放器用户名</dt><dd><span>{account.embyUsername}</span></dd></div>
               <div><dt>权限</dt><dd><span>{account.isAdmin ? '管理员' : '用户'}</span></dd></div>
-              <div><dt>QQ Key</dt><dd><span>{profile.data?.account.hasQQMusicKey ? '已保存' : '未保存'}</span></dd></div>
-              <div><dt>加密 UIN</dt><dd><span>{profile.data?.account.encryptedUin ?? '-'}</span></dd></div>
               <div><dt>最近登录</dt><dd><span>{formatOptionalDateTime(account.lastLoginAt)}</span></dd></div>
-              <div><dt>最近登录 IP</dt><dd><span>{account.lastLoginIp ?? '-'}</span></dd></div>
               <div><dt>最近使用</dt><dd><span>{formatOptionalDateTime(account.lastActiveAt)}</span></dd></div>
               <div><dt>创建时间</dt><dd><span>{formatDateTime(account.createdAt)}</span></dd></div>
             </dl>
+            <details className="technical-details">
+              <summary>技术信息</summary>
+              <dl className="user-info-grid">
+                <div><dt>Emby ID</dt><dd><span>{account.embyUserId ?? '-'}</span></dd></div>
+                <div><dt>QQ Key</dt><dd><span>{profile.data?.account.hasQQMusicKey ? '已保存' : '未保存'}</span></dd></div>
+                <div><dt>加密 UIN</dt><dd><span>{profile.data?.account.encryptedUin ?? '-'}</span></dd></div>
+                <div><dt>最近登录 IP</dt><dd><span>{account.lastLoginIp ?? '-'}</span></dd></div>
+              </dl>
+            </details>
             </div>
           ) : null}
 
@@ -1953,7 +1899,6 @@ function UserDetailDialog({
             {favorites.data ? (
               <UserTrackList
                 title={`收藏歌曲 (${favorites.data.total})`}
-                subtitle={favorites.data.source === 'qq' ? 'QQ 音乐实时读取' : '本地记录'}
                 tracks={favorites.data.items}
                 timeField="favoriteUpdatedAt"
                 page={favorites.data.page ?? favoritesPage}
@@ -1980,7 +1925,6 @@ function UserDetailDialog({
             {plays.data ? (
               <UserTrackList
                 title={`最近播放 (${plays.data.items.length})`}
-                subtitle="本地播放记录"
                 tracks={plays.data.items}
                 timeField="playedAt"
                 page={plays.data.page}
@@ -2005,9 +1949,8 @@ function UserDetailDialog({
   )
 }
 
-function UserTrackList({ title, subtitle, tracks, timeField, page, limit }: {
+function UserTrackList({ title, tracks, timeField, page, limit }: {
   title: string
-  subtitle: string
   tracks: UserTrackItem[]
   timeField: 'playedAt' | 'favoriteUpdatedAt'
   page: number
@@ -2016,10 +1959,7 @@ function UserTrackList({ title, subtitle, tracks, timeField, page, limit }: {
   return (
     <section className="user-track-list">
       <div className="section-head compact-head">
-        <div>
-          <h4>{title}</h4>
-          <p>{subtitle}</p>
-        </div>
+        <h4>{title}</h4>
       </div>
       <div className="mini-table">
         <div className="mini-row mini-header">
@@ -2068,14 +2008,17 @@ function JobDetailDialog({ job, onClose }: { job: JobItem; onClose: () => void }
           <button className="secondary-button compact-button" onClick={onClose}>关闭</button>
         </div>
         <dl className="connection-list">
-          <div><dt>类型</dt><dd><span>{job.type}</span></dd></div>
-          <div><dt>状态</dt><dd><span>{job.status}</span></dd></div>
+          <div><dt>类型</dt><dd><span>{jobTypeLabel(job.type)}</span></dd></div>
+          <div><dt>状态</dt><dd><span>{statusLabel(job.status)}</span></dd></div>
           <div><dt>尝试次数</dt><dd><span>{job.attempts}</span></dd></div>
           <div><dt>创建时间</dt><dd><span>{formatDateTime(job.createdAt)}</span></dd></div>
           <div><dt>更新时间</dt><dd><span>{formatDateTime(job.updatedAt)}</span></dd></div>
         </dl>
         {job.error ? <p className="status error">{job.error}</p> : null}
-        <pre>{JSON.stringify(job.payload, null, 2)}</pre>
+        <details className="job-payload">
+          <summary>详细信息</summary>
+          <pre>{JSON.stringify(job.payload, null, 2)}</pre>
+        </details>
       </section>
     </div>
   )
@@ -2091,7 +2034,7 @@ function MetricCard({
   icon: ComponentType<{ size?: number }>
   label: string
   value: string
-  detail: string
+  detail?: string
   tone: 'ok' | 'warn' | 'bad'
 }) {
   return (
@@ -2100,14 +2043,24 @@ function MetricCard({
       <div>
         <span>{label}</span>
         <strong>{value}</strong>
-        <small>{detail}</small>
+        {detail ? <small>{detail}</small> : null}
       </div>
     </article>
   )
 }
 
 function StatusBadge({ status }: { status: string }) {
-  return <span className={`status-badge ${status}`}>{status}</span>
+  return <span className={`status-badge ${status}`}>{statusLabel(status)}</span>
+}
+
+function statusLabel(status: string): string {
+  if (status === 'queued') return '等待'
+  if (status === 'running') return '进行中'
+  if (status === 'completed') return '已完成'
+  if (status === 'failed') return '失败'
+  if (status === 'admin') return '管理员'
+  if (status === 'user') return '用户'
+  return status
 }
 
 function InfoCard({
@@ -2131,26 +2084,6 @@ function InfoCard({
         {href ? <a href={href} target="_blank" rel="noreferrer">{value}</a> : <strong>{value}</strong>}
       </div>
       {copyValue ? <CopyButton value={copyValue} label={`复制${title}`} iconOnly /> : null}
-    </article>
-  )
-}
-
-function BenefitCard({
-  icon: Icon,
-  title,
-  text,
-}: {
-  icon: ComponentType<{ size?: number }>
-  title: string
-  text: string
-}) {
-  return (
-    <article className="benefit-card">
-      <Icon size={18} />
-      <div>
-        <h4>{title}</h4>
-        <p>{text}</p>
-      </div>
     </article>
   )
 }
@@ -2205,12 +2138,12 @@ function Status<T>({ state }: { state: ApiState<T> }) {
 }
 
 function headingFor(view: View): string {
-  if (view === 'home') return '连接你的音乐生活'
-  if (view === 'player') return '打开播放器收听'
-  if (view === 'config') return '管理播放器连接'
-  if (view === 'users') return '用户管理'
-  if (view === 'jobs') return '后台任务队列'
-  return '系统运行状态'
+  if (view === 'home') return '首页'
+  if (view === 'player') return '播放器'
+  if (view === 'config') return '设置'
+  if (view === 'users') return '用户'
+  if (view === 'jobs') return '任务'
+  return '状态'
 }
 
 function formatOptionalDateTime(value?: string): string {

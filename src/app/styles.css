@@ -541,50 +541,22 @@ a {
 .login-card {
   width: min(760px, 100%);
   display: grid;
-  gap: 22px;
+  gap: 18px;
   min-width: 0;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.96);
-  padding: 32px;
+  padding: 28px;
   box-shadow: var(--shadow);
   backdrop-filter: blur(18px);
 }
 
 .system-login-card {
-  width: min(480px, 100%);
+  width: min(440px, 100%);
 }
 
 .qq-login-card {
   width: min(760px, 100%);
-}
-
-.login-card-header {
-  display: grid;
-  gap: 26px;
-}
-
-.login-card-header .login-brand {
-  min-height: 48px;
-}
-
-.auth-intro {
-  display: grid;
-  gap: 6px;
-}
-
-.auth-intro .eyebrow {
-  color: var(--accent);
-  font-size: 11px;
-}
-
-.auth-intro h2 {
-  font-size: 28px;
-  line-height: 1.18;
-}
-
-.auth-intro p {
-  font-size: 14px;
 }
 
 .system-auth-form {
@@ -1074,6 +1046,26 @@ a {
   align-items: start;
 }
 
+.view-actions {
+  min-height: 32px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.home-overview {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid var(--line);
+  padding: 6px 0 16px;
+}
+
+.home-overview h2 {
+  font-size: 24px;
+  line-height: 1.2;
+}
+
 .player-layout {
   display: grid;
   grid-template-columns: minmax(0, 1.35fr) minmax(280px, 0.65fr);
@@ -1081,9 +1073,7 @@ a {
   align-items: start;
 }
 
-.hero-panel,
 .connect-panel,
-.benefit-card,
 .steps-panel,
 .ampcast-panel,
 .ops-grid article,
@@ -1102,58 +1092,9 @@ a {
   box-shadow: 0 1px 0 rgba(28, 43, 37, 0.02);
 }
 
-.hero-panel,
 .ampcast-panel {
   display: grid;
   gap: 12px;
-}
-
-.hero-panel {
-  min-height: 210px;
-  align-content: center;
-  border-left: 4px solid var(--accent);
-  padding: 32px;
-  background: var(--surface);
-  box-shadow: var(--shadow-soft);
-}
-
-.hero-panel h3 {
-  max-width: 760px;
-  font-size: 40px;
-  line-height: 1.08;
-  letter-spacing: 0;
-}
-
-.hero-panel p:not(.eyebrow) {
-  max-width: 680px;
-  font-size: 17px;
-}
-
-.hero-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-top: 8px;
-}
-
-.subtle-link {
-  width: fit-content;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--muted);
-  font-size: 13px;
-  text-decoration: none;
-}
-
-.subtle-link:hover {
-  color: var(--accent-strong);
-}
-
-.home-footer-link {
-  display: flex;
-  justify-content: flex-end;
-  padding: 2px 2px 0;
 }
 
 .steps-panel h3,
@@ -1163,41 +1104,6 @@ a {
 .connect-panel h3 {
   margin: 0 0 8px;
   font-size: 16px;
-}
-
-.benefit-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.benefit-card {
-  display: grid;
-  grid-template-columns: 28px minmax(0, 1fr);
-  gap: 10px;
-  align-items: start;
-  transition: border-color 150ms ease, background 150ms ease, transform 150ms ease;
-}
-
-.benefit-card:hover {
-  border-color: var(--line-strong);
-  background: var(--surface-2);
-  transform: translateY(-1px);
-}
-
-.benefit-card svg {
-  color: var(--accent);
-  margin-top: 2px;
-}
-
-.benefit-card h4 {
-  font-size: 17px;
-  line-height: 1.25;
-}
-
-.benefit-card p {
-  margin-top: 5px;
-  font-size: 14px;
 }
 
 .quick-grid {
@@ -2125,12 +2031,34 @@ button.user-row.active {
   white-space: nowrap;
 }
 
+.technical-details,
+.job-payload {
+  border-top: 1px solid var(--line);
+  margin-top: 14px;
+  padding-top: 12px;
+}
+
+.technical-details summary,
+.job-payload summary {
+  width: fit-content;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.technical-details[open] summary,
+.job-payload[open] summary {
+  margin-bottom: 12px;
+  color: var(--ink);
+}
+
 .job-detail pre {
   max-height: 420px;
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: #fffaf1;
+  background: var(--surface-2);
   padding: 12px;
   color: var(--ink);
   font-size: 12px;
@@ -2319,7 +2247,6 @@ button.user-row.active {
   .config-grid,
   .metric-grid,
   .ops-grid,
-  .benefit-grid,
   .player-support-grid,
   .connection-copy-grid,
   .architecture-hero,
@@ -2418,14 +2345,6 @@ button.user-row.active {
     padding: 22px;
   }
 
-  .login-card-header {
-    gap: 22px;
-  }
-
-  .auth-intro h2 {
-    font-size: 26px;
-  }
-
   .system-auth-form {
     gap: 7px;
   }
@@ -2491,14 +2410,10 @@ button.user-row.active {
     flex-wrap: wrap;
   }
 
-  .hero-panel {
-    min-height: 0;
-    border-left-width: 3px;
-    padding: 22px;
-  }
 
-  .hero-panel h3 {
-    font-size: 32px;
+  .home-overview {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .content-header {
