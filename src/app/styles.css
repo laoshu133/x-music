@@ -1054,39 +1054,90 @@ a {
 .qq-auth-layout {
   width: 100%;
   min-width: 0;
-  display: grid;
-  gap: 12px;
-}
-
-.qq-auth-toolbar {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.qq-auth-toolbar > p {
-  max-width: 640px;
-  font-size: 14px;
-}
-
-.qq-auth-toolbar .login-tabs {
-  width: auto;
-  flex: 0 0 auto;
 }
 
 .qq-auth-content {
   min-width: 0;
-  display: grid;
-  grid-template-columns: minmax(0, 760px);
-  justify-content: center;
-  gap: 12px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
-  padding: 24px;
+  overflow: hidden;
   box-shadow: 0 1px 0 rgba(28, 43, 37, 0.02);
+}
+
+.qq-auth-tabs {
+  min-width: 0;
+  display: flex;
+  justify-content: center;
+  gap: 24px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  border-bottom: 1px solid var(--line);
+  padding: 0 24px;
+}
+
+.qq-auth-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.qq-auth-tabs button {
+  position: relative;
+  min-width: max-content;
+  min-height: 48px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 0 2px;
+  white-space: nowrap;
+  transition: color 150ms ease;
+}
+
+.qq-auth-tabs button:hover {
+  color: var(--ink);
+}
+
+.qq-auth-tabs button.active {
+  color: var(--accent-strong);
+  font-weight: 600;
+}
+
+.qq-auth-tabs button.active::after {
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: 2px;
+  background: var(--accent);
+  content: "";
+}
+
+.qq-auth-body {
+  width: min(720px, 100%);
+  margin-inline: auto;
+  display: grid;
+  gap: 20px;
+  padding: 28px 24px 32px;
+}
+
+.qq-auth-intro {
+  font-size: 14px;
+}
+
+.qq-auth-method {
+  min-width: 0;
+}
+
+.qq-auth-method > button,
+.qq-auth-method .mobile-auth-form > button {
+  width: fit-content;
+}
+
+.qq-auth-content .login-methods textarea {
+  background: var(--surface-2);
 }
 
 .player-layout {
@@ -2372,17 +2423,23 @@ button.user-row.active {
     padding: 22px;
   }
 
-  .qq-auth-content {
-    padding: 18px;
+  .qq-auth-tabs {
+    justify-content: flex-start;
+    gap: 0;
+    padding: 0 8px;
   }
 
-  .qq-auth-toolbar {
-    align-items: stretch;
-    flex-direction: column;
+  .qq-auth-tabs button {
+    min-height: 44px;
+    flex: 1 0 96px;
+    gap: 5px;
+    padding: 0 8px;
+    font-size: 13px;
   }
 
-  .qq-auth-toolbar .login-tabs {
-    width: 100%;
+  .qq-auth-body {
+    gap: 18px;
+    padding: 22px 16px 24px;
   }
 
   .system-auth-form {

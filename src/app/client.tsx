@@ -1056,9 +1056,8 @@ function QQAuthorizationView({
 
   return (
     <section className="qq-auth-layout">
-      <div className="qq-auth-toolbar">
-        <p>绑定后即可使用播放器，并同步你的收藏、歌单和播放记录。</p>
-        <div className="login-tabs" role="tablist" aria-label="QQ 绑定方式">
+      <div className="qq-auth-content">
+        <div className="qq-auth-tabs" role="tablist" aria-label="QQ 绑定方式">
           <button
             type="button"
             className={loginMethod === 'qr' ? 'active' : ''}
@@ -1096,66 +1095,67 @@ function QQAuthorizationView({
             <span>Cookie</span>
           </button>
         </div>
-      </div>
-      <div className="qq-auth-content">
-        <div className="login-methods">
-          {loginMethod === 'qr' ? (
-            <section role="tabpanel">
-              {loginQr.data ? (
-                <div className="qr-login large">
-                  <div className="qr-visual">
-                    <div className={`qr-code ${qrDisabled ? 'disabled' : ''}`}>
-                      <img src={loginQr.data.img} alt="QQ 授权二维码" />
+        <div className="qq-auth-body">
+          <p className="qq-auth-intro">绑定后即可使用播放器，并同步你的收藏、歌单和播放记录。</p>
+          <div className="login-methods">
+            {loginMethod === 'qr' ? (
+              <section className="qq-auth-method" role="tabpanel">
+                {loginQr.data ? (
+                  <div className="qr-login large">
+                    <div className="qr-visual">
+                      <div className={`qr-code ${qrDisabled ? 'disabled' : ''}`}>
+                        <img src={loginQr.data.img} alt="QQ 授权二维码" />
+                      </div>
+                    </div>
+                    <div className="qr-copy">
+                      {qrStatusText ? <p className={`qr-status ${qrDisabled ? 'attention' : ''}`}>{qrStatusText}</p> : null}
+                      <p className="qr-hint">打开手机 QQ 扫描二维码</p>
+                      <div className="qr-actions">
+                        <button onClick={onRequestLoginQr} disabled={loginQr.loading || account.loading}><RefreshCw size={16} />刷新二维码</button>
+                      </div>
                     </div>
                   </div>
-                  <div className="qr-copy">
-                    {qrStatusText ? <p className={`qr-status ${qrDisabled ? 'attention' : ''}`}>{qrStatusText}</p> : null}
-                    <p className="qr-hint">打开手机 QQ 扫描二维码</p>
-                    <div className="qr-actions">
-                      <button onClick={onRequestLoginQr} disabled={loginQr.loading || account.loading}><RefreshCw size={16} />刷新二维码</button>
-                    </div>
-                  </div>
+                ) : (
+                  <button onClick={onRequestLoginQr} disabled={loginQr.loading}><LogIn size={16} />获取二维码</button>
+                )}
+                <Status state={loginQr} />
+              </section>
+            ) : loginMethod === 'mobile' ? (
+              <section className="qq-auth-method" role="tabpanel">
+                <p className="login-help">授权后如果没有自动返回，请粘贴当前页面地址。</p>
+                <div className="mobile-auth-actions">
+                  <a className="primary-link" href={mobileAuthorizeUrl} target="_blank" rel="noreferrer">
+                    <ExternalLink size={16} />
+                    打开 QQ 授权
+                  </a>
                 </div>
-              ) : (
-                <button onClick={onRequestLoginQr} disabled={loginQr.loading}><LogIn size={16} />获取二维码</button>
-              )}
-              <Status state={loginQr} />
-            </section>
-          ) : loginMethod === 'mobile' ? (
-            <section role="tabpanel">
-              <p className="login-help">授权后如果没有自动返回，请粘贴当前页面地址。</p>
-              <div className="mobile-auth-actions">
-                <a className="primary-link" href={mobileAuthorizeUrl} target="_blank" rel="noreferrer">
-                  <ExternalLink size={16} />
-                  打开 QQ 授权
-                </a>
-              </div>
-              <form
-                className="mobile-auth-form"
-                onSubmit={(event) => {
-                  event.preventDefault()
-                  onCompleteMobileAuth()
-                }}
-              >
-                <label htmlFor="login-mobile-auth-url">授权页面地址</label>
-                <textarea
-                  id="login-mobile-auth-url"
-                  name="url"
-                  value={mobileAuthUrl}
-                  onChange={event => onMobileAuthUrlChange(event.target.value)}
-                  placeholder="粘贴授权后的页面地址"
-                />
-                <button type="submit" disabled={account.loading || !mobileAuthUrl.trim()}><KeyRound size={16} />完成绑定</button>
-              </form>
-            </section>
-          ) : (
-            <section role="tabpanel">
-              <textarea value={cookieText} onChange={event => onCookieTextChange(event.target.value)} placeholder="粘贴 QQ 音乐 Cookie" />
-              <button onClick={onLogin} disabled={account.loading || !cookieText.trim()}><KeyRound size={16} />保存 Cookie</button>
-            </section>
-          )}
+                <form
+                  className="mobile-auth-form"
+                  onSubmit={(event) => {
+                    event.preventDefault()
+                    onCompleteMobileAuth()
+                  }}
+                >
+                  <label htmlFor="login-mobile-auth-url">授权页面地址</label>
+                  <textarea
+                    id="login-mobile-auth-url"
+                    name="url"
+                    value={mobileAuthUrl}
+                    onChange={event => onMobileAuthUrlChange(event.target.value)}
+                    placeholder="粘贴授权后的页面地址"
+                  />
+                  <button type="submit" disabled={account.loading || !mobileAuthUrl.trim()}><KeyRound size={16} />完成绑定</button>
+                </form>
+              </section>
+            ) : (
+              <section className="qq-auth-method" role="tabpanel">
+                <textarea value={cookieText} onChange={event => onCookieTextChange(event.target.value)} placeholder="粘贴 QQ 音乐 Cookie" />
+                <button onClick={onLogin} disabled={account.loading || !cookieText.trim()}><KeyRound size={16} />保存 Cookie</button>
+              </section>
+            )}
+          </div>
+          <Status state={account} />
         </div>
-        <Status state={account} />
       </div>
     </section>
   )
