@@ -498,6 +498,11 @@ a {
   letter-spacing: 0;
 }
 
+.content-header-actions {
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
 .eyebrow {
   text-transform: uppercase;
   font-weight: 700;
@@ -1079,24 +1084,36 @@ a {
   align-items: start;
 }
 
-.view-actions {
-  min-height: 32px;
-  display: flex;
-  justify-content: flex-end;
-}
-
-.home-overview {
+.home-banner {
+  min-height: 144px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 28px;
+  border-left: 3px solid var(--accent);
   border-bottom: 1px solid var(--line);
-  padding: 6px 0 16px;
+  background: rgba(255, 255, 255, 0.5);
+  padding: 22px 24px;
 }
 
-.home-overview h2 {
-  font-size: 24px;
-  line-height: 1.2;
+.home-banner-copy {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.home-banner h2 {
+  font-size: 30px;
+  line-height: 1.15;
+}
+
+.home-banner p {
+  max-width: 680px;
+  font-size: 15px;
+}
+
+.home-banner .toolbar {
+  flex-shrink: 0;
 }
 
 .qq-auth-layout {
@@ -2645,14 +2662,21 @@ button.user-row.active {
   }
 
 
-  .home-overview {
+  .home-banner {
+    min-height: 0;
     align-items: stretch;
     flex-direction: column;
+    gap: 18px;
+    padding: 20px;
   }
 
   .content-header {
-    align-items: stretch;
-    flex-direction: column;
+    align-items: center;
+    flex-flow: row wrap;
+  }
+
+  .content-header-actions {
+    justify-content: flex-end;
   }
 
   .content-header h2 {

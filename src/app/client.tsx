@@ -857,9 +857,31 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
         {view !== 'home' || !account.data.qq?.authorized ? (
           <header className="content-header">
             <h2>{view === 'home' ? '绑定 QQ 音乐' : headingFor(view)}</h2>
-            {view === 'player' ? (
-              <a className="secondary-button compact-button" href={EMBEDDED_PLAYER_AUTO_INIT_PATH} target="_blank" rel="noreferrer"><ExternalLink size={15} />新窗口打开</a>
-            ) : null}
+            <div className="toolbar content-header-actions">
+              {view === 'player' ? (
+                <a className="secondary-button compact-button" href={EMBEDDED_PLAYER_AUTO_INIT_PATH} target="_blank" rel="noreferrer"><ExternalLink size={15} />新窗口打开</a>
+              ) : null}
+              {view === 'config' ? (
+                <IconButton label="刷新" onClick={loadAdminConfig} disabled={adminConfig.loading}><RefreshCw size={16} /></IconButton>
+              ) : null}
+              {view === 'status' ? (
+                <IconButton label="刷新" onClick={() => { loadHealth(); loadFavoriteStatus() }} disabled={health.loading || favoriteStatus.loading}><RefreshCw size={16} /></IconButton>
+              ) : null}
+              {view === 'jobs' ? (
+                <>
+                  <button className="secondary-button compact-button" onClick={() => clearJobs('failed')} disabled={jobs.loading || !jobs.data?.summary.failed}>
+                    <Trash2 size={15} />清空已失败
+                  </button>
+                  <button className="secondary-button compact-button" onClick={() => clearJobs('completed')} disabled={jobs.loading || !jobs.data?.summary.completed}>
+                    <Trash2 size={15} />清空已完成
+                  </button>
+                  <IconButton label="刷新" onClick={loadJobs} disabled={jobs.loading}><RefreshCw size={16} /></IconButton>
+                </>
+              ) : null}
+              {view === 'users' ? (
+                <IconButton label="刷新" onClick={loadUsers} disabled={users.loading}><RefreshCw size={16} /></IconButton>
+              ) : null}
+            </div>
           </header>
         ) : null}
 
@@ -914,38 +936,32 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
 
         {view === 'config' && (
           <section className="workspace">
-            <div className="view-actions">
-              <IconButton label="刷新" onClick={loadAdminConfig} disabled={adminConfig.loading}><RefreshCw size={16} /></IconButton>
-            </div>
             <Status state={adminConfig} />
-              <ConfigPanel
-                draft={configDraft}
-                embyConfig={accountEmbyConfig}
-                connection={connectionInfo}
-                passwordDraft={embyPasswordDraft}
-                embyDsnDraft={embyDsnDraft}
-                embyWebdavDraft={embyWebdavDraft}
-                embyProxyTimeoutDraft={embyProxyTimeoutDraft}
-                incrementalSync={embyIncrementalSync}
-                showSyncPrompt={showEmbySyncPrompt}
-                onChange={setConfigDraft}
-                onPasswordChange={setEmbyPasswordDraft}
-                onEmbyDsnChange={setEmbyDsnDraft}
-                onEmbyWebdavChange={setEmbyWebdavDraft}
-                onEmbyProxyTimeoutChange={setEmbyProxyTimeoutDraft}
-                onSave={saveAdminConfig}
-                onIncrementalSync={syncEmbyIncremental}
-                onDismissSyncPrompt={() => setShowEmbySyncPrompt(false)}
-                loading={adminConfig.loading || accountEmbyConfig.loading}
-              />
+            <ConfigPanel
+              draft={configDraft}
+              embyConfig={accountEmbyConfig}
+              connection={connectionInfo}
+              passwordDraft={embyPasswordDraft}
+              embyDsnDraft={embyDsnDraft}
+              embyWebdavDraft={embyWebdavDraft}
+              embyProxyTimeoutDraft={embyProxyTimeoutDraft}
+              incrementalSync={embyIncrementalSync}
+              showSyncPrompt={showEmbySyncPrompt}
+              onChange={setConfigDraft}
+              onPasswordChange={setEmbyPasswordDraft}
+              onEmbyDsnChange={setEmbyDsnDraft}
+              onEmbyWebdavChange={setEmbyWebdavDraft}
+              onEmbyProxyTimeoutChange={setEmbyProxyTimeoutDraft}
+              onSave={saveAdminConfig}
+              onIncrementalSync={syncEmbyIncremental}
+              onDismissSyncPrompt={() => setShowEmbySyncPrompt(false)}
+              loading={adminConfig.loading || accountEmbyConfig.loading}
+            />
           </section>
         )}
 
         {view === 'status' && (
           <section className="workspace">
-            <div className="view-actions">
-              <IconButton label="刷新" onClick={() => { loadHealth(); loadFavoriteStatus() }} disabled={health.loading || favoriteStatus.loading}><RefreshCw size={16} /></IconButton>
-            </div>
             <Status state={health} />
             {health.data ? (
               <HealthPanel
@@ -962,17 +978,6 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
 
         {view === 'jobs' && (
           <section className="workspace">
-            <div className="view-actions">
-              <div className="toolbar">
-                <button className="secondary-button compact-button" onClick={() => clearJobs('failed')} disabled={jobs.loading || !jobs.data?.summary.failed}>
-                  <Trash2 size={15} />清空已失败
-                </button>
-                <button className="secondary-button compact-button" onClick={() => clearJobs('completed')} disabled={jobs.loading || !jobs.data?.summary.completed}>
-                  <Trash2 size={15} />清空已完成
-                </button>
-                <IconButton label="刷新" onClick={loadJobs} disabled={jobs.loading}><RefreshCw size={16} /></IconButton>
-              </div>
-            </div>
             <Status state={jobs} />
             {jobs.data ? <JobsPanel jobs={jobs.data} /> : null}
           </section>
@@ -980,9 +985,6 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
 
         {view === 'users' && (
           <section className="workspace">
-            <div className="view-actions">
-              <IconButton label="刷新" onClick={loadUsers} disabled={users.loading}><RefreshCw size={16} /></IconButton>
-            </div>
             <Status state={users} />
             {users.data ? <UsersPanel users={users.data} /> : null}
           </section>
@@ -1277,8 +1279,11 @@ function HomePanel({
 
   return (
     <div className="home-layout">
-      <section className="home-overview">
-        <h2>音乐服务</h2>
+      <section className="home-banner">
+        <div className="home-banner-copy">
+          <h2>把音乐装进自己口袋</h2>
+          <p>连接 QQ 音乐与播放器，同步你的收藏、歌单和播放记录。</p>
+        </div>
         <div className="toolbar">
           <a className="primary-link" href={playerPath} target="_blank" rel="noreferrer"><ExternalLink size={16} />打开播放器</a>
           <button className="secondary-button" onClick={onOpenConfig}><Settings size={16} />设置</button>
