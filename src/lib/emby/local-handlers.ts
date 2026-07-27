@@ -252,10 +252,10 @@ const LOCAL_ROUTES: LocalRoute[] = [
   {
     name: 'favorite-item-mutation',
     authorize: true,
-    match: ({ request, embyPath }) => isFavoriteItemMutation(request.method, embyPath)
-      && isLocallyHandledFavoriteItemMutation(embyPath, authorizedLocalAccount(request)),
+    match: ({ request, embyPath }) => isFavoriteItemMutation(request.method, embyPath),
     handle: ({ request, embyPath }) => handleFavoriteItemMutationRequest(
       request,
+      embyPath,
       extractFavoriteItemId(embyPath)!,
       favoriteItemMutationState(request, embyPath),
     ),
@@ -692,10 +692,14 @@ function forgetRemoteMappingForVirtualItem(decoded: VirtualId, mapping?: RemoteM
   }
 }
 
-async function handleFavoriteItemMutationRequest(request: Request, itemId: string, favorite: boolean): Promise<Response> {
+async function handleFavoriteItemMutationRequest(request: Request, embyPath: string, itemId: string, favorite: boolean): Promise<Response> {
   const account = authorizedLocalAccount(request)
   const decoded = await resolveSongVirtualId(itemId, account)
-  if (!decoded) return favoriteItemMutationResponse(itemId, favorite)
+  if (!decoded) {
+    return hasUpstreamEmbyConfigured(account)
+      ? proxyToUpstreamEmby(request, embyPath)
+      : favoriteItemMutationResponse(itemId, favorite)
+  }
 
   if (decoded.kind !== 'qq-song') {
     return favoriteItemMutationResponse(itemId, favorite)
@@ -717,24 +721,25 @@ async function handleFavoriteItemMutationRequest(request: Request, itemId: strin
     return Response.json({ error: 'Virtual song not found' }, { status: 404 })
   }
 
-  setLocalFavorite(loaded.song, favorite, account?.userId)
-  if (favorite) enqueueArchiveAndSyncForSong(account, loaded.song, 'favorite', decoded.playlistId ?? loaded.playlistId)
+  const song = await loadQQSongForFavoriteMutation(loaded.song, decoded.playlistId ?? loaded.playlistId)
+  setLocalFavorite(song, favorite, account?.userId)
+  if (favorite) enqueueArchiveAndSyncForSong(account, song, 'favorite', decoded.playlistId ?? loaded.playlistId)
 
   try {
     await setQQFavoriteSong({
       cookie: qqCookieForRequest(request),
-      songmid: loaded.song.songmid,
+      songmid: song.songmid,
       favorited: favorite,
-      raw: loaded.song.raw,
+      raw: song.raw,
     })
-    setLocalFavoriteSynced(loaded.song, favorite, account?.userId)
+    setLocalFavoriteSynced(song, favorite, account?.userId)
   } catch (error) {
     console.warn(
-      `QQ favorite ${favorite ? 'add' : 'remove'} sync deferred for ${loaded.song.songmid}: ${error instanceof Error ? error.message : String(error)}`,
+      `QQ favorite ${favorite ? 'add' : 'remove'} sync deferred for ${song.songmid}: ${error instanceof Error ? error.message : String(error)}`,
     )
   }
 
-  await syncMappedEmbyFavoriteBestEffort(account, loaded.song, favorite)
+  await syncMappedEmbyFavoriteBestEffort(account, song, favorite)
 
   return favoriteItemMutationResponse(itemId, favorite)
 }
@@ -835,12 +840,6 @@ function handleUserViewsRequest(path: string): Response {
 
 function findAccountByLocalOrUpstreamUserId(userId: string): AccountRecord | undefined {
   return getAccountByEmbyUserId(userId) ?? listAccounts().find(account => localUserId(account) === userId)
-}
-
-function isLocallyHandledFavoriteItemMutation(path: string, account?: AccountRecord): boolean {
-  const itemId = extractFavoriteItemId(path)
-  if (itemId && !account) return true
-  return Boolean(itemId && (decodeVirtualId(itemId) || getMappedSongmidForEmbyItemId(itemId, account)))
 }
 
 function isLocalEmptyCollectionRequest(path: string): boolean {
@@ -2020,6 +2019,15 @@ async function loadOrFetchVirtualSong(songmid: string, playlistId?: string): Pro
   if (!song) return undefined
   rememberVirtualSong(song, playlistId)
   return { song, playlistId }
+}
+
+async function loadQQSongForFavoriteMutation(song: MusicInfo, playlistId?: string): Promise<MusicInfo> {
+  if (readQQSongId(song) !== undefined) return song
+
+  const detailed = await getQQSongDetail(song.songmid).catch(() => undefined)
+  if (!detailed) return song
+  rememberVirtualSong(detailed, playlistId)
+  return detailed
 }
 
 async function resolveSongVirtualId(itemId: string, account?: AccountRecord): Promise<Extract<VirtualId, { kind: 'qq-song' }> | undefined> {

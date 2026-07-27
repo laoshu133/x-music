@@ -122,7 +122,10 @@ export async function proxyToAmpcast(request: Request, playerPath: string): Prom
   }
 
   const bodyText = await response.text()
-  return new Response(rewriteRootRelativeUrls(bodyText), {
+  const rewrittenBody = isAmpcastManifestPath(playerPath)
+    ? rewriteAmpcastManifest(bodyText)
+    : rewriteRootRelativeUrls(bodyText)
+  return new Response(rewrittenBody, {
     status: response.status,
     statusText: response.statusText,
     headers: responseHeaders,
@@ -232,6 +235,53 @@ function rewriteRootRelativeUrls(value: string): string {
     .replace(/\b(href|src|action)=(["'])\/(?!\/|@player\/)/gi, '$1=$2/@player/')
     .replace(/url\((["']?)\/(?!\/|@player\/)/gi, 'url($1/@player/')
     .replace(/(["'`])\/(?!\/|@player\/)(v\d+(?:\.\d+)*(?:\/[^"'`]*)?|assets\/[^"'`]*|icons\/[^"'`]*|lib\/[^"'`]*|manifest(?:\.webmanifest|\.json)?|service-worker(?:-[^"'`/]*)?\.js|sw\.js)/gi, '$1/@player/$2')
+}
+
+function rewriteAmpcastManifest(value: string): string {
+  try {
+    const manifest = JSON.parse(value) as Record<string, unknown>
+    // Preserve the implicit identity of Ampcast's previous start_url so existing installs can update in place.
+    manifest.id = '/'
+    manifest.start_url = '/@player/auto-init'
+    manifest.scope = '/@player/'
+    rewriteManifestImageSources(manifest.icons)
+    rewriteManifestImageSources(manifest.screenshots)
+    if (Array.isArray(manifest.shortcuts)) {
+      for (const shortcut of manifest.shortcuts) {
+        if (!shortcut || typeof shortcut !== 'object') continue
+        const item = shortcut as Record<string, unknown>
+        if (typeof item.url === 'string') item.url = playerScopedUrl(item.url)
+        rewriteManifestImageSources(item.icons)
+      }
+    }
+    const shareTarget = manifest.share_target
+    if (shareTarget && typeof shareTarget === 'object') {
+      const target = shareTarget as Record<string, unknown>
+      if (typeof target.action === 'string') target.action = playerScopedUrl(target.action)
+    }
+    return JSON.stringify(manifest)
+  } catch {
+    return rewriteRootRelativeUrls(value)
+  }
+}
+
+function rewriteManifestImageSources(value: unknown): void {
+  if (!Array.isArray(value)) return
+  for (const image of value) {
+    if (!image || typeof image !== 'object') continue
+    const item = image as Record<string, unknown>
+    if (typeof item.src === 'string') item.src = playerScopedUrl(item.src)
+  }
+}
+
+function playerScopedUrl(value: string): string {
+  if (/^(?:[a-z][a-z\d+.-]*:|\/\/|data:|blob:)/i.test(value)) return value
+  if (value.startsWith('/@player/')) return value
+  return `/@player/${value.replace(/^\.\//, '').replace(/^\//, '')}`
+}
+
+function isAmpcastManifestPath(pathname: string): boolean {
+  return /^\/manifest(?:\.webmanifest|\.json)?$/i.test(pathname)
 }
 
 function isAmpcastRootAssetPath(pathname: string): boolean {

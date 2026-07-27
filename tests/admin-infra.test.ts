@@ -651,6 +651,42 @@ test('ampcast proxy forwards to configured upstream and rewrites embedded assets
   }
 })
 
+test('ampcast proxy rewrites manifest startup into the player scope', async () => {
+  const originalFetch = globalThis.fetch
+  const originalAmpcastUrl = process.env.AMPCAST_URL
+  try {
+    delete process.env.AMPCAST_URL
+    globalThis.fetch = (async () => Response.json({
+      name: 'ampcast',
+      start_url: '/',
+      icons: [{ src: 'icon-192.png', sizes: '192x192' }],
+      shortcuts: [{ name: 'Library', url: '/library', icons: [{ src: '/icons/library.png' }] }],
+    }, {
+      headers: { 'content-type': 'application/manifest+json' },
+    })) as typeof fetch
+
+    const response = await proxyToAmpcast(new Request('http://local/@player/manifest.json'), '/manifest.json')
+    const manifest = await response.json() as {
+      id?: string
+      start_url?: string
+      scope?: string
+      icons?: Array<{ src?: string }>
+      shortcuts?: Array<{ url?: string; icons?: Array<{ src?: string }> }>
+    }
+
+    assert.equal(manifest.id, '/')
+    assert.equal(manifest.start_url, '/@player/auto-init')
+    assert.equal(manifest.scope, '/@player/')
+    assert.equal(manifest.icons?.[0]?.src, '/@player/icon-192.png')
+    assert.equal(manifest.shortcuts?.[0]?.url, '/@player/library')
+    assert.equal(manifest.shortcuts?.[0]?.icons?.[0]?.src, '/@player/icons/library.png')
+  } finally {
+    globalThis.fetch = originalFetch
+    if (originalAmpcastUrl === undefined) delete process.env.AMPCAST_URL
+    else process.env.AMPCAST_URL = originalAmpcastUrl
+  }
+})
+
 test('ampcast proxy returns friendly unavailable page when upstream fails', async () => {
   const originalFetch = globalThis.fetch
   const originalAmpcastUrl = process.env.AMPCAST_URL
@@ -2792,6 +2828,150 @@ test('musiver virtual favorite item post returns emby user data payload', async 
     clearQQLoginCookie()
     db.prepare('DELETE FROM app_settings WHERE key = ?').run(`virtual.song.${songmid}`)
     db.prepare("DELETE FROM tracks WHERE songmid = ? AND source = 'tx'").run(songmid)
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('first favorite write for an upstream Emby QQ song creates a mapping and syncs QQ', async () => {
+  const originalFetch = globalThis.fetch
+  const songmid = 'first-upstream-favorite-song'
+  const itemId = 'emby-first-favorite-song'
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999047')
+    saveQQLoginCookie('uin=o999047; euin=encrypted999047; qm_keyst=test-key')
+    markAccountUpstreamBound('999047', 'emby-user-999047', 'emby-user-token-999047')
+    const account = getAccountByQQ('999047')
+    assert.ok(account)
+
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+
+    let qqDetailRequests = 0
+    let qqFavoriteRequests = 0
+    const upstreamFavoriteWrites: Array<{ pathname: string; method: string }> = []
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'u.y.qq.com') {
+        const body = typeof init?.body === 'string' ? JSON.parse(init.body) as Record<string, unknown> : {}
+        if (body.songinfo) {
+          qqDetailRequests += 1
+          return Response.json({
+            code: 0,
+            songinfo: {
+              code: 0,
+              data: {
+                track_info: {
+                  mid: songmid,
+                  id: 771122,
+                  type: 0,
+                  name: 'First Upstream Favorite Song',
+                  singer: [{ name: 'Favorite Artist' }],
+                  album: { mid: 'album-mid', name: 'Favorite Album' },
+                  interval: 180,
+                  file: {},
+                },
+              },
+            },
+          })
+        }
+        qqFavoriteRequests += 1
+        return Response.json({ code: 0, req: { code: 0, data: { retCode: 0 } } })
+      }
+      if (requestUrl.pathname.endsWith(`/Items/${itemId}`)) {
+        return Response.json({
+          Id: itemId,
+          Name: 'First Upstream Favorite Song',
+          Album: 'Favorite Album',
+          Artists: ['Favorite Artist'],
+          ProviderIds: { QQMusic: songmid },
+        })
+      }
+      if (requestUrl.pathname.endsWith(`/Users/emby-user-999047/FavoriteItems/${itemId}`)) {
+        upstreamFavoriteWrites.push({ pathname: requestUrl.pathname, method: init?.method ?? 'GET' })
+        return Response.json({ IsFavorite: true, ItemId: itemId })
+      }
+      return Response.json({ error: 'unexpected upstream request' }, { status: 500 })
+    }) as typeof fetch
+
+    const response = await dispatchEmbyRequest(
+      new Request(`http://local/Users/${authPayload.User.Id}/FavoriteItems/${itemId}`, {
+        method: 'POST',
+        headers: { 'X-Emby-Token': authPayload.AccessToken },
+      }),
+      `/Users/${authPayload.User.Id}/FavoriteItems/${itemId}`,
+    )
+
+    assert.equal(response.status, 200)
+    assert.equal(qqDetailRequests, 1)
+    assert.equal(qqFavoriteRequests, 1)
+    assert.deepEqual(upstreamFavoriteWrites, [{
+      pathname: `/Users/emby-user-999047/FavoriteItems/${itemId}`,
+      method: 'POST',
+    }])
+    assert.equal(getFavoriteStatus('tx', songmid).favorite, true)
+    assert.equal(getFavoriteStatus('tx', songmid).syncState, 'synced')
+    const mapping = db.prepare(`
+      SELECT user_id AS userId, local_key AS localKey
+      FROM remote_mappings
+      WHERE remote = 'emby' AND remote_id = ?
+    `).get(itemId) as { userId?: string; localKey?: string } | undefined
+    assert.equal(mapping?.userId, account.userId)
+    assert.equal(mapping?.localKey, `tx:${songmid}`)
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999047')
+    db.prepare('DELETE FROM app_settings WHERE key = ?').run(`virtual.song.${songmid}`)
+    db.prepare("DELETE FROM tracks WHERE songmid = ? AND source = 'tx'").run(songmid)
+    clearQQLoginCookie()
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('favorite write for a non-QQ upstream item falls back to Emby', async () => {
+  const originalFetch = globalThis.fetch
+  const itemId = 'emby-non-qq-favorite-song'
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999048')
+    saveQQLoginCookie('uin=o999048; euin=encrypted999048; qm_keyst=test-key')
+    markAccountUpstreamBound('999048', 'emby-user-999048', 'emby-user-token-999048')
+    const account = getAccountByQQ('999048')
+    assert.ok(account)
+    const auth = await handleLocalEmbyRequest(new Request('http://local/emby/Users/AuthenticateByName', {
+      method: 'POST',
+      body: JSON.stringify({ Username: account.embyUsername, Pw: account.embyPassword }),
+    }), stripOptionalEmbyPrefix('/emby/Users/AuthenticateByName'))
+    assert.equal(auth?.status, 200)
+    const authPayload = await auth!.json()
+
+    const upstreamRequests: Array<{ pathname: string; method: string }> = []
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = new URL(String(url))
+      upstreamRequests.push({ pathname: requestUrl.pathname, method: init?.method ?? 'GET' })
+      if (requestUrl.pathname.endsWith(`/Items/${itemId}`)) {
+        return Response.json({ Id: itemId, Name: 'Local Emby Song', Artists: ['Local Artist'] })
+      }
+      if (requestUrl.pathname.endsWith(`/Users/emby-user-999048/FavoriteItems/${itemId}`)) {
+        return new Response(null, { status: 204 })
+      }
+      return Response.json({ error: 'unexpected upstream request' }, { status: 500 })
+    }) as typeof fetch
+
+    const response = await dispatchEmbyRequest(
+      new Request(`http://local/Users/${authPayload.User.Id}/FavoriteItems/${itemId}`, {
+        method: 'POST',
+        headers: { 'X-Emby-Token': authPayload.AccessToken },
+      }),
+      `/Users/${authPayload.User.Id}/FavoriteItems/${itemId}`,
+    )
+
+    assert.equal(response.status, 204)
+    assert.deepEqual(upstreamRequests.map(item => item.method), ['GET', 'POST'])
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999048')
+    clearQQLoginCookie()
     globalThis.fetch = originalFetch
   }
 })
