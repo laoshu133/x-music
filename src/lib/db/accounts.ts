@@ -304,12 +304,6 @@ export function markAccountActive(userId: string): void {
   markUserActive(userId)
 }
 
-/** @deprecated Test-only compatibility for the removed QQ-based administrator model. */
-export function isAdminQQ(qqUin: string | undefined): boolean {
-  if (process.env.NODE_ENV !== 'test' || !qqUin) return false
-  return (process.env.ADMIN_QQ_UINS ?? '').split(/[,;\s]+/).map(value => value.replace(/^o/i, '')).includes(qqUin.replace(/^o/i, ''))
-}
-
 export function markAccountLogin(userId: string, loginIp?: string): void {
   markUserLogin(userId, loginIp)
 }
