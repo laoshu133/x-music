@@ -416,7 +416,7 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
   }
 
   const loadAccount = async () => {
-    setAccount({ loading: true, error: '', data: null })
+    setAccount(current => ({ loading: true, error: '', data: current.data }))
     try {
       setAccount({ loading: false, error: '', data: await fetchJson<AccountState>('/api/account') })
     } catch (error) {

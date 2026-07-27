@@ -3,6 +3,7 @@
 .env.prod
 .env.local
 .next
+.next-dev
 node_modules
 npm-debug.log*
 data
