@@ -1055,35 +1055,38 @@ a {
   width: 100%;
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(0, 960px);
-  justify-content: center;
+  gap: 12px;
 }
 
-.qq-auth-panel {
-  width: 100%;
+.qq-auth-toolbar {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.qq-auth-toolbar > p {
+  max-width: 640px;
+  font-size: 14px;
+}
+
+.qq-auth-toolbar .login-tabs {
+  width: auto;
+  flex: 0 0 auto;
+}
+
+.qq-auth-content {
   min-width: 0;
   display: grid;
-  gap: 18px;
+  grid-template-columns: minmax(0, 760px);
+  justify-content: center;
+  gap: 12px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
   padding: 24px;
-  box-shadow: var(--shadow-soft);
-}
-
-.qq-auth-heading {
-  display: grid;
-  gap: 6px;
-}
-
-.qq-auth-heading h2 {
-  font-size: 24px;
-  line-height: 1.2;
-}
-
-.qq-auth-heading p {
-  max-width: 600px;
-  font-size: 14px;
+  box-shadow: 0 1px 0 rgba(28, 43, 37, 0.02);
 }
 
 .player-layout {
@@ -2369,9 +2372,17 @@ button.user-row.active {
     padding: 22px;
   }
 
-  .qq-auth-panel {
-    gap: 16px;
+  .qq-auth-content {
     padding: 18px;
+  }
+
+  .qq-auth-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .qq-auth-toolbar .login-tabs {
+    width: 100%;
   }
 
   .system-auth-form {

@@ -820,14 +820,14 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
       </aside>
 
       <section className="content">
-        {view === 'home' ? null : (
+        {view !== 'home' || !account.data.qq?.authorized ? (
           <header className="content-header">
-            <h2>{headingFor(view)}</h2>
+            <h2>{view === 'home' ? '绑定 QQ 音乐' : headingFor(view)}</h2>
             {view === 'player' ? (
               <a className="secondary-button compact-button" href={EMBEDDED_PLAYER_AUTO_INIT_PATH} target="_blank" rel="noreferrer"><ExternalLink size={15} />新窗口打开</a>
             ) : null}
           </header>
-        )}
+        ) : null}
 
         {message ? <p className="toast-message">{message}</p> : null}
 
@@ -847,21 +847,19 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
                 />
               </>
             ) : (
-              <div className="qq-auth-layout">
-                <QQAuthorizationPanel
-                  account={account}
-                  cookieText={cookieText}
-                  mobileAuthorizeUrl={mobileAuthorizeUrl}
-                  mobileAuthUrl={mobileAuthUrl}
-                  onCookieTextChange={setCookieText}
-                  onMobileAuthUrlChange={setMobileAuthUrl}
-                  onLogin={login}
-                  onCompleteMobileAuth={completeMobileAuthLogin}
-                  loginQr={loginQr}
-                  loginQrPhase={loginQrPhase}
-                  onRequestLoginQr={requestLoginQr}
-                />
-              </div>
+              <QQAuthorizationView
+                account={account}
+                cookieText={cookieText}
+                mobileAuthorizeUrl={mobileAuthorizeUrl}
+                mobileAuthUrl={mobileAuthUrl}
+                onCookieTextChange={setCookieText}
+                onMobileAuthUrlChange={setMobileAuthUrl}
+                onLogin={login}
+                onCompleteMobileAuth={completeMobileAuthLogin}
+                loginQr={loginQr}
+                loginQrPhase={loginQrPhase}
+                onRequestLoginQr={requestLoginQr}
+              />
             )}
           </section>
         )}
@@ -1013,7 +1011,7 @@ function SystemLoginPage({ account, username, password, mode, onUsernameChange, 
   )
 }
 
-function QQAuthorizationPanel({
+function QQAuthorizationView({
   account,
   cookieText,
   mobileAuthorizeUrl,
@@ -1057,107 +1055,108 @@ function QQAuthorizationPanel({
   }, [])
 
   return (
-    <section className="qq-auth-panel">
-      <header className="qq-auth-heading">
-        <h2>绑定 QQ 音乐</h2>
+    <section className="qq-auth-layout">
+      <div className="qq-auth-toolbar">
         <p>绑定后即可使用播放器，并同步你的收藏、歌单和播放记录。</p>
-      </header>
-      <div className="login-tabs" role="tablist" aria-label="QQ 绑定方式">
-        <button
-          type="button"
-          className={loginMethod === 'qr' ? 'active' : ''}
-          role="tab"
-          aria-selected={loginMethod === 'qr'}
-          title="扫码授权"
-          aria-label="扫码授权"
-          onClick={() => setLoginMethod('qr')}
-        >
-          <LogIn size={16} />
-          <span>扫码授权</span>
-        </button>
-        <button
-          type="button"
-          className={loginMethod === 'mobile' ? 'active' : ''}
-          role="tab"
-          aria-selected={loginMethod === 'mobile'}
-          title="手机授权"
-          aria-label="手机授权"
-          onClick={() => setLoginMethod('mobile')}
-        >
-          <Smartphone size={16} />
-          <span>手机授权</span>
-        </button>
-        <button
-          type="button"
-          className={loginMethod === 'cookie' ? 'active' : ''}
-          role="tab"
-          aria-selected={loginMethod === 'cookie'}
-          title="Cookie"
-          aria-label="Cookie"
-          onClick={() => setLoginMethod('cookie')}
-        >
-          <KeyRound size={16} />
-          <span>Cookie</span>
-        </button>
+        <div className="login-tabs" role="tablist" aria-label="QQ 绑定方式">
+          <button
+            type="button"
+            className={loginMethod === 'qr' ? 'active' : ''}
+            role="tab"
+            aria-selected={loginMethod === 'qr'}
+            title="扫码授权"
+            aria-label="扫码授权"
+            onClick={() => setLoginMethod('qr')}
+          >
+            <LogIn size={16} />
+            <span>扫码授权</span>
+          </button>
+          <button
+            type="button"
+            className={loginMethod === 'mobile' ? 'active' : ''}
+            role="tab"
+            aria-selected={loginMethod === 'mobile'}
+            title="手机授权"
+            aria-label="手机授权"
+            onClick={() => setLoginMethod('mobile')}
+          >
+            <Smartphone size={16} />
+            <span>手机授权</span>
+          </button>
+          <button
+            type="button"
+            className={loginMethod === 'cookie' ? 'active' : ''}
+            role="tab"
+            aria-selected={loginMethod === 'cookie'}
+            title="Cookie"
+            aria-label="Cookie"
+            onClick={() => setLoginMethod('cookie')}
+          >
+            <KeyRound size={16} />
+            <span>Cookie</span>
+          </button>
+        </div>
       </div>
-      <div className="login-methods">
-        {loginMethod === 'qr' ? (
-          <section role="tabpanel">
-            {loginQr.data ? (
-              <div className="qr-login large">
-                <div className="qr-visual">
-                  <div className={`qr-code ${qrDisabled ? 'disabled' : ''}`}>
-                    <img src={loginQr.data.img} alt="QQ 授权二维码" />
+      <div className="qq-auth-content">
+        <div className="login-methods">
+          {loginMethod === 'qr' ? (
+            <section role="tabpanel">
+              {loginQr.data ? (
+                <div className="qr-login large">
+                  <div className="qr-visual">
+                    <div className={`qr-code ${qrDisabled ? 'disabled' : ''}`}>
+                      <img src={loginQr.data.img} alt="QQ 授权二维码" />
+                    </div>
+                  </div>
+                  <div className="qr-copy">
+                    {qrStatusText ? <p className={`qr-status ${qrDisabled ? 'attention' : ''}`}>{qrStatusText}</p> : null}
+                    <p className="qr-hint">打开手机 QQ 扫描二维码</p>
+                    <div className="qr-actions">
+                      <button onClick={onRequestLoginQr} disabled={loginQr.loading || account.loading}><RefreshCw size={16} />刷新二维码</button>
+                    </div>
                   </div>
                 </div>
-                <div className="qr-copy">
-                  {qrStatusText ? <p className={`qr-status ${qrDisabled ? 'attention' : ''}`}>{qrStatusText}</p> : null}
-                  <p className="qr-hint">打开手机 QQ 扫描二维码</p>
-                  <div className="qr-actions">
-                    <button onClick={onRequestLoginQr} disabled={loginQr.loading || account.loading}><RefreshCw size={16} />刷新二维码</button>
-                  </div>
-                </div>
+              ) : (
+                <button onClick={onRequestLoginQr} disabled={loginQr.loading}><LogIn size={16} />获取二维码</button>
+              )}
+              <Status state={loginQr} />
+            </section>
+          ) : loginMethod === 'mobile' ? (
+            <section role="tabpanel">
+              <p className="login-help">授权后如果没有自动返回，请粘贴当前页面地址。</p>
+              <div className="mobile-auth-actions">
+                <a className="primary-link" href={mobileAuthorizeUrl} target="_blank" rel="noreferrer">
+                  <ExternalLink size={16} />
+                  打开 QQ 授权
+                </a>
               </div>
-            ) : (
-              <button onClick={onRequestLoginQr} disabled={loginQr.loading}><LogIn size={16} />获取二维码</button>
-            )}
-            <Status state={loginQr} />
-          </section>
-        ) : loginMethod === 'mobile' ? (
-          <section role="tabpanel">
-            <p className="login-help">授权后如果没有自动返回，请粘贴当前页面地址。</p>
-            <div className="mobile-auth-actions">
-              <a className="primary-link" href={mobileAuthorizeUrl} target="_blank" rel="noreferrer">
-                <ExternalLink size={16} />
-                打开 QQ 授权
-              </a>
-            </div>
-            <form
-              className="mobile-auth-form"
-              onSubmit={(event) => {
-                event.preventDefault()
-                onCompleteMobileAuth()
-              }}
-            >
-              <label htmlFor="login-mobile-auth-url">授权页面地址</label>
-              <textarea
-                id="login-mobile-auth-url"
-                name="url"
-                value={mobileAuthUrl}
-                onChange={event => onMobileAuthUrlChange(event.target.value)}
-                placeholder="粘贴授权后的页面地址"
-              />
-              <button type="submit" disabled={account.loading || !mobileAuthUrl.trim()}><KeyRound size={16} />完成绑定</button>
-            </form>
-          </section>
-        ) : (
-          <section role="tabpanel">
-            <textarea value={cookieText} onChange={event => onCookieTextChange(event.target.value)} placeholder="粘贴 QQ 音乐 Cookie" />
-            <button onClick={onLogin} disabled={account.loading || !cookieText.trim()}><KeyRound size={16} />保存 Cookie</button>
-          </section>
-        )}
+              <form
+                className="mobile-auth-form"
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  onCompleteMobileAuth()
+                }}
+              >
+                <label htmlFor="login-mobile-auth-url">授权页面地址</label>
+                <textarea
+                  id="login-mobile-auth-url"
+                  name="url"
+                  value={mobileAuthUrl}
+                  onChange={event => onMobileAuthUrlChange(event.target.value)}
+                  placeholder="粘贴授权后的页面地址"
+                />
+                <button type="submit" disabled={account.loading || !mobileAuthUrl.trim()}><KeyRound size={16} />完成绑定</button>
+              </form>
+            </section>
+          ) : (
+            <section role="tabpanel">
+              <textarea value={cookieText} onChange={event => onCookieTextChange(event.target.value)} placeholder="粘贴 QQ 音乐 Cookie" />
+              <button onClick={onLogin} disabled={account.loading || !cookieText.trim()}><KeyRound size={16} />保存 Cookie</button>
+            </section>
+          )}
+        </div>
+        <Status state={account} />
       </div>
-      <Status state={account} />
     </section>
   )
 }
