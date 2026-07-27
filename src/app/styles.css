@@ -1,19 +1,20 @@
 :root {
   color-scheme: light;
-  --bg: #f5f3ef;
-  --surface: #fffdf9;
-  --surface-2: #f7f4ee;
-  --surface-3: #ece6da;
-  --ink: #161512;
-  --muted: #6b655c;
-  --line: #ded6c9;
-  --line-strong: #c8bba9;
+  --bg: #f3f5f2;
+  --surface: #ffffff;
+  --surface-2: #f7f8f6;
+  --surface-3: #e9ede9;
+  --ink: #17201d;
+  --muted: #68716d;
+  --line: #dfe4df;
+  --line-strong: #c7cfc9;
   --accent: #176b5d;
-  --accent-strong: #0f564b;
-  --accent-soft: #dfeee9;
-  --amber: #a76614;
-  --danger: #a83c2f;
-  --shadow: 0 18px 44px rgba(43, 36, 24, 0.12);
+  --accent-strong: #0d5549;
+  --accent-soft: #e3f1ed;
+  --amber: #9a6518;
+  --danger: #a33e35;
+  --shadow: 0 20px 52px rgba(28, 43, 37, 0.11);
+  --shadow-soft: 0 8px 24px rgba(28, 43, 37, 0.06);
 }
 
 * {
@@ -22,18 +23,21 @@
 
 html {
   background: var(--bg);
+  scroll-behavior: smooth;
 }
 
 body {
   margin: 0;
   min-width: 320px;
   background:
-    linear-gradient(90deg, rgba(23, 21, 16, 0.035) 1px, transparent 1px),
-    linear-gradient(0deg, rgba(23, 21, 16, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(23, 32, 29, 0.026) 1px, transparent 1px),
+    linear-gradient(0deg, rgba(23, 32, 29, 0.026) 1px, transparent 1px),
     var(--bg);
-  background-size: 32px 32px;
+  background-size: 40px 40px;
   color: var(--ink);
   font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 button,
@@ -43,13 +47,27 @@ textarea {
 }
 
 button,
+input,
+textarea,
+a {
+  outline: none;
+}
+
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+a:focus-visible {
+  box-shadow: 0 0 0 3px rgba(23, 107, 93, 0.18);
+}
+
+button,
 a.primary-link {
   cursor: pointer;
 }
 
 button:disabled {
   cursor: not-allowed;
-  opacity: 0.52;
+  opacity: 0.48;
 }
 
 h1,
@@ -76,9 +94,9 @@ a {
 .app-shell {
   min-height: 100vh;
   display: grid;
-  grid-template-columns: 264px minmax(0, 1fr);
-  gap: 24px;
-  padding: 24px;
+  grid-template-columns: 248px minmax(0, 1fr);
+  gap: 20px;
+  padding: 20px;
 }
 
 .app-shell.sidebar-collapsed {
@@ -87,22 +105,22 @@ a {
 
 .sidebar {
   position: fixed;
-  top: 24px;
-  left: 24px;
+  top: 20px;
+  left: 20px;
   z-index: 4;
-  width: 264px;
+  width: 248px;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   align-content: stretch;
   gap: 16px;
-  min-height: calc(100vh - 48px);
-  max-height: calc(100vh - 48px);
+  min-height: calc(100vh - 40px);
+  max-height: calc(100vh - 40px);
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: rgba(255, 253, 249, 0.92);
-  padding: 14px;
-  box-shadow: var(--shadow);
-  backdrop-filter: blur(14px);
+  background: rgba(255, 255, 255, 0.92);
+  padding: 12px;
+  box-shadow: var(--shadow-soft);
+  backdrop-filter: blur(18px);
 }
 
 .brand-lockup {
@@ -227,6 +245,7 @@ a {
   border-radius: 8px;
   background: var(--surface);
   color: var(--ink);
+  transition: border-color 150ms ease, background 150ms ease, color 150ms ease, transform 150ms ease;
 }
 
 .tabs button {
@@ -235,13 +254,15 @@ a {
   gap: 10px;
   align-items: center;
   min-width: 0;
+  border-color: transparent;
+  border-radius: 6px;
   padding: 0 11px;
   text-align: left;
   transition: background 150ms ease, border-color 150ms ease, color 150ms ease;
 }
 
 .tabs button:hover {
-  border-color: var(--line-strong);
+  border-color: transparent;
   background: var(--surface-2);
 }
 
@@ -257,7 +278,7 @@ a {
 }
 
 .tabs button.active {
-  border-color: var(--accent);
+  border-color: rgba(23, 107, 93, 0.18);
   background: var(--accent-soft);
   color: var(--accent-strong);
   font-weight: 600;
@@ -316,6 +337,25 @@ a {
 .secondary-button {
   border-color: var(--line-strong);
   background: var(--surface-2);
+}
+
+.primary-link:hover,
+.login-methods button:hover,
+.steps-panel button:hover,
+.form-actions button:hover,
+.auth-actions button:hover,
+.auth-paste-form button:hover,
+.auth-submit:hover {
+  border-color: var(--accent-strong);
+  background: var(--accent-strong);
+}
+
+.secondary-button:hover,
+.ghost-button:hover,
+.icon-button:hover {
+  border-color: var(--line-strong);
+  background: var(--surface-3);
+  color: var(--ink);
 }
 
 .compact-button {
@@ -433,10 +473,12 @@ a {
 
 .content {
   grid-column: 2;
+  width: min(100%, 1560px);
   min-width: 0;
   display: grid;
   align-content: start;
   gap: 20px;
+  padding-bottom: 32px;
 }
 
 .content-header {
@@ -447,13 +489,14 @@ a {
 
 .content-header h2 {
   margin-top: 5px;
-  font-size: 30px;
+  font-size: 28px;
   line-height: 1.12;
   letter-spacing: 0;
 }
 
 .eyebrow {
   text-transform: uppercase;
+  font-weight: 700;
 }
 
 .workspace {
@@ -489,29 +532,183 @@ a {
 }
 
 .login-screen {
-  min-height: 100vh;
+  min-height: 100svh;
   display: grid;
   place-items: center;
-  padding: 24px;
+  padding: 40px 24px;
 }
 
 .login-card {
-  width: min(840px, 100%);
+  width: min(760px, 100%);
   display: grid;
-  gap: 24px;
+  gap: 22px;
   min-width: 0;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: rgba(255, 253, 249, 0.94);
-  padding: 24px;
+  background: rgba(255, 255, 255, 0.96);
+  padding: 32px;
   box-shadow: var(--shadow);
-  backdrop-filter: blur(14px);
+  backdrop-filter: blur(18px);
+}
+
+.system-login-card {
+  width: min(480px, 100%);
+}
+
+.qq-login-card {
+  width: min(760px, 100%);
+}
+
+.login-card-header {
+  display: grid;
+  gap: 26px;
+}
+
+.login-card-header .login-brand {
+  min-height: 48px;
+}
+
+.auth-intro {
+  display: grid;
+  gap: 6px;
+}
+
+.auth-intro .eyebrow {
+  color: var(--accent);
+  font-size: 11px;
+}
+
+.auth-intro h2 {
+  font-size: 28px;
+  line-height: 1.18;
+}
+
+.auth-intro p {
+  font-size: 14px;
+}
+
+.system-auth-form {
+  display: grid;
+  gap: 7px;
+}
+
+.system-auth-form > label {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.system-auth-form > .auth-input-shell + label {
+  margin-top: 9px;
+}
+
+.system-auth-form > .auth-submit {
+  margin-top: 9px;
+}
+
+.auth-input-shell {
+  min-width: 0;
+  min-height: 46px;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  gap: 9px;
+  align-items: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--muted);
+  padding: 0 10px 0 13px;
+  transition: border-color 150ms ease, box-shadow 150ms ease, background 150ms ease;
+}
+
+.auth-input-shell:focus-within {
+  border-color: var(--accent);
+  background: #fbfefd;
+  box-shadow: 0 0 0 3px rgba(23, 107, 93, 0.12);
+  color: var(--accent);
+}
+
+.auth-input-shell input {
+  width: 100%;
+  min-width: 0;
+  height: 44px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  padding: 0;
+  box-shadow: none;
+}
+
+.auth-input-shell input:focus-visible {
+  box-shadow: none;
+}
+
+.auth-input-action {
+  width: 32px;
+  height: 32px;
+  display: inline-grid;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  padding: 0;
+}
+
+.auth-input-action:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+.auth-submit {
+  min-height: 46px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--accent);
+  color: white;
+  padding: 0 16px;
+  font-weight: 700;
+  transition: border-color 150ms ease, background 150ms ease, transform 150ms ease;
+}
+
+.auth-submit:not(:disabled):active {
+  transform: translateY(1px);
+}
+
+.auth-footnote {
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+  font-size: 12px;
+  text-align: center;
+}
+
+.auth-status:empty {
+  display: none;
 }
 
 .login-card.compact {
   width: min(360px, 100%);
   justify-items: center;
   text-align: center;
+}
+
+.loading-card {
+  gap: 12px;
+  padding: 28px;
+}
+
+.loading-mark {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 .login-tabs {
@@ -553,6 +750,7 @@ a {
   text-wrap: nowrap;
   overflow: hidden;
   line-height: 1;
+  transition: background 150ms ease, color 150ms ease, box-shadow 150ms ease;
 }
 
 .login-tabs button span {
@@ -567,7 +765,7 @@ a {
 .login-tabs button.active {
   background: var(--surface);
   color: var(--accent-strong);
-  box-shadow: 0 1px 0 rgba(43, 36, 24, 0.08);
+  box-shadow: 0 1px 4px rgba(28, 43, 37, 0.08);
   font-weight: 600;
 }
 
@@ -582,10 +780,7 @@ a {
   align-content: start;
   gap: 12px;
   min-width: 0;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--surface);
-  padding: 16px;
+  padding: 2px 0;
 }
 
 .login-methods h2 {
@@ -598,9 +793,17 @@ a {
   min-width: 0;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: #fffaf1;
+  background: var(--surface);
   color: var(--ink);
   padding: 0 10px;
+  transition: border-color 150ms ease, box-shadow 150ms ease, background 150ms ease;
+}
+
+.login-methods textarea:focus,
+.config-grid input:focus {
+  border-color: var(--accent);
+  background: #fbfefd;
+  box-shadow: 0 0 0 3px rgba(23, 107, 93, 0.12);
 }
 
 .login-methods textarea {
@@ -627,6 +830,10 @@ a {
   gap: 10px;
   border-top: 1px solid var(--line);
   padding-top: 12px;
+}
+
+.auth-logout {
+  justify-self: start;
 }
 
 .mobile-auth-form label {
@@ -891,7 +1098,8 @@ a {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
-  padding: 14px;
+  padding: 18px;
+  box-shadow: 0 1px 0 rgba(28, 43, 37, 0.02);
 }
 
 .hero-panel,
@@ -901,18 +1109,18 @@ a {
 }
 
 .hero-panel {
-  min-height: 260px;
+  min-height: 210px;
   align-content: center;
-  padding: 34px;
-  background:
-    linear-gradient(135deg, rgba(23, 107, 93, 0.13), rgba(255, 253, 249, 0.35) 42%),
-    var(--surface);
+  border-left: 4px solid var(--accent);
+  padding: 32px;
+  background: var(--surface);
+  box-shadow: var(--shadow-soft);
 }
 
 .hero-panel h3 {
   max-width: 760px;
-  font-size: clamp(34px, 5vw, 58px);
-  line-height: 1.04;
+  font-size: 40px;
+  line-height: 1.08;
   letter-spacing: 0;
 }
 
@@ -968,6 +1176,13 @@ a {
   grid-template-columns: 28px minmax(0, 1fr);
   gap: 10px;
   align-items: start;
+  transition: border-color 150ms ease, background 150ms ease, transform 150ms ease;
+}
+
+.benefit-card:hover {
+  border-color: var(--line-strong);
+  background: var(--surface-2);
+  transform: translateY(-1px);
 }
 
 .benefit-card svg {
@@ -1024,12 +1239,13 @@ a {
   display: grid;
   gap: 5px;
   text-decoration: none;
-  transition: border-color 150ms ease, background 150ms ease;
+  transition: border-color 150ms ease, background 150ms ease, transform 150ms ease;
 }
 
 .player-card:hover {
   border-color: var(--line-strong);
   background: var(--surface-2);
+  transform: translateY(-1px);
 }
 
 .player-card span {
@@ -1116,7 +1332,7 @@ a {
 }
 
 .config-grid input {
-  height: 38px;
+  height: 42px;
 }
 
 .config-grid .check-row {
@@ -1184,8 +1400,8 @@ a {
 .architecture-hero h1 {
   max-width: 820px;
   margin: 6px 0 10px;
-  font-size: clamp(34px, 5vw, 58px);
-  line-height: 1.04;
+  font-size: 48px;
+  line-height: 1.08;
   letter-spacing: 0;
 }
 
@@ -1434,6 +1650,7 @@ a {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+  box-shadow: var(--shadow-soft);
 }
 
 .status-banner span,
@@ -1535,7 +1752,7 @@ a {
   gap: 4px 12px;
   align-items: center;
   border-top: 1px solid var(--line);
-  padding-top: 8px;
+  padding: 10px 0 2px;
 }
 
 .status-table div:first-child {
@@ -1665,6 +1882,11 @@ button.user-row.active {
   background: var(--surface-2);
 }
 
+button.job-row.active,
+button.user-row.active {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
 .jobs-table > p {
   padding: 14px;
 }
@@ -1750,6 +1972,7 @@ button.user-row.active {
   border-radius: 8px;
   background: var(--surface);
   color: var(--muted);
+  transition: border-color 150ms ease, background 150ms ease, color 150ms ease;
 }
 
 .job-detail,
@@ -1835,7 +2058,7 @@ button.user-row.active {
   z-index: 30;
   display: grid;
   place-items: center;
-  background: rgba(22, 21, 18, 0.42);
+  background: rgba(17, 27, 23, 0.46);
   padding: 20px;
   backdrop-filter: blur(6px);
 }
@@ -1996,75 +2219,99 @@ button.user-row.active {
 }
 
 @media (max-width: 980px) {
-  .app-shell {
-    grid-template-columns: 1fr;
-    padding: 16px;
-  }
-
+  .app-shell,
   .app-shell.sidebar-collapsed {
     grid-template-columns: 1fr;
+    gap: 12px;
+    padding: 12px;
   }
 
-  .sidebar {
-    position: static;
-    grid-template-rows: auto auto auto;
-    align-content: start;
-    width: auto;
+  .sidebar,
+  .sidebar-collapsed .sidebar {
+    position: sticky;
+    top: 12px;
+    z-index: 15;
+    width: 100%;
     min-height: 0;
     max-height: none;
+    grid-template-columns: 44px minmax(0, 1fr) 44px;
+    grid-template-rows: 44px;
+    gap: 10px;
+    align-items: center;
+    padding: 8px;
   }
 
-  .sidebar-collapsed .sidebar {
-    width: auto;
-  }
-
+  .sidebar .brand-lockup,
   .sidebar-collapsed .brand-lockup {
-    grid-template-columns: 44px minmax(0, 1fr);
-    justify-items: stretch;
+    min-height: 44px;
+    grid-template-columns: 44px;
+    border-bottom: 0;
+    padding: 0;
   }
 
-  .sidebar-collapsed .collapse-button {
-    right: 0;
-  }
-
+  .sidebar .brand-copy,
   .sidebar-collapsed .brand-copy,
-  .sidebar-collapsed .account-panel h3,
-  .sidebar-collapsed .account-facts {
-    display: grid;
+  .sidebar .collapse-button {
+    display: none;
   }
 
-  .sidebar-collapsed .account-panel > .section-head {
+  .sidebar .tabs,
+  .sidebar-collapsed .tabs {
     display: flex;
+    gap: 4px;
+    overflow-x: auto;
+    scrollbar-width: none;
   }
 
+  .sidebar .tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .sidebar .tabs button,
+  .sidebar-collapsed .tabs button {
+    min-width: 104px;
+    flex: 0 0 auto;
+    grid-template-columns: 20px auto;
+    gap: 6px;
+    padding: 0 10px;
+  }
+
+  .sidebar .tabs button span,
   .sidebar-collapsed .tabs button span {
     display: inline;
   }
 
+  .sidebar .account-panel,
   .sidebar-collapsed .account-panel {
-    justify-items: stretch;
+    display: block;
+    border-top: 0;
+    padding: 0;
   }
 
+  .sidebar .account-panel > .section-head,
+  .sidebar .account-facts,
+  .sidebar-collapsed .account-panel > .section-head,
+  .sidebar-collapsed .account-facts {
+    display: none;
+  }
+
+  .sidebar .account-summary,
   .sidebar-collapsed .account-summary {
-    grid-template-columns: 44px minmax(0, 1fr);
+    display: block;
   }
 
+  .sidebar .account-popover,
   .sidebar-collapsed .account-popover {
-    left: 0;
-    bottom: calc(100% + 8px);
-  }
-
-  .sidebar-collapsed .tabs button {
-    grid-template-columns: 24px minmax(0, 1fr);
-    padding: 0 11px;
+    top: calc(100% + 8px);
+    right: 0;
+    bottom: auto;
+    left: auto;
   }
 
   .content {
     grid-column: 1;
-  }
-
-  .tabs {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    width: 100%;
+    padding-bottom: 20px;
   }
 
   .home-layout,
@@ -2101,31 +2348,65 @@ button.user-row.active {
 }
 
 @media (max-width: 640px) {
-  .content-header {
-    align-items: stretch;
-    flex-direction: column;
+  .app-shell,
+  .app-shell.sidebar-collapsed {
+    padding: 8px;
   }
 
-  .content-header h2 {
-    font-size: 24px;
+  .sidebar,
+  .sidebar-collapsed .sidebar {
+    top: 8px;
+    grid-template-columns: minmax(0, 1fr) 44px;
+    grid-template-rows: 44px 42px;
+    gap: 8px;
   }
 
-  .tabs,
-  .login-methods,
-  .quick-grid,
-  .player-support-grid,
-  .connection-copy-grid {
-    grid-template-columns: 1fr;
+  .sidebar .brand-lockup,
+  .sidebar-collapsed .brand-lockup {
+    grid-template-columns: 44px minmax(0, 1fr);
+    gap: 10px;
   }
 
-  .qr-login {
-    grid-template-columns: 1fr;
-    justify-items: center;
-    text-align: center;
+  .sidebar .brand-copy,
+  .sidebar-collapsed .brand-copy {
+    display: block;
   }
 
-  .qr-copy {
-    justify-items: center;
+  .sidebar .brand-copy h1 {
+    font-size: 18px;
+  }
+
+  .sidebar .brand-copy span {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .sidebar .tabs,
+  .sidebar-collapsed .tabs {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .sidebar .brand-lockup,
+  .sidebar-collapsed .brand-lockup {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .sidebar .account-panel,
+  .sidebar-collapsed .account-panel {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .sidebar .tabs button,
+  .sidebar-collapsed .tabs button {
+    min-width: 88px;
+    min-height: 40px;
+    padding: 0 8px;
+    font-size: 13px;
   }
 
   .login-screen {
@@ -2133,18 +2414,31 @@ button.user-row.active {
   }
 
   .login-card {
-    padding: 16px;
-    gap: 18px;
+    gap: 20px;
+    padding: 22px;
   }
 
-  .login-tabs {
-    gap: 4px;
+  .login-card-header {
+    gap: 22px;
+  }
+
+  .auth-intro h2 {
+    font-size: 26px;
+  }
+
+  .system-auth-form {
+    gap: 7px;
+  }
+
+  .auth-input-shell,
+  .auth-submit {
+    min-height: 44px;
   }
 
   .login-tabs button {
     min-height: 38px;
     gap: 4px;
-    min-width: 112px;
+    min-width: 96px;
     padding: 0 8px;
     font-size: 13px;
   }
@@ -2155,8 +2449,15 @@ button.user-row.active {
     flex: 0 0 auto;
   }
 
+  .login-methods,
+  .quick-grid,
+  .player-support-grid,
+  .connection-copy-grid {
+    grid-template-columns: 1fr;
+  }
+
   .login-methods section {
-    padding: 14px;
+    padding: 0;
   }
 
   .login-methods h2 {
@@ -2172,13 +2473,41 @@ button.user-row.active {
     min-height: 88px;
   }
 
+  .qr-login {
+    grid-template-columns: 1fr;
+    justify-items: center;
+    text-align: center;
+  }
+
+  .qr-copy {
+    justify-items: center;
+  }
+
+  .section-head {
+    align-items: flex-start;
+  }
+
+  .toolbar {
+    flex-wrap: wrap;
+  }
+
   .hero-panel {
     min-height: 0;
+    border-left-width: 3px;
     padding: 22px;
   }
 
   .hero-panel h3 {
-    font-size: 34px;
+    font-size: 32px;
+  }
+
+  .content-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .content-header h2 {
+    font-size: 24px;
   }
 
   .architecture-page {
@@ -2200,5 +2529,16 @@ button.user-row.active {
   .status-banner {
     align-items: stretch;
     flex-direction: column;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
   }
 }

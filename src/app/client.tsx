@@ -747,8 +747,8 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
   if (account.loading && !account.data) {
     return (
       <main className="login-screen">
-        <div className="login-card compact">
-          <RefreshCw className="spin" size={24} />
+        <div className="login-card compact loading-card">
+          <div className="loading-mark"><RefreshCw className="spin" size={20} /></div>
           <p>正在检查登录状态...</p>
         </div>
       </main>
@@ -960,25 +960,47 @@ function SystemLoginPage({ account, username, password, mode, onUsernameChange, 
   onSubmit: () => void
   message: string
 }) {
+  const [showPassword, setShowPassword] = useState(false)
+
   return (
-    <section className="login-card">
-      <div className="brand-lockup login-brand">
-        <div className="brand-mark"><img src="/public/logo.svg" alt="" /></div>
-        <div><h1>XMusic</h1><span>把音乐装进自己口袋</span></div>
+    <section className="login-card system-login-card">
+      <div className="login-card-header">
+        <div className="brand-lockup login-brand">
+          <div className="brand-mark"><img src="/public/logo.svg" alt="" /></div>
+          <div><h1>XMusic</h1><span>把音乐装进自己口袋</span></div>
+        </div>
+        <div className="auth-intro">
+          <span className="eyebrow">XMusic Account</span>
+          <h2>{mode === 'register' ? '创建帐号' : '欢迎回来'}</h2>
+          <p>{mode === 'register' ? '注册后绑定你的 QQ 音乐授权。' : '登录后继续管理你的音乐服务。'}</p>
+        </div>
       </div>
       <div className="login-tabs" role="tablist" aria-label="帐号操作">
-        <button className={mode === 'login' ? 'active' : ''} onClick={() => onModeChange('login')}><LogIn size={16} /><span>登录</span></button>
-        <button className={mode === 'register' ? 'active' : ''} onClick={() => onModeChange('register')}><UserRound size={16} /><span>注册</span></button>
+        <button type="button" className={mode === 'login' ? 'active' : ''} aria-selected={mode === 'login'} onClick={() => onModeChange('login')}><LogIn size={16} /><span>登录</span></button>
+        <button type="button" className={mode === 'register' ? 'active' : ''} aria-selected={mode === 'register'} onClick={() => onModeChange('register')}><UserRound size={16} /><span>注册</span></button>
       </div>
-      <form className="mobile-auth-form" onSubmit={(event) => { event.preventDefault(); onSubmit() }}>
+      <form className="system-auth-form" onSubmit={(event) => { event.preventDefault(); onSubmit() }}>
         <label htmlFor="system-username">用户名</label>
-        <input id="system-username" autoComplete="username" value={username} onChange={event => onUsernameChange(event.target.value)} placeholder="3-32 位字母、数字或 ._-" />
+        <div className="auth-input-shell">
+          <UserRound size={17} />
+          <input id="system-username" autoComplete="username" value={username} onChange={event => onUsernameChange(event.target.value)} placeholder="3-32 位字母、数字或 ._-" />
+        </div>
         <label htmlFor="system-password">密码</label>
-        <input id="system-password" type="password" autoComplete={mode === 'register' ? 'new-password' : 'current-password'} value={password} onChange={event => onPasswordChange(event.target.value)} />
-        <button type="submit" disabled={account.loading || !username.trim() || password.length < 8}><KeyRound size={16} />{mode === 'register' ? '创建帐号' : '登录'}</button>
+        <div className="auth-input-shell">
+          <KeyRound size={17} />
+          <input id="system-password" type={showPassword ? 'text' : 'password'} autoComplete={mode === 'register' ? 'new-password' : 'current-password'} value={password} onChange={event => onPasswordChange(event.target.value)} placeholder="至少 8 位" />
+          <button type="button" className="auth-input-action" onClick={() => setShowPassword(value => !value)} aria-label={showPassword ? '隐藏密码' : '显示密码'} title={showPassword ? '隐藏密码' : '显示密码'}>
+            {showPassword ? <EyeOff size={17} /> : <Eye size={17} />}
+          </button>
+        </div>
+        <button className="auth-submit" type="submit" disabled={account.loading || !username.trim() || password.length < 8}>
+          {account.loading ? <RefreshCw className="spin" size={16} /> : mode === 'register' ? <UserRound size={16} /> : <LogIn size={16} />}
+          {mode === 'register' ? '创建帐号' : '登录'}
+        </button>
       </form>
-      {message ? <p className="status notice">{message}</p> : null}
-      <Status state={account} />
+      {mode === 'register' ? <p className="auth-footnote">首个注册帐号将成为系统管理员。</p> : null}
+      {message ? <p className="status notice auth-status">{message}</p> : null}
+      <div className="auth-status"><Status state={account} /></div>
     </section>
   )
 }
@@ -1031,18 +1053,26 @@ function LoginPage({
   }, [])
 
   return (
-    <section className="login-card">
-      <div className="brand-lockup login-brand">
-        <div className="brand-mark">
-          <img src="/public/logo.svg" alt="" />
+    <section className="login-card qq-login-card">
+      <div className="login-card-header">
+        <div className="brand-lockup login-brand">
+          <div className="brand-mark">
+            <img src="/public/logo.svg" alt="" />
+          </div>
+          <div>
+            <h1>XMusic</h1>
+            <span>把音乐装进自己口袋</span>
+          </div>
         </div>
-        <div>
-          <h1>XMusic</h1>
-          <span>把音乐装进自己口袋</span>
+        <div className="auth-intro">
+          <span className="eyebrow">QQ Authorization</span>
+          <h2>完成 QQ 授权</h2>
+          <p>授权仅归属于当前 XMusic 帐号。</p>
         </div>
       </div>
       <div className="login-tabs" role="tablist" aria-label="登录方式">
         <button
+          type="button"
           className={loginMethod === 'qr' ? 'active' : ''}
           role="tab"
           aria-selected={loginMethod === 'qr'}
@@ -1054,6 +1084,7 @@ function LoginPage({
           <span>扫码登录</span>
         </button>
         <button
+          type="button"
           className={loginMethod === 'mobile' ? 'active' : ''}
           role="tab"
           aria-selected={loginMethod === 'mobile'}
@@ -1065,6 +1096,7 @@ function LoginPage({
           <span>手机授权</span>
         </button>
         <button
+          type="button"
           className={loginMethod === 'cookie' ? 'active' : ''}
           role="tab"
           aria-selected={loginMethod === 'cookie'}
@@ -1138,7 +1170,7 @@ function LoginPage({
       </div>
       {message ? <p className="status notice">{message}</p> : null}
       <Status state={account} />
-      <button className="secondary-button" onClick={onLogout}>退出系统帐号</button>
+      <button className="secondary-button auth-logout" onClick={onLogout}><LogOut size={16} />退出系统帐号</button>
     </section>
   )
 }
