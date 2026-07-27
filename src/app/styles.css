@@ -2228,6 +2228,8 @@ button.user-row.active {
   .app-shell,
   .app-shell.sidebar-collapsed {
     grid-template-columns: 1fr;
+    align-content: start;
+    align-items: start;
     gap: 12px;
     padding: 12px;
   }
@@ -2238,11 +2240,14 @@ button.user-row.active {
     top: 12px;
     z-index: 15;
     width: 100%;
+    height: fit-content;
     min-height: 0;
     max-height: none;
     grid-template-columns: 44px minmax(0, 1fr) 44px;
     grid-template-rows: 44px;
     gap: 10px;
+    align-self: start;
+    align-content: start;
     align-items: center;
     padding: 8px;
   }
@@ -2409,6 +2414,8 @@ button.user-row.active {
     grid-column: 1 / -1;
     grid-row: 2;
     gap: 2px;
+    overflow-x: hidden;
+    scroll-snap-type: none;
   }
 
   .sidebar .brand-lockup,
@@ -2425,15 +2432,17 @@ button.user-row.active {
 
   .sidebar .tabs button,
   .sidebar-collapsed .tabs button {
-    min-width: 64px;
+    min-width: 44px;
     min-height: 46px;
+    flex: 1 1 0;
     grid-template-columns: 1fr;
     grid-template-rows: 18px 14px;
     justify-items: center;
     gap: 2px;
-    padding: 4px 7px;
+    padding: 4px 2px;
     font-size: 11px;
     line-height: 1;
+    scroll-snap-align: none;
   }
 
   .sidebar .tabs button svg,
