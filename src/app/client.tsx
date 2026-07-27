@@ -716,6 +716,14 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
   }, [sidebarCollapsed])
 
   useEffect(() => {
+    if (!message || !account.data?.loggedIn) return
+    const timer = window.setTimeout(() => {
+      setMessage(current => current === message ? '' : current)
+    }, 4000)
+    return () => window.clearTimeout(timer)
+  }, [message, account.data?.loggedIn])
+
+  useEffect(() => {
     const compactNavigation = window.matchMedia?.('(min-width: 641px) and (max-width: 980px)').matches
       ?? (window.innerWidth > 640 && window.innerWidth <= 980)
     if (!compactNavigation) return
@@ -855,7 +863,14 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
           </header>
         ) : null}
 
-        {message ? <p className="toast-message">{message}</p> : null}
+        {message ? (
+          <div className="toast-message" role="status" aria-live="polite">
+            <span>{message}</span>
+            <button type="button" className="toast-dismiss" onClick={() => setMessage('')} aria-label="关闭提示" title="关闭提示">
+              <X size={15} />
+            </button>
+          </div>
+        ) : null}
 
         {view === 'home' && (
           <section className="workspace">

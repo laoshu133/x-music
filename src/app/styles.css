@@ -522,17 +522,61 @@ a {
 
 .toast-message {
   position: fixed;
-  top: 24px;
-  right: 24px;
-  z-index: 20;
+  right: max(16px, env(safe-area-inset-right));
+  bottom: max(16px, env(safe-area-inset-bottom));
+  z-index: 30;
+  width: max-content;
   max-width: min(360px, calc(100vw - 32px));
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  gap: 10px;
+  align-items: center;
   border: 1px solid rgba(23, 107, 93, 0.35);
   border-radius: 8px;
   background: var(--accent-soft);
   color: var(--accent-strong);
-  padding: 10px 12px;
+  margin: 0;
+  padding: 9px 9px 9px 12px;
   box-shadow: var(--shadow);
   font-size: 14px;
+  pointer-events: none;
+  animation: toast-enter 160ms ease-out, toast-leave 180ms ease-in 3820ms forwards;
+}
+
+.toast-message span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.toast-dismiss {
+  width: 28px;
+  height: 28px;
+  display: inline-grid;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: currentColor;
+  padding: 0;
+  pointer-events: auto;
+}
+
+.toast-dismiss:hover {
+  background: rgba(23, 107, 93, 0.1);
+}
+
+@keyframes toast-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+@keyframes toast-leave {
+  to {
+    opacity: 0;
+    transform: translateY(6px);
+  }
 }
 
 .login-screen {
