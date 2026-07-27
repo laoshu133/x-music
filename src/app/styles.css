@@ -651,13 +651,6 @@ a {
   transform: translateY(1px);
 }
 
-.auth-footnote {
-  border-top: 1px solid var(--line);
-  padding-top: 14px;
-  font-size: 12px;
-  text-align: center;
-}
-
 .auth-status:empty {
   display: none;
 }

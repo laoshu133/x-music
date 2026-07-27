@@ -953,7 +953,7 @@ function SystemLoginPage({ account, username, password, mode, onUsernameChange, 
     <section className="login-card system-login-card">
       <div className="brand-lockup login-brand">
         <div className="brand-mark"><img src="/public/logo.svg" alt="" /></div>
-        <div><h1>XMusic</h1></div>
+        <div><h1>XMusic</h1><span>把音乐装进自己口袋</span></div>
       </div>
       <div className="login-tabs" role="tablist" aria-label="帐号操作">
         <button type="button" className={mode === 'login' ? 'active' : ''} aria-selected={mode === 'login'} onClick={() => onModeChange('login')}><LogIn size={16} /><span>登录</span></button>
@@ -978,7 +978,6 @@ function SystemLoginPage({ account, username, password, mode, onUsernameChange, 
           {mode === 'register' ? '创建帐号' : '登录'}
         </button>
       </form>
-      {mode === 'register' ? <p className="auth-footnote">首次注册将自动获得管理员权限。</p> : null}
       {message ? <p className="status notice auth-status">{message}</p> : null}
       <div className="auth-status"><Status state={account} /></div>
     </section>
