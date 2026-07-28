@@ -922,7 +922,10 @@ async function fetchVirtualImageResponse(imageUrl: string): Promise<Response> {
   if (!cached) return emptyImageResponse()
 
   cached.completion?.catch((error: unknown) => {
-    console.warn(`QQ image cache failed for ${imageUrl}: ${error instanceof Error ? error.message : String(error)}`)
+    console.warn('QQ image cache failed', {
+      ...summarizeMediaUrl(imageUrl),
+      error: errorMessage(error),
+    })
   })
   return markRequestSource(cached.response, 'local')
 }
@@ -1880,7 +1883,7 @@ async function resolvePlayableUpstreamResponse(
         preferredQuality,
         quality,
         resolvedQuality: resolved.quality,
-        upstream: summarizeAudioUrl(resolved.url),
+        upstream: summarizeMediaUrl(resolved.url),
         hasEkey: Boolean(resolved.ekey),
       })
       if (encryptedQQRequiresKey && isEncryptedQQAudioFileName(resolved.url)) {
@@ -1891,7 +1894,7 @@ async function resolvePlayableUpstreamResponse(
           songmid: musicInfo.songmid,
           preferredQuality,
           quality,
-          upstream: summarizeAudioUrl(resolved.url),
+          upstream: summarizeMediaUrl(resolved.url),
           error: message,
         }, 'error')
         return undefined
@@ -2344,7 +2347,7 @@ function logVirtualAudioEvent(
   }, level)
 }
 
-function summarizeAudioUrl(value: string): Record<string, unknown> {
+function summarizeMediaUrl(value: string): Record<string, unknown> {
   try {
     const url = new URL(value)
     return {
