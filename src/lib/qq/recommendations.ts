@@ -183,7 +183,7 @@ export async function getQQRecommendations(input: {
 
   const durationMs = Date.now() - startedAt
   const slowLogMs = positiveEnvNumber('QQ_RECOMMENDATION_SLOW_LOG_MS', DEFAULT_QQ_RADIO_SLOW_LOG_MS)
-  if (durationMs >= slowLogMs || recommendationLogsEnabled() || stopReason.includes('timeout')) {
+  if (durationMs >= slowLogMs || stopReason.includes('timeout')) {
     logServiceEvent('qq_recommendations_loaded', {
       requested: limit,
       returned: Math.min(list.length, limit),
@@ -207,10 +207,6 @@ function recommendationsTimeout(requested: number, collected: number, batches: n
 
 function isTimeoutError(error: unknown): boolean {
   return error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')
-}
-
-function recommendationLogsEnabled(): boolean {
-  return ['1', 'true', 'on', 'yes'].includes(process.env.X_MUSIC_QQ_RECOMMENDATION_LOGS?.trim().toLowerCase() ?? '')
 }
 
 function positiveEnvNumber(name: string, fallback: number): number {

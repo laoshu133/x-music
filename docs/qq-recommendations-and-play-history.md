@@ -56,7 +56,6 @@ QQ 批次请求保持串行，避免并发调用触发 `req.code=700000`。单�
 QQ_RECOMMENDATION_BATCH_TIMEOUT_MS=4000
 QQ_RECOMMENDATION_TOTAL_TIMEOUT_MS=12000
 QQ_RECOMMENDATION_SLOW_LOG_MS=5000
-X_MUSIC_QQ_RECOMMENDATION_LOGS=false
 ```
 
 worker 的 QQ 授权巡检仍会在启动时执行，`checked=1, active=1, expired=0, failed=0` 表示授权正常。健康汇总默认不再打印；需要诊断时可设置 `X_MUSIC_QQ_AUTH_SWEEP_LOG_HEALTHY=true`，发现过期或失败时始终保留日志。
