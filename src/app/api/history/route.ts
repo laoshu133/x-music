@@ -1,7 +1,7 @@
 import { listPlayHistory } from '@/lib/cache/store'
 import { getCurrentAccount } from '@/lib/session'
 import { pullEmbyPlayHistory, pushLocalPlayHistoryToEmby } from '@/lib/emby/history'
-import { pushLocalPlayHistoryToQQ } from '@/lib/qq'
+import { pullQQPlayHistory, pushLocalPlayHistoryToQQ, qqMusicErrorResponse } from '@/lib/qq'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -12,6 +12,17 @@ export async function GET(request: Request): Promise<Response> {
   const url = new URL(request.url)
   const limit = Number(url.searchParams.get('limit') ?? 50)
   const remote = url.searchParams.get('remote')
+  if (remote === 'qq' && url.searchParams.get('sync') === 'pull') {
+    try {
+      return Response.json(await pullQQPlayHistory({
+        userId: account.userId,
+        cookie: account.qqCookie,
+        limit,
+      }))
+    } catch (error) {
+      return qqMusicErrorResponse(error)
+    }
+  }
   if (remote === 'emby' || (url.searchParams.get('sync') === 'pull' && !remote)) {
     try {
       return Response.json(await pullEmbyPlayHistory({

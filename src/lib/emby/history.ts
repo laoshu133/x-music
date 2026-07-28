@@ -1,7 +1,6 @@
 import { ensureTrack, insertPlayEvent, listPlayHistory } from '@/lib/cache/store'
 import type { AccountRecord } from '@/lib/db/accounts'
 import { getRemoteMapping } from '@/lib/db/remote-mappings'
-import { resolveMusicUrlWithFallback } from '@/lib/music-url/resolve'
 import { syncQQPlayHistory } from '@/lib/qq'
 import type { MusicInfo, PlayHistoryRecord } from '@/lib/types'
 import { musicInfoFromEmbyMappedItem } from './favorites'
@@ -50,12 +49,10 @@ export async function pullEmbyPlayHistory(input: {
 
     if (input.syncQQ !== false) {
       try {
-        const resolved = await resolveMusicUrlWithFallback(song, '320k')
         const result = await syncQQPlayHistory({
           cookie: account.qqCookie,
           musicInfo: song,
-          quality: resolved.quality,
-          playUrl: resolved.url,
+          playedAt: lastPlayedAt,
         })
         if (result.synced) {
           qqSynced += 1

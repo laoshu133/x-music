@@ -1660,13 +1660,13 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
       allowFullFallback: shouldAllowFullAudioFallback(request),
     })
     const account = authorizedLocalAccount(request)
-    insertPlayEvent(track.id, resolved.quality, account?.userId)
-    syncQQPlayHistoryBestEffort({
-      cookie: qqCookieForRequest(request),
-      musicInfo,
-      quality: resolved.quality,
-      playUrl: resolved.url,
-    })
+    if (isPlaybackStartRequest(request)) {
+      insertPlayEvent(track.id, resolved.quality, account?.userId)
+      syncQQPlayHistoryBestEffort({
+        cookie: qqCookieForRequest(request),
+        musicInfo,
+      })
+    }
     if (hasSyncableEmbyMedia(musicInfo)) {
       if (account) enqueueEmbyTrackSync(account.userId, {
         source: musicInfo.source,
@@ -2219,6 +2219,13 @@ function qqCookieForRequest(request: Request): string | undefined {
   return authorizedLocalAccount(request)?.qqCookie
     ?? request.headers.get('x-qq-music-cookie')
     ?? undefined
+}
+
+function isPlaybackStartRequest(request: Request): boolean {
+  const range = request.headers.get('range')
+  if (!range) return true
+  const match = /^bytes=(\d*)-/.exec(range.trim())
+  return match?.[1] === '0'
 }
 
 function validEmbyTrackMapping(musicInfo: MusicInfo, account?: AccountRecord): string | undefined {

@@ -5300,11 +5300,19 @@ test('local emby virtual audio GET records playback and syncs QQ history', async
     `).run(track.id, localAudioPath, localAudioPath)
 
     const requestUrls: string[] = []
-    globalThis.fetch = (async (url: string | URL | Request) => {
-      requestUrls.push(String(url))
-      const requestUrl = new URL(String(url))
+    const historyBodies: any[] = []
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(url, init)
+      requestUrls.push(request.url)
+      const requestUrl = new URL(request.url)
       if (requestUrl.hostname === 'script.example') return new Response('https://cdn.example/audio.mp3')
-      if (requestUrl.hostname === 'stat6.y.qq.com') return new Response('{}')
+      if (requestUrl.hostname === 'u.y.qq.com' && init?.body) {
+        const body = JSON.parse(String(init.body))
+        if (body.req?.module === 'music.musicasset.PlayRecentlyWrite') {
+          historyBodies.push(body)
+          return Response.json({ code: 0, req: { code: 0, data: { ret: 0 } } })
+        }
+      }
       return new Response('https://cdn.example/audio.mp3')
     }) as typeof fetch
 
@@ -5317,7 +5325,16 @@ test('local emby virtual audio GET records playback and syncs QQ history', async
     assert.equal(response.status, 302)
     assert.equal(response.headers.get('location'), 'https://cdn.example/audio.mp3')
 
-    await waitFor(() => requestUrls.some(url => new URL(url).hostname === 'stat6.y.qq.com'))
+    await waitFor(() => historyBodies.length === 1)
+
+    const continuation = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Audio/${encodeURIComponent(songId)}/universal?api_key=${authPayload.AccessToken}`, {
+        headers: { 'X-Emby-Authorization': authHeader, range: 'bytes=1024-' },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Audio/${encodeURIComponent(songId)}/universal`),
+    )
+    assert.equal(continuation.status, 302)
+    await new Promise(resolve => setTimeout(resolve, 0))
 
     const playEvents = db.prepare(`
       SELECT COUNT(*) AS count
@@ -5326,7 +5343,9 @@ test('local emby virtual audio GET records playback and syncs QQ history', async
       WHERE t.source = 'tx' AND t.songmid = 'qq-stream-song-1'
     `).get() as { count: number }
     assert.equal(playEvents.count, 1)
-    assert.ok(requestUrls.some(url => new URL(url).hostname === 'stat6.y.qq.com'))
+    assert.equal(historyBodies.length, 1)
+    assert.equal(historyBodies[0].req.method, 'ReportPlayRecentlyInfo')
+    assert.equal(historyBodies[0].req.param.data[0].id, '123')
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999014')
     clearQQLoginCookie()
@@ -5364,7 +5383,15 @@ test('local emby virtual audio GET fetches QQ metadata when cache is missing', a
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       const requestUrl = new URL(String(url))
       if (requestUrl.hostname === 'u.y.qq.com') {
-        const body = typeof init?.body === 'string' ? JSON.parse(init.body) as { songinfo?: { param?: { song_mid?: string } } } : {}
+        const body = typeof init?.body === 'string'
+          ? JSON.parse(init.body) as {
+            songinfo?: { param?: { song_mid?: string } }
+            req?: { module?: string }
+          }
+          : {}
+        if (body.req?.module === 'music.musicasset.PlayRecentlyWrite') {
+          return Response.json({ code: 0, req: { code: 0, data: { ret: 0 } } })
+        }
         qqDetailRequests.push(body.songinfo?.param?.song_mid ?? '')
         return Response.json({
           code: 0,

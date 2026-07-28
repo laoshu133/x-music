@@ -1,16 +1,29 @@
 import type { MusicInfo, MusicQuality } from '@/lib/types'
-import { getQQLoginState, parseQQCookieText, type QQLoginState } from './account'
-import { QQMusicError } from './http'
+import { getQQLoginState, requireQQLoginState, type QQLoginState } from './account'
+import { QQMusicError, qqSignedPost } from './http'
+import type { QQSong } from './mapper'
 
-const PLAY_HISTORY_REPORT_URL = 'https://stat6.y.qq.com/sdk/fcgi-bin/sdk.fcg'
-const PLAYER_PAGE_URL = 'https://y.qq.com/n/ryqq_v2/player'
-const REPORT_FQM_ID = '7642c64d-5680-42a8-b8be-b2a114021486'
-const SDK_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36'
+type QQPlayHistoryResponse<T> = {
+  code: number
+  req?: {
+    code: number
+    data?: T
+  }
+}
 
-type PlayHistorySongInfo = {
-  songId?: number
-  songType?: number
-  raw?: unknown
+type QQPlayHistoryReadData = {
+  type?: number
+  code?: number
+  updateTime?: number
+  data?: {
+    songList?: QQRemotePlayHistoryItem[]
+  }
+}
+
+export type QQRemotePlayHistoryItem = {
+  track?: QQSong
+  lastTime?: number | string
+  listenCnt?: number
 }
 
 export type QQPlayHistorySyncResult =
@@ -18,143 +31,140 @@ export type QQPlayHistorySyncResult =
   | { synced: false; skipped: true; reason: string }
   | { synced: false; skipped?: false; error: string; raw?: unknown }
 
-function resolveSongId(input: PlayHistorySongInfo): number {
-  const fromRaw = readRawNumber(input.raw, ['songId', 'songid', 'song_id', 'id', 'backendSongId'])
-  return input.songId ?? fromRaw ?? 0
+function common(login: QQLoginState) {
+  return {
+    cv: 4747474,
+    ct: 24,
+    format: 'json',
+    uin: login.uin,
+    g_tk: 5381,
+  }
 }
 
-function resolveSongType(input: PlayHistorySongInfo): number {
-  return input.songType ?? readRawNumber(input.raw, ['songType', 'songtype', 'song_type', 'type']) ?? 0
+function requestOptions(login: QQLoginState) {
+  return {
+    headers: {
+      cookie: login.cookie,
+      referer: 'https://y.qq.com/n/ryqq/',
+    },
+  }
 }
 
-function readRawNumber(raw: unknown, keys: string[]): number | undefined {
+function resolveNumericSongId(musicInfo: MusicInfo): number | undefined {
+  const raw = musicInfo.raw
   if (!raw || typeof raw !== 'object') return undefined
   const record = raw as Record<string, unknown>
 
-  for (const key of keys) {
+  for (const key of ['songId', 'songid', 'song_id', 'id', 'backendSongId']) {
     const value = record[key]
-    if (typeof value === 'number' && Number.isFinite(value)) return value
-    if (typeof value === 'string' && value.trim()) {
-      const parsed = Number(value)
-      if (Number.isFinite(parsed)) return parsed
-    }
+    const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
+    if (Number.isSafeInteger(parsed) && parsed > 0) return parsed
   }
-
   return undefined
 }
 
-function accountSource(login: QQLoginState): string {
-  const cookies = parseQQCookieText(login.cookie)
-  const loginType = cookies.get('login_type') ?? cookies.get('tmeLoginType')
-  return loginType && /^\d+$/.test(loginType) ? loginType : '1'
-}
-
-function unixSeconds(): string {
-  return String(Math.floor(Date.now() / 1000))
-}
-
-function reportId(): string {
-  return `${Date.now()}${Math.floor(100000000000 + Math.random() * 900000000000)}`
-}
-
-function buildPlayHistoryReportBody(input: {
-  login: QQLoginState
-  musicInfo: MusicInfo
-  playUrl: string
-}) {
-  const now = unixSeconds()
-  const rawSong = { raw: input.musicInfo.raw }
-  return {
-    common: {
-      _appid: 'qqmusic',
-      _uid: Number(input.login.uin),
-      _platform: 11,
-      _account_source: accountSource(input.login),
-      _os_version: '',
-      _app_version: 0,
-      _channelid: '',
-      _os: 'mac',
-      _app: 'mac',
-      _opertime: now,
-      _network_type: 'unknown',
-      fqm_id: REPORT_FQM_ID,
-    },
-    items: [
-      {
-        _key: 'webcomm',
-        _opertime: now,
-        cmd: '25',
-        int1: 3,
-        str1: input.login.uin,
-        int2: resolveSongId(rawSong),
-        str2: 'PC',
-        int3: resolveSongType(rawSong),
-        str3: 'other',
-        int4: 0,
-        str5: reportId(),
-        str6: reportId(),
-        str7: '',
-        str8: '',
-        str9: input.playUrl,
-        str10: PLAYER_PAGE_URL,
-      },
-    ],
+function unixSeconds(value?: string | Date | number): number {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Math.max(1, Math.trunc(value > 10_000_000_000 ? value / 1000 : value))
   }
+  const milliseconds = value instanceof Date
+    ? value.getTime()
+    : typeof value === 'string'
+      ? Date.parse(value)
+      : Date.now()
+  return Math.max(1, Math.trunc((Number.isFinite(milliseconds) ? milliseconds : Date.now()) / 1000))
 }
 
-async function reportQQSdkPlay(input: {
-  login: QQLoginState
-  musicInfo: MusicInfo
-  playUrl: string
-}) {
-  const body = buildPlayHistoryReportBody(input)
-  const response = await fetch(PLAY_HISTORY_REPORT_URL, {
-    method: 'POST',
-    headers: {
-      accept: '*/*',
-      'content-type': 'text/plain;charset=UTF-8',
-      cookie: input.login.cookie,
-      origin: 'https://y.qq.com',
-      referer: PLAYER_PAGE_URL,
-      'user-agent': SDK_USER_AGENT,
-    },
-    body: JSON.stringify(body),
-    cache: 'no-store',
+function assertBusinessSuccess(
+  data: { code: number; req?: { code: number } },
+  message: string,
+): void {
+  if (data.code === 0 && data.req?.code === 0) return
+  throw new QQMusicError(message, 502, {
+    code: data.code,
+    requestCode: data.req?.code,
   })
-  const text = await response.text().catch(() => '')
-  if (!response.ok) {
-    throw new QQMusicError('QQ play history sdk report request failed', response.status, {
-      body: text.slice(0, 500),
-      request: body,
+}
+
+async function reportQQPlayHistory(input: {
+  login: QQLoginState
+  songId: number
+  playedAt?: string | Date | number
+}) {
+  const body = {
+    comm: common(input.login),
+    req: {
+      module: 'music.musicasset.PlayRecentlyWrite',
+      method: 'ReportPlayRecentlyInfo',
+      param: {
+        data: [{
+          id: String(input.songId),
+          type: 2,
+          lastTime: unixSeconds(input.playedAt),
+          listenCnt: 1,
+        }],
+      },
+    },
+  }
+  const data = await qqSignedPost<QQPlayHistoryResponse<unknown>>(body, requestOptions(input.login))
+  assertBusinessSuccess(data, 'QQ play history report request failed')
+  return data
+}
+
+export async function getQQPlayHistory(input: {
+  cookie?: string
+  limit?: number
+} = {}): Promise<{
+  list: QQRemotePlayHistoryItem[]
+  updateTime?: number
+}> {
+  const login = requireQQLoginState(input)
+  const limit = Math.min(Math.max(Math.trunc(input.limit ?? 50) || 50, 1), 200)
+  const data = await qqSignedPost<QQPlayHistoryResponse<QQPlayHistoryReadData>>({
+    comm: common(login),
+    req: {
+      module: 'music.musicasset.PlayRecentlyRead',
+      method: 'GetPlayRecentlyInfo',
+      param: { type: 2, count: limit },
+    },
+  }, requestOptions(login))
+
+  assertBusinessSuccess(data, 'QQ play history read request failed')
+  const requestData = data.req?.data
+  if (requestData?.code !== undefined && requestData.code !== 0) {
+    throw new QQMusicError('QQ play history read returned a business error', 502, {
+      code: data.code,
+      requestCode: data.req?.code,
+      historyCode: requestData.code,
     })
   }
-
   return {
-    status: response.status,
-    body: text.slice(0, 500),
-    request: body,
+    list: requestData?.data?.songList ?? [],
+    updateTime: requestData?.updateTime,
   }
 }
 
 export async function syncQQPlayHistory(input: {
   cookie?: string
   musicInfo: MusicInfo
-  quality: MusicQuality
+  quality?: MusicQuality
   playUrl?: string
+  playedAt?: string | Date | number
 }): Promise<QQPlayHistorySyncResult> {
   const login = getQQLoginState(input)
   if (!login) {
     return { synced: false, skipped: true, reason: 'QQ Music login cookie is not configured' }
   }
-  if (!input.playUrl) {
-    return { synced: false, skipped: true, reason: 'QQ play history sync requires an upstream play URL' }
+  const songId = resolveNumericSongId(input.musicInfo)
+  if (!songId) {
+    return { synced: false, skipped: true, reason: 'QQ play history sync requires a numeric songId in musicInfo.raw' }
   }
 
   try {
-    const raw = await reportQQSdkPlay({
+    const raw = await reportQQPlayHistory({
       login,
-      musicInfo: input.musicInfo,
-      playUrl: input.playUrl,
+      songId,
+      playedAt: input.playedAt,
     })
     return { synced: true, raw }
   } catch (error) {
@@ -169,8 +179,9 @@ export async function syncQQPlayHistory(input: {
 export function syncQQPlayHistoryBestEffort(input: {
   cookie?: string
   musicInfo: MusicInfo
-  quality: MusicQuality
+  quality?: MusicQuality
   playUrl?: string
+  playedAt?: string | Date | number
 }): void {
   void syncQQPlayHistory(input).then((result) => {
     if (!result.synced) {

@@ -68,8 +68,6 @@ const handlePlayRequest = async (request: Request, input: PlayRequest): Promise<
       syncQQPlayHistoryBestEffort({
         cookie: account.qqCookie,
         musicInfo,
-        quality: resolved.quality,
-        playUrl: resolved.url,
       })
     }
     if (!isHighestAvailableQuality(musicInfo, resolved.quality)) {
