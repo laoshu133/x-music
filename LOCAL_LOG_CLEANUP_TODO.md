@@ -24,8 +24,9 @@ Added while investigating frequent QQ reauthorization prompts.
 
 - `src/lib/qq/auth-sweep.ts`
   - Events: `qq_auth_sweep_completed`, `qq_auth_sweep_account_failed`
+  - Gate: healthy zero-change summaries require `X_MUSIC_QQ_AUTH_SWEEP_LOG_HEALTHY=1`; expired or failed results are always logged when service logging is enabled.
   - Purpose: verify that the worker proactively checks and renews stored QQ sessions even without website traffic.
-  - Cleanup: keep account failures; reduce successful sweep summaries if hourly log volume is unnecessary.
+  - Cleanup: keep account failures and the healthy-summary gate.
 
 - `src/lib/qq/http.ts` and `src/app/initial-account.ts`
   - Events: `qq_music_error_response`, `qq_music_unhandled_error`, `initial_account_load_failed`
@@ -40,6 +41,22 @@ Added after the first scan after redeploy showed a login failed prompt while the
   - Events: `qq_login_qr_created`, `qq_login_qr_checked`, `qq_login_check_sig`, `qq_login_authorize`, `qq_login_completed`, `qq_login_failed`
   - Purpose: identify whether QR login fails while polling QR status, following `check_sig`, posting Graph authorization, exchanging the authorization code, or persisting a complete QQ Music session.
   - Cleanup: keep `qq_login_failed`; remove or gate success-stage logs once the first-scan behavior is stable.
+
+## QQ Recommendations
+
+Added while investigating slow or incomplete personalized recommendation loads.
+
+- `src/lib/qq/recommendations.ts`
+  - Event: `qq_recommendations_loaded`
+  - Default: emitted only when a load reaches `QQ_RECOMMENDATION_SLOW_LOG_MS` (default 5 seconds).
+  - Gate: `X_MUSIC_QQ_RECOMMENDATION_LOGS=1` also emits normal successful loads.
+  - Purpose: record batch count, duration, result count, and stop reason without logging song data or request credentials.
+  - Cleanup: keep the slow-load threshold; remove the opt-in success mode after the recommendation paging behavior is stable.
+
+- `src/lib/emby/local-handlers.ts`
+  - Event: `qq_recommendation_pool_extend_failed`
+  - Purpose: retain failures from the best-effort recommendation pool while allowing cached results to be returned.
+  - Cleanup: keep as an error event.
 
 ## Request Logging
 
@@ -110,6 +127,25 @@ These appear to be normal operational logs rather than temporary optimization/de
 - `src/worker/index.ts` worker lifecycle/job logs.
 - `src/lib/cache/*-job.ts` cache cleanup and UM crypto job result logs.
 - `src/lib/tagging/job.ts`, `src/lib/tagging/inline.ts`, and Emby sync warning logs for actual failures.
+
+## Recommended Cleanup Order
+
+1. Remove or gate high-volume success and progress events after their related behavior is stable:
+   - `qq_login_qr_created`, successful `qq_login_qr_checked`, `qq_login_check_sig`, `qq_login_authorize`, and `qq_login_completed`.
+   - `qq_auth_refresh_attempt`, `qq_auth_refresh_success`, `qq_auth_refresh_applied`, and healthy `qq_auth_sweep_completed` summaries.
+   - `music_url_resolve_candidates`, successful `music_url_resolve_attempt`, `virtual_audio_url_resolved`, and successful fallback events.
+   - The `X_MUSIC_QQ_RECOMMENDATION_LOGS` normal-success override.
+2. Keep failure and degraded-state events as permanent operational logs:
+   - QQ login, authorization, recommendation, URL resolution, playback, cache, tagging, and Emby sync failures.
+   - Non-success HTTP request/response logs, with successful request logging opt-in only.
+3. Keep command output and worker lifecycle logs separate from application diagnostics:
+   - `scripts/cleanup-emby-duplicate-audio.ts` output is part of the CLI contract.
+   - Worker start, shutdown, crash, retry, and terminal job-result logs are operational output.
+   - Consider removing only per-job `claimed`/`completed` success lines if production volume becomes excessive.
+
+## Completed Hygiene
+
+- QQ image cache failures log only a media URL summary (protocol, host, and path extension), not the complete image URL or query string.
 
 ## Review Checklist
 
