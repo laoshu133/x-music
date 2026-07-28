@@ -1,21 +1,50 @@
 import type { MusicInfo, PagedResult } from '@/lib/types'
-import { compactSongs, type QQSong } from './mapper'
-import { getQQLoginState } from './account'
+import { requireQQLoginState, type QQLoginState } from './account'
 import { QQMusicError, qqSignedPost } from './http'
-import { getQQFavoriteSongs } from './favorites'
-import { getQQToplistDetail } from './toplists'
-import { getQQPlaylistDetail } from './playlists'
-import { searchQQPlaylists } from './search'
+import { compactSongs, type QQSong } from './mapper'
 
 type QQRecommendationsResponse = {
   code: number
   req?: {
     code: number
     data?: {
+      tracks?: QQSong[]
       Tracks?: QQSong[]
       songlist?: QQSong[]
       v_song?: QQSong[]
       list?: Array<QQSong | { songInfo?: QQSong; songinfo?: QQSong }>
+    }
+  }
+}
+
+type QQRecommendFeedCard = {
+  id?: string | number
+  title?: string
+  name?: string
+  sub_title?: string
+}
+
+type QQRecommendFeedResponse = {
+  code: number
+  req?: {
+    code: number
+    data?: {
+      v_shelf?: Array<{
+        v_niche?: Array<{
+          v_card?: QQRecommendFeedCard[]
+        }>
+      }>
+    }
+  }
+}
+
+type QQDailyPlaylistResponse = {
+  code: number
+  req?: {
+    code: number
+    data?: {
+      songlist?: QQSong[]
+      total_song_num?: number
     }
   }
 }
@@ -25,23 +54,35 @@ export type RecommendationResult = PagedResult<MusicInfo> & {
   personalized: boolean
 }
 
-const DAILY_30_QUERIES = ['daily 30', '每日30', '每日推荐30', 'QQ音乐每日30首']
+const QQ_RADIO_BATCH_SIZE = 5
+const QQ_RADIO_EXTRA_BATCH_ATTEMPTS = 2
 
-function buildRecommendationsPayload(uin: string, limit: number) {
+function common(login: QQLoginState) {
   return {
-    comm: {
-      cv: 4747474,
-      ct: 24,
-      format: 'json',
-      uin,
-      g_tk: 5381,
-    },
+    cv: 4747474,
+    ct: 24,
+    format: 'json',
+    uin: login.uin,
+    g_tk: 5381,
+  }
+}
+
+function authenticatedHeaders(login: QQLoginState) {
+  return {
+    cookie: login.cookie,
+    referer: 'https://y.qq.com/n/ryqq/',
+  }
+}
+
+function buildRecommendationsPayload(login: QQLoginState) {
+  return {
+    comm: common(login),
     req: {
       module: 'music.radioProxy.MbTrackRadioSvr',
       method: 'get_radio_track',
       param: {
         id: 99,
-        num: limit,
+        num: QQ_RADIO_BATCH_SIZE,
         from: 0,
         scene: 0,
         song_ids: [],
@@ -53,6 +94,7 @@ function buildRecommendationsPayload(uin: string, limit: number) {
 function extractSongs(data: QQRecommendationsResponse): QQSong[] {
   const payload = data.req?.data
   if (!payload) return []
+  if (payload.tracks?.length) return payload.tracks
   if (payload.Tracks?.length) return payload.Tracks
   if (payload.songlist?.length) return payload.songlist
   if (payload.v_song?.length) return payload.v_song
@@ -72,84 +114,138 @@ export async function getQQRecommendations(input: {
   cookie?: string
   limit?: number
 } = {}): Promise<RecommendationResult> {
-  const login = getQQLoginState(input)
-  const limit = input.limit ?? 30
-  if (!login) return fallbackRecommendations(limit, 'toplist-hot')
+  const login = requireQQLoginState(input)
+  const limit = normalizeLimit(input.limit)
+  const expectedBatches = Math.ceil(limit / QQ_RADIO_BATCH_SIZE)
+  const maxBatches = expectedBatches + QQ_RADIO_EXTRA_BATCH_ATTEMPTS
+  const list: MusicInfo[] = []
+  const seen = new Set<string>()
 
-  try {
+  for (let batch = 0; batch < maxBatches && list.length < limit; batch += 1) {
     const data = await qqSignedPost<QQRecommendationsResponse>(
-      buildRecommendationsPayload(login.uin, limit),
-      {
-        headers: {
-          cookie: login.cookie,
-          referer: 'https://y.qq.com/n/ryqq/',
-        },
-      },
+      buildRecommendationsPayload(login),
+      { headers: authenticatedHeaders(login) },
     )
+    assertBusinessSuccess(data, 'QQ recommendations request failed')
 
-    if (data.code !== 0 || data.req?.code !== 0) {
-      throw new QQMusicError('QQ recommendations request failed', 502, {
-        actionable: 'The QQ Music recommendation endpoint is private and experimental. Recheck MbTrackRadioSvr with a real authenticated request.',
-        response: data,
-      })
+    let added = 0
+    for (const song of compactSongs(extractSongs(data))) {
+      const key = `${song.source}:${song.songmid}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      list.push(song)
+      added += 1
+      if (list.length >= limit) break
     }
-
-    const list = compactSongs(extractSongs(data)).slice(0, limit)
-    if (list.length) return paged(list, limit, 'qq-radio', true)
-  } catch {
-    // Private endpoints change frequently. Keep the feature usable through stable QQ data below.
+    if (added === 0) break
   }
 
-  return favoriteSeededFallback({ cookie: login.cookie, limit })
+  if (!list.length) {
+    throw new QQMusicError('QQ recommendations returned no playable songs', 502, {
+      requested: limit,
+      maxBatches,
+    })
+  }
+
+  return paged(list.slice(0, limit), limit, 'qq-radio:99')
 }
 
 export async function getQQDailyRecommendations(input: {
+  cookie?: string
   limit?: number
 } = {}): Promise<RecommendationResult> {
-  const limit = input.limit ?? 30
+  const login = requireQQLoginState(input)
+  const limit = normalizeLimit(input.limit)
+  const feed = await qqSignedPost<QQRecommendFeedResponse>({
+    comm: common(login),
+    req: {
+      module: 'music.recommend.RecommendFeed',
+      method: 'get_recommend_feed',
+      param: {},
+    },
+  }, { headers: authenticatedHeaders(login) })
 
-  for (const query of DAILY_30_QUERIES) {
-    const found = await searchQQPlaylists(query, 1, 10).catch(() => undefined)
-    const playlist = found?.list.find(isDaily30Playlist) ?? found?.list[0]
-    if (!playlist?.id) continue
-
-    const detail = await getQQPlaylistDetail(playlist.id).catch(() => undefined)
-    const list = detail?.list.slice(0, limit) ?? []
-    if (list.length) return paged(list, limit, `qq-playlist:${playlist.id}`, true)
+  assertBusinessSuccess(feed, 'QQ recommendation feed request failed')
+  const playlistId = findDailyPlaylistId(feed)
+  if (!playlistId) {
+    throw new QQMusicError('QQ daily recommendations are unavailable', 502, {
+      code: feed.code,
+      requestCode: feed.req?.code,
+      actionable: 'The current QQ recommendation feed did not include a daily recommendation card.',
+    })
   }
 
-  return fallbackRecommendations(limit, 'toplist-daily-fallback')
-}
+  const detail = await qqSignedPost<QQDailyPlaylistResponse>({
+    comm: common(login),
+    req: {
+      module: 'music.srfDissInfo.DissInfo',
+      method: 'CgiGetDiss',
+      param: {
+        disstid: Number(playlistId),
+        dirid: 1,
+        tag: 1,
+        song_begin: 0,
+        song_num: limit,
+        userinfo: 1,
+        orderlist: 1,
+        onlysong: 0,
+      },
+    },
+  }, { headers: authenticatedHeaders(login) })
 
-async function favoriteSeededFallback(input: { cookie?: string; limit: number }): Promise<RecommendationResult> {
-  try {
-    const favorites = await getQQFavoriteSongs({ cookie: input.cookie, limit: 12 })
-    const seed = favorites.list.find(song => song.singer)
-    if (seed) {
-      const { searchQQMusic } = await import('./search')
-      const related = await searchQQMusic(seed.singer, 1, input.limit + favorites.list.length)
-      const favoriteKeys = new Set(favorites.list.map(song => song.songmid))
-      const list = related.list.filter(song => !favoriteKeys.has(song.songmid)).slice(0, input.limit)
-      if (list.length) return paged(list, input.limit, 'favorite-artist-search', true)
-    }
-  } catch {
-    // Fall through to public toplist.
+  assertBusinessSuccess(detail, 'QQ daily playlist request failed')
+  const list = compactSongs(detail.req?.data?.songlist ?? []).slice(0, limit)
+  if (!list.length) {
+    throw new QQMusicError('QQ daily recommendations returned no playable songs', 502, {
+      code: detail.code,
+      requestCode: detail.req?.code,
+      playlistId,
+    })
   }
 
-  return fallbackRecommendations(input.limit, 'toplist-hot')
+  return paged(list, limit, `qq-daily:${playlistId}`)
 }
 
-async function fallbackRecommendations(limit: number, strategy: string): Promise<RecommendationResult> {
-  const result = await getQQToplistDetail('62', 1, limit).catch(() => getQQToplistDetail('26', 1, limit))
-  return paged(result.list.slice(0, limit), limit, strategy, false)
+function findDailyPlaylistId(feed: QQRecommendFeedResponse): string | undefined {
+  const cards = feed.req?.data?.v_shelf
+    ?.flatMap(shelf => shelf.v_niche ?? [])
+    .flatMap(niche => niche.v_card ?? []) ?? []
+
+  const card = cards.find((item) => isDailyRecommendationTitle([
+    item.title,
+    item.name,
+    item.sub_title,
+  ].filter(Boolean).join(' ')))
+  const id = card?.id === undefined ? '' : String(card.id)
+  return /^\d+$/.test(id) ? id : undefined
 }
 
-function isDaily30Playlist(playlist: { name?: string; desc?: string }): boolean {
-  const text = `${playlist.name ?? ''} ${playlist.desc ?? ''}`.toLowerCase()
-  return (text.includes('daily') && text.includes('30')) || text.includes('每日30') || text.includes('每日 30')
+function isDailyRecommendationTitle(value: string): boolean {
+  const title = value.replace(/\s+/g, '').toLowerCase()
+  return title.includes('每日30首')
+    || title.includes('每日推荐')
+    || title.includes('今日推荐')
+    || title.includes('daily30')
+    || title.includes('dailyrecommend')
 }
 
-function paged(list: MusicInfo[], limit: number, strategy: string, personalized: boolean): RecommendationResult {
+function assertBusinessSuccess(
+  data: { code: number; req?: { code: number } },
+  message: string,
+): void {
+  if (data.code === 0 && data.req?.code === 0) return
+  throw new QQMusicError(message, 502, {
+    code: data.code,
+    requestCode: data.req?.code,
+  })
+}
+
+function normalizeLimit(value?: number): number {
+  if (!Number.isFinite(value) || !value) return 30
+  return Math.min(Math.max(Math.trunc(value), 1), 100)
+}
+
+function paged(list: MusicInfo[], limit: number, strategy: string): RecommendationResult {
   return {
     source: 'tx',
     list,
@@ -158,6 +254,6 @@ function paged(list: MusicInfo[], limit: number, strategy: string, personalized:
     total: list.length,
     allPage: 1,
     strategy,
-    personalized,
+    personalized: true,
   }
 }

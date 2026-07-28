@@ -21,7 +21,7 @@ export async function GET(request: Request) {
 
   try {
     if (type === 'daily') {
-      return NextResponse.json(await getQQDailyRecommendations({ limit }))
+      return NextResponse.json(await getQQDailyRecommendations({ cookie, limit }))
     }
     return NextResponse.json(await getQQRecommendations({ cookie, limit }))
   } catch (error) {

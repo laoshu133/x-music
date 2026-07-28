@@ -3952,39 +3952,38 @@ test('local emby query parent id expands QQ virtual playlist items', async () =>
     const dailyId = encodeVirtualId({ kind: 'qq-daily' })
     const upstreamRequests: string[] = []
 
-    globalThis.fetch = (async (url: string | URL | Request) => {
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       const requestUrl = new URL(String(url))
-      if (requestUrl.hostname === 'c.y.qq.com' && requestUrl.pathname.includes('client_music_search_songlist')) {
+      const body = typeof init?.body === 'string' ? JSON.parse(init.body) as any : undefined
+      if (requestUrl.hostname === 'u.y.qq.com' && body?.req?.module === 'music.recommend.RecommendFeed') {
         return Response.json({
           code: 0,
-          data: {
-            sum: 1,
-            list: [{
-              dissid: '123456789',
-              dissname: 'QQ音乐 Daily 30',
-              creator: { name: 'QQ Music' },
-              song_count: 1,
-            }],
+          req: {
+            code: 0,
+            data: {
+              v_shelf: [{ v_niche: [{ v_card: [{ id: '123456789', title: '每日30首' }] }] }],
+            },
           },
         })
       }
 
-      if (requestUrl.hostname === 'c.y.qq.com' && requestUrl.pathname.includes('fcg_ucc_getcdinfo_byids_cp')) {
+      if (requestUrl.hostname === 'u.y.qq.com' && body?.req?.module === 'music.srfDissInfo.DissInfo') {
         return Response.json({
           code: 0,
-          cdlist: [{
-            disstid: '123456789',
-            dissname: 'QQ音乐 Daily 30',
-            songlist: [{
-              id: 123,
-              mid: 'qq-daily-song-1',
-              title: 'QQ Daily Song',
-              interval: 188,
-              singer: [{ name: 'QQ Artist', mid: 'qq-artist-1' }],
-              album: { name: 'QQ Album', mid: 'qq-album-1' },
-              file: { media_mid: 'qq-media-1', size_320mp3: 1024 },
-            }],
-          }],
+          req: {
+            code: 0,
+            data: {
+              songlist: [{
+                id: 123,
+                mid: 'qq-daily-song-1',
+                title: 'QQ Daily Song',
+                interval: 188,
+                singer: [{ name: 'QQ Artist', mid: 'qq-artist-1' }],
+                album: { name: 'QQ Album', mid: 'qq-album-1' },
+                file: { media_mid: 'qq-media-1', size_320mp3: 1024 },
+              }],
+            },
+          },
         })
       }
 
@@ -4015,7 +4014,7 @@ test('local emby query parent id expands QQ virtual playlist items', async () =>
   }
 })
 
-test('local emby recommendation playlists cap QQ recommendation limit', async () => {
+test('local emby recommendation playlists aggregate fixed batches and preserve logical total', async () => {
   const originalFetch = globalThis.fetch
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999018')
@@ -4066,6 +4065,20 @@ test('local emby recommendation playlists cap QQ recommendation limit', async ()
       return Response.json({ Items: [], TotalRecordCount: 0 })
     }) as typeof fetch
 
+    const firstPage = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio%2CMusicVideo&ParentId=${encodeURIComponent(guessId)}&Limit=5&StartIndex=0`, {
+        headers: {
+          'X-Emby-Authorization': `MediaBrowser Client="ampcast", Version="0.9.28", Device="PC", Token="${authPayload.AccessToken}"`,
+        },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/Items`),
+    )
+    assert.equal(firstPage.status, 200)
+    const firstPagePayload = await firstPage.json()
+    assert.equal(firstPagePayload.Items.length, 5)
+    assert.equal(firstPagePayload.TotalRecordCount, 30)
+    assert.deepEqual(recommendationLimits, [5])
+
     const response = await dispatchEmbyRequest(
       new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio%2CMusicVideo&ParentId=${encodeURIComponent(guessId)}&Limit=250&StartIndex=0`, {
         headers: {
@@ -4078,7 +4091,9 @@ test('local emby recommendation playlists cap QQ recommendation limit', async ()
     assert.equal(response.status, 200)
     const payload = await response.json()
     assert.equal(payload.Items.length, 250)
-    assert.deepEqual(recommendationLimits, [100, 100, 50])
+    assert.equal(payload.TotalRecordCount, 250)
+    assert.equal(recommendationLimits.length, 51)
+    assert.ok(recommendationLimits.every(limit => limit === 5))
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999018')
     clearQQLoginCookie()

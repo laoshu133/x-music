@@ -93,6 +93,7 @@ const QQ_FAVORITES_MAX_CONCURRENCY = 4
 const QQ_FAVORITES_DEFAULT_TOTAL = 999
 const MAX_EMBY_SEARCH_VIRTUAL_ITEMS = 50
 const VIRTUAL_RECOMMENDATION_PLAYLIST_PLAY_COUNT = '999999999'
+const VIRTUAL_RECOMMENDATION_TRACK_TOTAL = 30
 const PINNED_RECOMMENDATION_COUNT = 2
 const QQ_FAVORITE_ORDER_BASE_MS = Date.UTC(2099, 0, 1)
 const LOCAL_LIBRARY_CACHE_TTL_MS = 30_000
@@ -1595,7 +1596,7 @@ async function handleVirtualPlaylistItemsRequest(request: Request, decoded: Virt
     songs = result.items
     total = result.total
   } else if (decoded.kind === 'qq-daily') {
-    const result = await getQQDailyRecommendationsWindow(desiredCount)
+    const result = await getQQDailyRecommendationsWindow(request, desiredCount)
     songs = result.items
     total = result.total
   } else {
@@ -2497,7 +2498,7 @@ function defaultVirtualPlaylist(id: '__daily__' | '__guess__'): QQPlaylistInfo {
     id,
     name: id === '__daily__' ? 'QQ 每日推荐' : 'QQ 猜你喜欢',
     author: 'QQ 音乐',
-    total: 30,
+    total: VIRTUAL_RECOMMENDATION_TRACK_TOTAL,
     playCount: VIRTUAL_RECOMMENDATION_PLAYLIST_PLAY_COUNT,
     time: now,
   }
@@ -2644,19 +2645,25 @@ async function getQQRecommendationsWindow(request: Request, limit: number): Prom
     }).catch(() => undefined)
     const nextSongs = result?.list ?? []
     songs.push(...nextSongs)
-    if (nextSongs.length < pageLimit) break
     const uniqueCount = dedupeSongs(songs).length
     if (uniqueCount >= limit) break
     if (uniqueCount === songs.length - nextSongs.length) break
+    if (nextSongs.length < pageLimit) break
     remaining = limit - uniqueCount
   }
 
   const deduped = dedupeSongs(songs)
-  return { items: sliceToFetchLimit(deduped, limit), total: deduped.length }
+  return {
+    items: sliceToFetchLimit(deduped, limit),
+    total: Math.max(VIRTUAL_RECOMMENDATION_TRACK_TOTAL, deduped.length),
+  }
 }
 
-async function getQQDailyRecommendationsWindow(limit: number): Promise<WindowResult<MusicInfo>> {
-  const result = await getQQDailyRecommendations({ limit: finiteFetchCount(limit) }).catch(() => undefined)
+async function getQQDailyRecommendationsWindow(request: Request, limit: number): Promise<WindowResult<MusicInfo>> {
+  const result = await getQQDailyRecommendations({
+    cookie: qqCookieForRequest(request),
+    limit: finiteFetchCount(limit),
+  }).catch(() => undefined)
   const deduped = dedupeSongs(result?.list ?? [])
   return { items: sliceToFetchLimit(deduped, limit), total: result?.total ?? deduped.length }
 }
