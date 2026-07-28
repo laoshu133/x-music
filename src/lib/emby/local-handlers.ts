@@ -1767,13 +1767,6 @@ async function proxyWebdavAudioAfterLxFailure(input: {
     })
     if (!response) continue
     if (isUsableUpstreamResponse(response)) {
-      logVirtualAudioEvent('virtual_audio_webdav_fallback_resolved', input.request, {
-        songmid: input.songmid,
-        preferredQuality: input.preferredQuality,
-        quality: candidate.quality,
-        relativePath: candidate.relativePath,
-        status: response.status,
-      })
       return markRequestSource(response, 'upstream')
     }
   }
@@ -1895,14 +1888,6 @@ async function resolvePlayableUpstreamResponse(
     upsertTrackFileStatus(track.id, quality, 'resolving_url')
     try {
       const resolved = await resolveMusicUrl(musicInfo, quality)
-      logVirtualAudioEvent('virtual_audio_url_resolved', request, {
-        songmid: musicInfo.songmid,
-        preferredQuality,
-        quality,
-        resolvedQuality: resolved.quality,
-        upstream: summarizeMediaUrl(resolved.url),
-        hasEkey: Boolean(resolved.ekey),
-      })
       if (encryptedQQRequiresKey && isEncryptedQQAudioFileName(resolved.url)) {
         const message = 'Skipped encrypted QQ audio because a previous encrypted quality already required a local QQ Music key'
         attempts.push({ quality, error: message })

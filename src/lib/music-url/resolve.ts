@@ -107,22 +107,10 @@ export const resolveMusicUrl = async (
   const config = resolveLxApiConfig(scriptUrl)
   const attempts: Array<{ quality: MusicQuality; error: string; source?: string; musicId?: string }> = []
   const candidates = await musicUrlCandidates(musicInfo)
-  logMusicUrlEvent('music_url_resolve_candidates', musicUrlLogBase(musicInfo, quality, {
-    candidates: candidates.map(candidate => summarizeCandidate(candidate)),
-  }))
 
   for (const candidate of candidates) {
     try {
       const resolved = await requestMusicUrlFromApi(config, candidate, quality)
-      logMusicUrlEvent('music_url_resolve_attempt', musicUrlLogBase(musicInfo, quality, {
-        source: candidate.source,
-        musicId: candidate.musicId,
-        found: true,
-        url: summarizeMusicUrl(resolved.url),
-        hasEkey: Boolean(resolved.ekey),
-        candidateMatchedBy: candidate.matchedBy,
-        candidateConfidence: candidate.confidence,
-      }))
 
       return {
         ...resolved,
@@ -426,24 +414,6 @@ function musicUrlLogBase(
     singer: musicInfo.singer,
     requestedQuality: quality,
     ...details,
-  }
-}
-
-function summarizeCandidate(candidate: MusicUrlCandidate): Record<string, unknown> {
-  return {
-    source: candidate.source,
-    musicId: candidate.musicId,
-    matchedBy: candidate.matchedBy,
-    confidence: candidate.confidence,
-  }
-}
-
-function summarizeMusicUrl(value: string): string {
-  try {
-    const url = new URL(value)
-    return `${url.origin}${url.pathname}`
-  } catch {
-    return value.length > 160 ? `${value.slice(0, 157)}...` : value
   }
 }
 

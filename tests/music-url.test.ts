@@ -248,7 +248,7 @@ test('resolveMusicUrl caches missing cross-platform lookup to avoid repeated sea
   }
 })
 
-test('resolveMusicUrl logs every platform url lookup attempt', async () => {
+test('resolveMusicUrl logs failed platform attempts but not successful lookups', async () => {
   process.env.LX_MUSIC_SOURCE_SCRIPT = 'https://api.example/music/url?key=secret-key'
   process.env.LX_MUSIC_SOURCE_ORDER = 'tx,kw'
   process.env.X_MUSIC_MUSIC_URL_LOGS = 'true'
@@ -277,11 +277,8 @@ test('resolveMusicUrl logs every platform url lookup attempt', async () => {
     const attempts = logs.filter(log => log.event === 'music_url_resolve_attempt')
     assert.deepEqual(attempts.map(log => ({ source: log.source, musicId: log.musicId, found: log.found })), [
       { source: 'tx', musicId: '001TEST', found: false },
-      { source: 'kw', musicId: 'KW_LOG_TEST', found: true },
     ])
-    assert.ok(logs.some(log => log.event === 'music_url_resolve_candidates'
-      && Array.isArray(log.candidates)
-      && log.songmid === '001TEST'))
+    assert.equal(logs.some(log => log.event === 'music_url_resolve_candidates'), false)
   } finally {
     delete process.env.LX_MUSIC_SOURCE_ORDER
     delete process.env.X_MUSIC_MUSIC_URL_LOGS
