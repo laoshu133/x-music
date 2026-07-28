@@ -1,4 +1,5 @@
 import type { MusicInfo, PagedResult } from '@/lib/types'
+import { logServiceEvent } from '@/lib/request-log'
 import { requireQQLoginState, type QQLoginState } from './account'
 import { QQMusicError, qqSignedPost } from './http'
 import { compactSongs, type QQSong } from './mapper'
@@ -56,6 +57,9 @@ export type RecommendationResult = PagedResult<MusicInfo> & {
 
 const QQ_RADIO_BATCH_SIZE = 5
 const QQ_RADIO_EXTRA_BATCH_ATTEMPTS = 2
+const DEFAULT_QQ_RADIO_BATCH_TIMEOUT_MS = 4_000
+const DEFAULT_QQ_RADIO_TOTAL_TIMEOUT_MS = 12_000
+const DEFAULT_QQ_RADIO_SLOW_LOG_MS = 5_000
 
 function common(login: QQLoginState) {
   return {
@@ -120,12 +124,38 @@ export async function getQQRecommendations(input: {
   const maxBatches = expectedBatches + QQ_RADIO_EXTRA_BATCH_ATTEMPTS
   const list: MusicInfo[] = []
   const seen = new Set<string>()
+  const startedAt = Date.now()
+  const batchTimeoutMs = positiveEnvNumber('QQ_RECOMMENDATION_BATCH_TIMEOUT_MS', DEFAULT_QQ_RADIO_BATCH_TIMEOUT_MS)
+  const totalTimeoutMs = positiveEnvNumber('QQ_RECOMMENDATION_TOTAL_TIMEOUT_MS', DEFAULT_QQ_RADIO_TOTAL_TIMEOUT_MS)
+  let batches = 0
+  let stopReason = 'max-batches'
 
   for (let batch = 0; batch < maxBatches && list.length < limit; batch += 1) {
-    const data = await qqSignedPost<QQRecommendationsResponse>(
-      buildRecommendationsPayload(login),
-      { headers: authenticatedHeaders(login) },
-    )
+    const remainingMs = totalTimeoutMs - (Date.now() - startedAt)
+    if (remainingMs <= 0) {
+      if (!list.length) throw recommendationsTimeout(limit, list.length, batches)
+      stopReason = 'total-timeout'
+      break
+    }
+
+    let data: QQRecommendationsResponse
+    try {
+      data = await qqSignedPost<QQRecommendationsResponse>(
+        buildRecommendationsPayload(login),
+        {
+          headers: authenticatedHeaders(login),
+          signal: AbortSignal.timeout(Math.max(1, Math.min(batchTimeoutMs, remainingMs))),
+        },
+      )
+      batches += 1
+    } catch (error) {
+      if (isTimeoutError(error)) {
+        if (!list.length) throw recommendationsTimeout(limit, list.length, batches)
+        stopReason = 'batch-timeout'
+        break
+      }
+      throw error
+    }
     assertBusinessSuccess(data, 'QQ recommendations request failed')
 
     let added = 0
@@ -137,7 +167,11 @@ export async function getQQRecommendations(input: {
       added += 1
       if (list.length >= limit) break
     }
-    if (added === 0) break
+    if (added === 0) {
+      stopReason = 'no-new-songs'
+      break
+    }
+    if (list.length >= limit) stopReason = 'target-reached'
   }
 
   if (!list.length) {
@@ -147,7 +181,41 @@ export async function getQQRecommendations(input: {
     })
   }
 
+  const durationMs = Date.now() - startedAt
+  const slowLogMs = positiveEnvNumber('QQ_RECOMMENDATION_SLOW_LOG_MS', DEFAULT_QQ_RADIO_SLOW_LOG_MS)
+  if (durationMs >= slowLogMs || recommendationLogsEnabled() || stopReason.includes('timeout')) {
+    logServiceEvent('qq_recommendations_loaded', {
+      requested: limit,
+      returned: Math.min(list.length, limit),
+      batches,
+      durationMs,
+      stopReason,
+    })
+  }
+
   return paged(list.slice(0, limit), limit, 'qq-radio:99')
+}
+
+function recommendationsTimeout(requested: number, collected: number, batches: number): QQMusicError {
+  return new QQMusicError('QQ recommendations request timed out', 504, {
+    code: 'QQ_RECOMMENDATIONS_TIMEOUT',
+    requested,
+    collected,
+    batches,
+  })
+}
+
+function isTimeoutError(error: unknown): boolean {
+  return error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')
+}
+
+function recommendationLogsEnabled(): boolean {
+  return ['1', 'true', 'on', 'yes'].includes(process.env.X_MUSIC_QQ_RECOMMENDATION_LOGS?.trim().toLowerCase() ?? '')
+}
+
+function positiveEnvNumber(name: string, fallback: number): number {
+  const value = Number(process.env[name])
+  return Number.isFinite(value) && value > 0 ? value : fallback
 }
 
 export async function getQQDailyRecommendations(input: {

@@ -4014,7 +4014,7 @@ test('local emby query parent id expands QQ virtual playlist items', async () =>
   }
 })
 
-test('local emby recommendation playlists aggregate fixed batches and preserve logical total', async () => {
+test('local emby recommendation playlists cap each page and reuse the per-user pool', async () => {
   const originalFetch = globalThis.fetch
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999018')
@@ -4076,10 +4076,10 @@ test('local emby recommendation playlists aggregate fixed batches and preserve l
     assert.equal(firstPage.status, 200)
     const firstPagePayload = await firstPage.json()
     assert.equal(firstPagePayload.Items.length, 5)
-    assert.equal(firstPagePayload.TotalRecordCount, 30)
+    assert.equal(firstPagePayload.TotalRecordCount, 999)
     assert.deepEqual(recommendationLimits, [5])
 
-    const response = await dispatchEmbyRequest(
+    const expandedFirstPage = await dispatchEmbyRequest(
       new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio%2CMusicVideo&ParentId=${encodeURIComponent(guessId)}&Limit=250&StartIndex=0`, {
         headers: {
           'X-Emby-Authorization': `MediaBrowser Client="ampcast", Version="0.9.28", Device="PC", Token="${authPayload.AccessToken}"`,
@@ -4088,12 +4088,58 @@ test('local emby recommendation playlists aggregate fixed batches and preserve l
       stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/Items`),
     )
 
-    assert.equal(response.status, 200)
-    const payload = await response.json()
-    assert.equal(payload.Items.length, 250)
-    assert.equal(payload.TotalRecordCount, 250)
-    assert.equal(recommendationLimits.length, 51)
+    assert.equal(expandedFirstPage.status, 200)
+    const expandedFirstPagePayload = await expandedFirstPage.json()
+    assert.equal(expandedFirstPagePayload.Items.length, 30)
+    assert.equal(expandedFirstPagePayload.TotalRecordCount, 999)
+    assert.equal(recommendationLimits.length, 6)
     assert.ok(recommendationLimits.every(limit => limit === 5))
+
+    const secondPageRequest = () => dispatchEmbyRequest(
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio%2CMusicVideo&ParentId=${encodeURIComponent(guessId)}&Limit=30&StartIndex=30`, {
+        headers: {
+          'X-Emby-Authorization': `MediaBrowser Client="ampcast", Version="0.9.28", Device="PC", Token="${authPayload.AccessToken}"`,
+        },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/Items`),
+    )
+    const secondPage = await secondPageRequest()
+    assert.equal(secondPage.status, 200)
+    const secondPagePayload = await secondPage.json()
+    assert.equal(secondPagePayload.Items.length, 30)
+    assert.equal(secondPagePayload.TotalRecordCount, 999)
+    assert.equal(recommendationLimits.length, 12)
+
+    const repeatedSecondPage = await secondPageRequest()
+    assert.equal(repeatedSecondPage.status, 200)
+    assert.equal((await repeatedSecondPage.json()).Items.length, 30)
+    assert.equal(recommendationLimits.length, 12)
+
+    const jumpedPage = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio%2CMusicVideo&ParentId=${encodeURIComponent(guessId)}&Limit=1000&StartIndex=300`, {
+        headers: {
+          'X-Emby-Authorization': `MediaBrowser Client="ampcast", Version="0.9.28", Device="PC", Token="${authPayload.AccessToken}"`,
+        },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/Items`),
+    )
+    assert.equal(jumpedPage.status, 200)
+    assert.equal((await jumpedPage.json()).Items.length, 30)
+    assert.equal(recommendationLimits.length, 18)
+
+    const pageBeyondInitialHint = await dispatchEmbyRequest(
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio%2CMusicVideo&ParentId=${encodeURIComponent(guessId)}&Limit=30&StartIndex=990`, {
+        headers: {
+          'X-Emby-Authorization': `MediaBrowser Client="ampcast", Version="0.9.28", Device="PC", Token="${authPayload.AccessToken}"`,
+        },
+      }),
+      stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/Items`),
+    )
+    assert.equal(pageBeyondInitialHint.status, 200)
+    const pageBeyondInitialHintPayload = await pageBeyondInitialHint.json()
+    assert.equal(pageBeyondInitialHintPayload.Items.length, 30)
+    assert.equal(pageBeyondInitialHintPayload.TotalRecordCount, 1050)
+    assert.equal(recommendationLimits.length, 24)
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999018')
     clearQQLoginCookie()

@@ -93,7 +93,9 @@ const QQ_FAVORITES_MAX_CONCURRENCY = 4
 const QQ_FAVORITES_DEFAULT_TOTAL = 999
 const MAX_EMBY_SEARCH_VIRTUAL_ITEMS = 50
 const VIRTUAL_RECOMMENDATION_PLAYLIST_PLAY_COUNT = '999999999'
-const VIRTUAL_RECOMMENDATION_TRACK_TOTAL = 30
+const QQ_RECOMMENDATION_PAGE_LIMIT = 30
+const QQ_RECOMMENDATION_INITIAL_TOTAL_HINT = 999
+const QQ_RECOMMENDATION_POOL_TTL_MS = 60_000
 const PINNED_RECOMMENDATION_COUNT = 2
 const QQ_FAVORITE_ORDER_BASE_MS = Date.UTC(2099, 0, 1)
 const LOCAL_LIBRARY_CACHE_TTL_MS = 30_000
@@ -123,6 +125,13 @@ type CachedValue<T> = {
   promise?: Promise<T>
 }
 
+type QQRecommendationPool = {
+  songs: MusicInfo[]
+  windows: Map<string, MusicInfo[]>
+  expiresAt: number
+  pending?: Promise<void>
+}
+
 type LocalRouteContext = {
   request: Request
   embyPath: string
@@ -144,6 +153,7 @@ type MatchedLocalRoute = {
 const favoriteTotalCache = new Map<string, number>()
 const localFavoriteSongsCache = new Map<string, CachedValue<WindowResult<MusicInfo>>>()
 const localPlaylistsCache = new Map<string, CachedValue<QQPlaylistInfo[]>>()
+const qqRecommendationPools = new Map<string, QQRecommendationPool>()
 const authorizedAccountByRequest = new WeakMap<Request, AccountRecord>()
 
 const LOCAL_ROUTES: LocalRoute[] = [
@@ -1582,11 +1592,15 @@ async function handleVirtualPlaylistItemsRequest(request: Request, decoded: Virt
   if (!shouldIncludePlaylistTracks(includeTypes)) {
     return emptyItemsResponse()
   }
-  const page = requestPageParams(url)
+  const requestedPage = requestPageParams(url)
+  const page = decoded.kind === 'qq-guess'
+    ? cappedPageParams(requestedPage, QQ_RECOMMENDATION_PAGE_LIMIT)
+    : requestedPage
   const desiredCount = desiredFetchCount(page)
 
   let songs: MusicInfo[] = []
   let total: number | undefined
+  let alreadyPaged = false
   if (decoded.kind === 'qq-playlist') {
     const result = await getQQPlaylistSongsWindow(decoded.id, desiredCount)
     songs = result.items
@@ -1595,9 +1609,10 @@ async function handleVirtualPlaylistItemsRequest(request: Request, decoded: Virt
     songs = loadVirtualAlbumSongs(decoded.id)
     total = songs.length
   } else if (decoded.kind === 'qq-guess') {
-    const result = await getQQRecommendationsWindow(request, desiredCount)
+    const result = await getQQRecommendationsPage(request, page)
     songs = result.items
     total = result.total
+    alreadyPaged = true
   } else if (decoded.kind === 'qq-daily') {
     const result = await getQQDailyRecommendationsWindow(request, desiredCount)
     songs = result.items
@@ -1614,7 +1629,9 @@ async function handleVirtualPlaylistItemsRequest(request: Request, decoded: Virt
       rememberVirtualSong(song, playlistId)
       return songToEmbyItem(song, playlistId, false, authorizedLocalAccount(request))
     })
-  return pagedItemsResponse(items, page, total ?? items.length)
+  return alreadyPaged
+    ? Response.json({ Items: items, TotalRecordCount: total ?? items.length })
+    : pagedItemsResponse(items, page, total ?? items.length)
 }
 
 async function handleAudioRequest(request: Request, embyPath: string): Promise<Response | undefined> {
@@ -2508,7 +2525,7 @@ function defaultVirtualPlaylist(id: '__daily__' | '__guess__'): QQPlaylistInfo {
     id,
     name: id === '__daily__' ? 'QQ 每日推荐' : 'QQ 猜你喜欢',
     author: 'QQ 音乐',
-    total: VIRTUAL_RECOMMENDATION_TRACK_TOTAL,
+    total: QQ_RECOMMENDATION_INITIAL_TOTAL_HINT,
     playCount: VIRTUAL_RECOMMENDATION_PLAYLIST_PLAY_COUNT,
     time: now,
   }
@@ -2643,30 +2660,100 @@ async function getQQPlaylistSongsWindow(id: string, limit: number): Promise<Wind
   return { items: sliceToFetchLimit(songs, limit), total: detail?.total ?? songs.length }
 }
 
-async function getQQRecommendationsWindow(request: Request, limit: number): Promise<WindowResult<MusicInfo>> {
-  const songs: MusicInfo[] = []
-  let remaining = finiteFetchCount(limit)
-
-  while (remaining > 0) {
-    const pageLimit = Math.min(QQ_SONG_PAGE_SIZE, remaining)
-    const result = await getQQRecommendations({
-      cookie: qqCookieForRequest(request),
-      limit: pageLimit,
-    }).catch(() => undefined)
-    const nextSongs = result?.list ?? []
-    songs.push(...nextSongs)
-    const uniqueCount = dedupeSongs(songs).length
-    if (uniqueCount >= limit) break
-    if (uniqueCount === songs.length - nextSongs.length) break
-    if (nextSongs.length < pageLimit) break
-    remaining = limit - uniqueCount
+async function getQQRecommendationsPage(request: Request, page: PageParams): Promise<WindowResult<MusicInfo>> {
+  const limit = Math.min(page.limit ?? QQ_RECOMMENDATION_PAGE_LIMIT, QQ_RECOMMENDATION_PAGE_LIMIT)
+  const target = page.startIndex + limit
+  const windowKey = `${page.startIndex}:${limit}`
+  const key = localLibraryCacheKey(request)
+  const now = Date.now()
+  let pool = qqRecommendationPools.get(key)
+  if (!pool || pool.expiresAt <= now) {
+    pool = { songs: [], windows: new Map(), expiresAt: now + QQ_RECOMMENDATION_POOL_TTL_MS }
+    qqRecommendationPools.set(key, pool)
   }
 
-  const deduped = dedupeSongs(songs)
+  const cachedWindow = recommendationPoolWindow(pool, page.startIndex, limit, windowKey)
+  if (cachedWindow) {
+    return { items: cachedWindow, total: recommendationTotalHint(target, limit) }
+  }
+
+  const previous = pool.pending?.catch(() => undefined) ?? Promise.resolve()
+  const pending = previous.then(async () => {
+    if (recommendationPoolWindow(pool!, page.startIndex, limit, windowKey)) return
+
+    if (page.startIndex <= pool!.songs.length) {
+      const missing = Math.min(limit, Math.max(0, target - pool!.songs.length))
+      if (missing > 0) {
+        const additions = await loadQQRecommendationSongs(request, missing, pool!.songs)
+        pool!.songs.push(...additions)
+      }
+      return
+    }
+
+    const songs = await loadQQRecommendationSongs(request, limit, pool!.songs)
+    pool!.windows.set(windowKey, songs)
+  })
+  pool.pending = pending
+  try {
+    await pending
+  } catch (error) {
+    logServiceEvent('qq_recommendation_pool_extend_failed', {
+      userId: authorizedLocalAccount(request)?.userId,
+      startIndex: page.startIndex,
+      limit,
+      cached: pool.songs.length,
+      error: error instanceof Error ? error.message : String(error),
+    }, 'error')
+  } finally {
+    if (pool.pending === pending) pool.pending = undefined
+  }
+
   return {
-    items: sliceToFetchLimit(deduped, limit),
-    total: Math.max(VIRTUAL_RECOMMENDATION_TRACK_TOTAL, deduped.length),
+    items: recommendationPoolResultWindow(pool, page.startIndex, limit, windowKey),
+    total: recommendationTotalHint(target, limit),
   }
+}
+
+function recommendationTotalHint(pageEnd: number, pageLimit: number): number {
+  return Math.max(QQ_RECOMMENDATION_INITIAL_TOTAL_HINT, pageEnd + pageLimit)
+}
+
+function recommendationPoolWindow(
+  pool: QQRecommendationPool,
+  startIndex: number,
+  limit: number,
+  windowKey: string,
+): MusicInfo[] | undefined {
+  if (startIndex < pool.songs.length || (startIndex === 0 && limit === 0)) {
+    const songs = pool.songs.slice(startIndex, startIndex + limit)
+    if (songs.length >= limit) return songs
+  }
+  return pool.windows.get(windowKey)
+}
+
+function recommendationPoolResultWindow(
+  pool: QQRecommendationPool,
+  startIndex: number,
+  limit: number,
+  windowKey: string,
+): MusicInfo[] {
+  const sequential = pool.songs.slice(startIndex, startIndex + limit)
+  return sequential.length > 0 ? sequential : pool.windows.get(windowKey) ?? []
+}
+
+async function loadQQRecommendationSongs(
+  request: Request,
+  limit: number,
+  existingSongs: MusicInfo[],
+): Promise<MusicInfo[]> {
+  if (limit <= 0) return []
+  const result = await getQQRecommendations({
+    cookie: qqCookieForRequest(request),
+    limit,
+  })
+  const existing = new Set(existingSongs.map(song => `${song.source}:${song.songmid}`))
+  const additions = result.list.filter(song => !existing.has(`${song.source}:${song.songmid}`))
+  return additions.slice(0, limit)
 }
 
 async function getQQDailyRecommendationsWindow(request: Request, limit: number): Promise<WindowResult<MusicInfo>> {

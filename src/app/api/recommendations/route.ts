@@ -15,7 +15,7 @@ export async function GET(request: Request) {
   const account = await requireUserAccount()
   if (isAuthResponse(account)) return account
   const { searchParams } = new URL(request.url)
-  const limit = getPositiveInt(searchParams.get('limit'), 30, 100)
+  const limit = getPositiveInt(searchParams.get('limit'), 30, 30)
   const cookie = account.qqCookie
   const type = searchParams.get('type')?.toLowerCase()
 

@@ -8,6 +8,9 @@ const originalFetch = globalThis.fetch
 test.afterEach(() => {
   globalThis.fetch = originalFetch
   delete process.env.QQ_MUSIC_COOKIE
+  delete process.env.QQ_RECOMMENDATION_BATCH_TIMEOUT_MS
+  delete process.env.QQ_RECOMMENDATION_TOTAL_TIMEOUT_MS
+  delete process.env.QQ_RECOMMENDATION_SLOW_LOG_MS
   clearQQLoginCookie()
 })
 
@@ -137,6 +140,38 @@ test('QQ guess recommendations dynamically aggregate fixed five-song batches', a
   assert.equal(new Set(result.list.map(song => song.songmid)).size, 12)
 })
 
+test('recommendations route caps each guess page at 30 songs', async () => {
+  saveQQLoginCookie('uin=o123462; qm_keyst=test-key')
+  const route = await import('@/app/api/recommendations/route')
+  let requests = 0
+  globalThis.fetch = (async () => {
+    const batch = requests
+    requests += 1
+    return Response.json({
+      code: 0,
+      req: {
+        code: 0,
+        data: {
+          tracks: Array.from({ length: 5 }, (_, index) => {
+            const id = batch * 5 + index
+            return {
+              id: 2500 + id,
+              mid: `capped-guess-${id}`,
+              title: `Capped Guess ${id}`,
+            }
+          }),
+        },
+      },
+    })
+  }) as typeof fetch
+
+  const response = await route.GET(new Request('http://local/api/recommendations?type=guess&limit=100'))
+  assert.equal(response.status, 200)
+  const payload = await response.json()
+  assert.equal(payload.list.length, 30)
+  assert.equal(requests, 6)
+})
+
 test('QQ guess recommendations stop when a batch contains no new songs', async () => {
   let requests = 0
   globalThis.fetch = (async () => {
@@ -163,6 +198,70 @@ test('QQ guess recommendations stop when a batch contains no new songs', async (
 
   assert.equal(requests, 2)
   assert.equal(result.list.length, 5)
+})
+
+test('QQ guess recommendations return collected songs when a later batch times out', async () => {
+  process.env.QQ_RECOMMENDATION_BATCH_TIMEOUT_MS = '10'
+  process.env.QQ_RECOMMENDATION_TOTAL_TIMEOUT_MS = '100'
+  let requests = 0
+  globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+    requests += 1
+    if (requests === 1) {
+      return Response.json({
+        code: 0,
+        req: {
+          code: 0,
+          data: {
+            tracks: Array.from({ length: 5 }, (_, index) => ({
+              id: 4000 + index,
+              mid: `partial-guess-${index}`,
+              title: `Partial Guess ${index}`,
+            })),
+          },
+        },
+      })
+    }
+
+    return new Promise<Response>((_resolve, reject) => {
+      const signal = init?.signal
+      const abort = () => reject(signal?.reason ?? new DOMException('Aborted', 'AbortError'))
+      if (signal?.aborted) abort()
+      else signal?.addEventListener('abort', abort, { once: true })
+    })
+  }) as typeof fetch
+
+  const result = await getQQRecommendations({
+    cookie: 'uin=o123460; qm_keyst=test-key',
+    limit: 10,
+  })
+
+  assert.equal(requests, 2)
+  assert.equal(result.list.length, 5)
+})
+
+test('QQ guess recommendations fail with 504 when the first batch times out', async () => {
+  process.env.QQ_RECOMMENDATION_BATCH_TIMEOUT_MS = '10'
+  process.env.QQ_RECOMMENDATION_TOTAL_TIMEOUT_MS = '100'
+  globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+    return new Promise<Response>((_resolve, reject) => {
+      const signal = init?.signal
+      const abort = () => reject(signal?.reason ?? new DOMException('Aborted', 'AbortError'))
+      if (signal?.aborted) abort()
+      else signal?.addEventListener('abort', abort, { once: true })
+    })
+  }) as typeof fetch
+
+  await assert.rejects(
+    getQQRecommendations({
+      cookie: 'uin=o123461; qm_keyst=test-key',
+      limit: 10,
+    }),
+    (error: unknown) => {
+      assert.equal((error as { status?: number }).status, 504)
+      assert.equal((error as { payload?: { code?: string } }).payload?.code, 'QQ_RECOMMENDATIONS_TIMEOUT')
+      return true
+    },
+  )
 })
 
 test('recommendations route does not replace a failed personalized response with public content', async () => {
