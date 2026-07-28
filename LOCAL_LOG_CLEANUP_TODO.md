@@ -7,9 +7,9 @@ This file tracks diagnostic logs that were added to make production/debug follow
 Added while investigating frequent QQ reauthorization prompts.
 
 - `src/lib/qq/auth-refresh.ts`
-  - Events: `qq_auth_refresh_attempt`, `qq_auth_refresh_success`, `qq_auth_refresh_failed`
-  - Purpose: identify whether automatic refresh is being attempted, whether QQ returns a new musickey/token, and why refresh fails.
-  - Cleanup: keep only failures if the aged-session refresh strategy proves stable.
+  - Event: `qq_auth_refresh_failed`
+  - Purpose: retain automatic refresh failures and the upstream error summary.
+  - Policy: keep as an error event.
 
 - `src/lib/qq/auth-refresh.ts`
   - Event: `qq_auth_refresh_skipped`
@@ -18,9 +18,9 @@ Added while investigating frequent QQ reauthorization prompts.
   - Cleanup: remove or keep gated; this can be noisy if enabled.
 
 - `src/lib/qq/auth-state.ts`
-  - Events: `qq_auth_expired_recheck_attempt`, `qq_auth_refresh_applied`, `qq_auth_refresh_degraded`, `qq_auth_marked_expired`, `qq_auth_expired_response`
-  - Purpose: separate successful renewal, transient degraded operation, automatic expired-account recovery, and final expired marking.
-  - Cleanup: keep degraded/expired logs; consider removing successful refresh logs after enough real-account validation.
+  - Events: `qq_auth_expired_recheck_attempt`, `qq_auth_refresh_degraded`, `qq_auth_marked_expired`, `qq_auth_expired_response`
+  - Purpose: separate automatic expired-account recovery, transient degraded operation, and final expired marking.
+  - Policy: keep degraded/expired logs; the successful refresh event has been removed.
 
 - `src/lib/qq/auth-sweep.ts`
   - Events: `qq_auth_sweep_completed`, `qq_auth_sweep_account_failed`
@@ -38,9 +38,9 @@ Added while investigating frequent QQ reauthorization prompts.
 Added after the first scan after redeploy showed a login failed prompt while the second scan succeeded.
 
 - `src/lib/qq/user.ts`
-  - Events: `qq_login_qr_created`, `qq_login_qr_checked`, `qq_login_check_sig`, `qq_login_authorize`, `qq_login_completed`, `qq_login_failed`
-  - Purpose: identify whether QR login fails while polling QR status, following `check_sig`, posting Graph authorization, exchanging the authorization code, or persisting a complete QQ Music session.
-  - Cleanup: keep `qq_login_failed`; remove or gate success-stage logs once the first-scan behavior is stable.
+  - Event: `qq_login_failed`
+  - Purpose: retain a summarized failure without logging QR progress, cookies, or successful authorization stages.
+  - Policy: keep as an error event.
 
 ## QQ Recommendations
 
@@ -48,10 +48,9 @@ Added while investigating slow or incomplete personalized recommendation loads.
 
 - `src/lib/qq/recommendations.ts`
   - Event: `qq_recommendations_loaded`
-  - Default: emitted only when a load reaches `QQ_RECOMMENDATION_SLOW_LOG_MS` (default 5 seconds).
-  - Gate: `X_MUSIC_QQ_RECOMMENDATION_LOGS=1` also emits normal successful loads.
+  - Default: emitted only when a load reaches `QQ_RECOMMENDATION_SLOW_LOG_MS` (default 5 seconds) or returns partial results after a timeout.
   - Purpose: record batch count, duration, result count, and stop reason without logging song data or request credentials.
-  - Cleanup: keep the slow-load threshold; remove the opt-in success mode after the recommendation paging behavior is stable.
+  - Policy: keep the slow-load threshold; normal successful loads stay quiet.
 
 - `src/lib/emby/local-handlers.ts`
   - Event: `qq_recommendation_pool_extend_failed`
@@ -75,9 +74,9 @@ Added while debugging playable URL resolution and source-script behavior.
 
 - `src/lib/music-url/resolve.ts`
   - Gate: `X_MUSIC_MUSIC_URL_LOGS`; otherwise follows request logging.
-  - Events: `music_url_resolve_candidates`, `music_url_resolve_attempt`, `music_url_resolve_failed`
-  - Purpose: inspect source candidate selection, quality fallback, and failure reasons without logging full signed URLs.
-  - Cleanup: keep failure logging; disable or remove candidate/attempt logs after source-script behavior is stable.
+  - Events: failed `music_url_resolve_attempt` and final `music_url_resolve_failed`
+  - Purpose: inspect source failure reasons and quality fallback without logging successful lookups or signed URLs.
+  - Policy: keep failure logging.
 
 ## Virtual Audio Playback
 
@@ -90,15 +89,13 @@ Added while debugging Emby/Ampcast/Narjo compatibility and virtual audio fallbac
     - `virtual_audio_metadata_missing`
     - `virtual_audio_playback_failed`
     - `virtual_audio_webdav_fallback_failed`
-    - `virtual_audio_webdav_fallback_resolved`
     - `virtual_audio_mapped_fallback_proxy_failed`
     - `virtual_audio_mapped_fallback_proxy_unusable`
-    - `virtual_audio_url_resolved`
     - `virtual_audio_quality_failed`
     - `virtual_audio_quality_skipped_unplayable_cache`
     - `virtual_audio_quality_retrying_stale_unplayable_cache`
   - Purpose: diagnose client-specific playback failures, stale unplayable cache, mapped-track fallback, WebDAV fallback, and quality fallback.
-  - Cleanup: keep failed/unusable events; consider removing `virtual_audio_url_resolved` and successful fallback logs if production noise is high.
+  - Policy: keep failed/unusable events; successful URL resolution and fallback logs have been removed.
 
 ## Background Sync Debug Logs
 
@@ -128,24 +125,20 @@ These appear to be normal operational logs rather than temporary optimization/de
 - `src/lib/cache/*-job.ts` cache cleanup and UM crypto job result logs.
 - `src/lib/tagging/job.ts`, `src/lib/tagging/inline.ts`, and Emby sync warning logs for actual failures.
 
-## Recommended Cleanup Order
+## Remaining Optional Cleanup
 
-1. Remove or gate high-volume success and progress events after their related behavior is stable:
-   - `qq_login_qr_created`, successful `qq_login_qr_checked`, `qq_login_check_sig`, `qq_login_authorize`, and `qq_login_completed`.
-   - `qq_auth_refresh_attempt`, `qq_auth_refresh_success`, `qq_auth_refresh_applied`, and healthy `qq_auth_sweep_completed` summaries.
-   - `music_url_resolve_candidates`, successful `music_url_resolve_attempt`, `virtual_audio_url_resolved`, and successful fallback events.
-   - The `X_MUSIC_QQ_RECOMMENDATION_LOGS` normal-success override.
-2. Keep failure and degraded-state events as permanent operational logs:
-   - QQ login, authorization, recommendation, URL resolution, playback, cache, tagging, and Emby sync failures.
-   - Non-success HTTP request/response logs, with successful request logging opt-in only.
-3. Keep command output and worker lifecycle logs separate from application diagnostics:
-   - `scripts/cleanup-emby-duplicate-audio.ts` output is part of the CLI contract.
-   - Worker start, shutdown, crash, retry, and terminal job-result logs are operational output.
-   - Consider removing only per-job `claimed`/`completed` success lines if production volume becomes excessive.
+- Consider removing worker per-job `claimed`/`completed` success lines only if production volume becomes excessive.
+- Keep `scripts/cleanup-emby-duplicate-audio.ts` output as part of the CLI contract.
+- Keep non-success HTTP request/response logs, with successful request logging opt-in only.
 
 ## Completed Hygiene
 
 - QQ image cache failures log only a media URL summary (protocol, host, and path extension), not the complete image URL or query string.
+- Removed QQ login progress and success-stage events; only `qq_login_failed` remains.
+- Removed QQ authorization attempt, success, and applied events; failures and degraded states remain.
+- Removed music URL candidate and successful-attempt events; failed attempts and final failures remain.
+- Removed successful virtual audio URL resolution and WebDAV fallback events.
+- Removed the recommendation normal-success logging override; only slow and timeout loads are logged.
 
 ## Review Checklist
 
