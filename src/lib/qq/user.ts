@@ -273,9 +273,6 @@ export async function getQQLoginQr(): Promise<QQLoginQr> {
   const image = Buffer.from(await response.arrayBuffer()).toString('base64')
   const qrsig = response.headers.get('set-cookie')?.match(/qrsig=([^;]+)/)?.[1]
   if (!qrsig) throw new QQMusicError('Failed to get qrsig from QQ login QR response', 502)
-  logServiceEvent('qq_login_qr_created', {
-    hasQrsig: true,
-  })
 
   return {
     img: `data:image/png;base64,${image}`,
@@ -302,23 +299,9 @@ export async function checkQQLoginQr(input: {
     const cookieMap = new Map<string, string>()
     setCookies(cookieMap, loginResponse.headers.get('set-cookie'))
     const loginSucceeded = loginText.includes('登录成功')
-    if (loginSucceeded) {
-      logServiceEvent('qq_login_qr_checked', {
-        status: loginResponse.status,
-        qrStatus: 'success',
-        cookieNames: safeCookieNames(cookieMap),
-      })
-    }
 
     if (!loginSucceeded) {
       const status = parseLoginQrStatus(loginText)
-      if (status !== 'pending') {
-        logServiceEvent('qq_login_qr_checked', {
-          status: loginResponse.status,
-          qrStatus: status,
-          cookieNames: safeCookieNames(cookieMap),
-        })
-      }
       return {
         isOk: false,
         refresh: status === 'expired',
@@ -341,11 +324,6 @@ export async function checkQQLoginQr(input: {
     })
     const checkSigCookie = checkSigResponse.headers.get('set-cookie')
     const pSkey = checkSigCookie?.match(/p_skey=([^;]+)/)?.[1]
-    logServiceEvent('qq_login_check_sig', {
-      status: checkSigResponse.status,
-      location: Boolean(checkSigResponse.headers.get('location')),
-      hasPSkey: Boolean(pSkey),
-    }, pSkey ? 'info' : 'error')
     if (!pSkey) throw new QQMusicError('Failed to extract p_skey from QQ login response', 502, {
       status: checkSigResponse.status,
       hasLocation: Boolean(checkSigResponse.headers.get('location')),
@@ -377,11 +355,6 @@ export async function checkQQLoginQr(input: {
     })
     setCookies(cookieMap, authorizeResponse.headers.get('set-cookie'))
     const location = authorizeResponse.headers.get('location')
-    logServiceEvent('qq_login_authorize', {
-      status: authorizeResponse.status,
-      hasLocation: Boolean(location),
-      hasCode: Boolean(location?.match(/[?&]code=([^&]+)/)),
-    }, authorizeResponse.status >= 300 && authorizeResponse.status < 400 && location ? 'info' : 'error')
     if (authorizeResponse.status < 300 || authorizeResponse.status >= 400 || !location) {
       throw new QQMusicError('QQ authorization did not return a redirect location', 502, {
         status: authorizeResponse.status,
@@ -396,13 +369,6 @@ export async function checkQQLoginQr(input: {
       code,
       cookie: allCookies(),
       gTk: gtk,
-    })
-    logServiceEvent('qq_login_completed', {
-      uin: session.uin,
-      cookieNames: safeCookieNamesFromCookieText(session.cookie),
-      hasQQMusicKey: Boolean(session.cookieObject.qm_keyst || session.cookieObject.qqmusic_key),
-      hasAccessToken: Boolean(session.cookieObject.psrf_qqaccess_token),
-      hasRefreshToken: Boolean(session.cookieObject.psrf_qqrefresh_token),
     })
 
     return {
@@ -433,14 +399,6 @@ function safeCookieNames(cookieMap: Map<string, string>): string[] {
 function safeCookieNamesFromSetCookie(setCookieHeader: string | null): string[] {
   return parseSetCookie(setCookieHeader)
     .map(cookie => cookie.split('=')[0]?.trim())
-    .filter((name): name is string => Boolean(name))
-    .sort()
-}
-
-function safeCookieNamesFromCookieText(cookieText: string): string[] {
-  return cookieText
-    .split(';')
-    .map(part => part.trim().split('=')[0]?.trim())
     .filter((name): name is string => Boolean(name))
     .sort()
 }

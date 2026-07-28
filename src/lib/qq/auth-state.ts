@@ -48,12 +48,6 @@ export async function requireActiveQQAccount<T extends AccountRecord | undefined
       force: Boolean(options.force || recheckingExpiredAccount),
     })
     if (refreshed.error) return handleRefreshFailure(account, refreshed.error) as T
-    if (refreshed.attempted) {
-      logServiceEvent('qq_auth_refresh_applied', {
-        userId: refreshed.account.userId,
-        refreshed: refreshed.refreshed,
-      })
-    }
     if (recheckingExpiredAccount) lastExpiredRecheckByUser.delete(account.userId)
     return (getAccountByUserId(refreshed.account.userId) ?? refreshed.account) as T
   } catch (error) {

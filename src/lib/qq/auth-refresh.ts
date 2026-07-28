@@ -36,17 +36,6 @@ export async function refreshAccountQQAuthorization(
     })
   }
   const refreshedAccount = updateAccountQQCookie(account.userId, result.cookie) ?? getAccountByUserId(account.userId) ?? account
-  logServiceEvent('qq_auth_refresh_success', {
-    userId: account.userId,
-    qqUin: result.uin,
-    changed: result.changed,
-    keyRefreshed: result.keyRefreshed,
-    tokenRefreshed: result.tokenRefreshed,
-    upstreamCode: result.upstreamCode,
-    traceid: result.traceid,
-    accessTokenExpiresAt: parseQQAccessTokenExpiresAt(result.cookie),
-    musickeyCreatedAt: parseQQMusickeyCreatedAt(result.cookie),
-  })
   return {
     account: refreshedAccount,
     result,
@@ -69,15 +58,6 @@ export async function refreshAccountQQAuthorizationIfNeeded(
   }
 
   lastRefreshAttemptByUser.set(account.userId, Date.now())
-  logServiceEvent('qq_auth_refresh_attempt', {
-    userId: account.userId,
-    reason: decision.reason,
-    accessTokenExpiresAt: decision.accessTokenExpiresAt,
-    musickeyCreatedAt: decision.musickeyCreatedAt,
-    ageBasis: decision.ageBasis,
-    ageMs: decision.ageMs,
-    msUntilExpiry: decision.msUntilExpiry,
-  })
   try {
     const refreshed = await refreshAccountQQAuthorization(account)
     return {
