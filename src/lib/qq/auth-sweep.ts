@@ -36,6 +36,12 @@ export async function sweepQQAuthorizations(): Promise<QQAuthorizationSweepResul
     }
   }
 
-  logServiceEvent('qq_auth_sweep_completed', { ...result }, result.failed ? 'error' : 'info')
+  if (result.expired > 0 || result.failed > 0 || healthySweepLogsEnabled()) {
+    logServiceEvent('qq_auth_sweep_completed', { ...result }, result.failed ? 'error' : 'info')
+  }
   return result
+}
+
+function healthySweepLogsEnabled(): boolean {
+  return ['1', 'true', 'on', 'yes'].includes(process.env.X_MUSIC_QQ_AUTH_SWEEP_LOG_HEALTHY?.trim().toLowerCase() ?? '')
 }
