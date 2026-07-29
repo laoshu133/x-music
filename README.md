@@ -57,6 +57,9 @@ Compose starts three services:
 
 XMusic uses the internal player URL `http://ampcast:8000/` by default, so the
 embedded player no longer depends on the public `https://ampcast.app/` service.
+The same-origin `/@player` proxy is available without an XMusic session. The
+`/@player/auto-init` entry applies the current account configuration when a
+session exists, or redirects to the regular player for manual setup otherwise.
 You can still open the player directly from the host at:
 
 ```text
