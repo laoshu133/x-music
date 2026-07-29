@@ -276,6 +276,76 @@ test('catch-all route handles apple touch icon probes locally', async () => {
   }
 })
 
+test('catch-all route proxies ampcast player and manifest without an XMusic session', async () => {
+  const route = await import('@/app/[...path]/route')
+  const originalFetch = globalThis.fetch
+  clearQQLoginCookie()
+  try {
+    let upstreamRequests = 0
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      upstreamRequests += 1
+      if (!new URL(url.toString()).pathname.endsWith('/manifest.json')) {
+        return new Response('<main>ampcast player</main>', {
+          headers: { 'content-type': 'text/html' },
+        })
+      }
+      return Response.json({ name: 'ampcast', start_url: '/' }, {
+        headers: { 'content-type': 'application/manifest+json' },
+      })
+    }) as typeof fetch
+
+    const playerResponse = await route.GET(new Request('http://local/@player'), {
+      params: Promise.resolve({ path: ['@player'] }),
+    })
+    const manifestResponse = await route.GET(new Request('http://local/@player/manifest.json'), {
+      params: Promise.resolve({ path: ['@player', 'manifest.json'] }),
+    })
+
+    assert.equal(playerResponse.status, 200)
+    assert.match(await playerResponse.text(), /ampcast player/)
+    assert.equal(manifestResponse.status, 200)
+    assert.equal(upstreamRequests, 2)
+    assert.equal((await manifestResponse.json()).start_url, '/@player/auto-init')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('ampcast auto-init redirects anonymous users to the regular player', async () => {
+  const route = await import('@/app/[...path]/route')
+  clearQQLoginCookie()
+
+  const response = await route.GET(new Request('http://local/@player/auto-init'), {
+    params: Promise.resolve({ path: ['@player', 'auto-init'] }),
+  })
+
+  assert.equal(response.status, 302)
+  assert.equal(response.headers.get('location'), 'http://local/@player')
+  assert.equal(response.headers.get('cache-control'), 'no-store')
+})
+
+test('ampcast auto-init keeps automatic XMusic configuration for signed-in users', async () => {
+  const route = await import('@/app/[...path]/route')
+  db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('555779')
+  try {
+    saveQQLoginCookie('uin=o555779; qm_keyst=test-key')
+
+    const response = await route.GET(new Request('http://local/@player/auto-init'), {
+      params: Promise.resolve({ path: ['@player', 'auto-init'] }),
+    })
+    const body = await response.text()
+
+    assert.equal(response.status, 200)
+    assert.match(response.headers.get('content-type') ?? '', /text\/html/)
+    assert.match(body, /"userName":"QQ555779"/)
+    assert.match(body, /localStorage\.setItem\(prefix \+ 'token', config\.token\)/)
+    assert.match(body, /window\.location\.replace\('\/@player\/'\)/)
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('555779')
+    clearQQLoginCookie()
+  }
+})
+
 test('test compatibility QQ login creates a user-scoped Emby gateway account', () => {
   db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('123456')
   try {

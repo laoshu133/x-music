@@ -3,7 +3,6 @@ import { embyCorsPreflight } from '@/lib/emby/cors'
 import { isReservedManagementPath, normalizeEmbyPath } from '@/lib/emby/paths'
 import { getCurrentAccount } from '@/lib/session'
 import { ampcastAutoConnectConfig, ampcastAutoInitHtml, playerPathFromEmbyPath, proxyToAmpcast } from '@/lib/ampcast/proxy'
-import { isAuthResponse, requireUserAccount } from '@/lib/api-auth'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -19,11 +18,7 @@ async function handle(request: Request, context: RouteContext): Promise<Response
   if (isAmpcastAutoInitPath(embyPath)) return ampcastAutoInitResponse(request)
 
   const playerPath = playerPathFromEmbyPath(embyPath)
-  if (playerPath) {
-    const account = await requireUserAccount()
-    if (isAuthResponse(account)) return account
-    return proxyToAmpcast(request, playerPath)
-  }
+  if (playerPath) return proxyToAmpcast(request, playerPath)
 
   if (isReservedManagementPath(embyPath)) {
     return Response.json({ error: 'Reserved XMusic path cannot be proxied as Emby API' }, { status: 404 })
@@ -91,44 +86,23 @@ async function ampcastAutoInitResponse(request: Request): Promise<Response> {
     return Response.json({ error: 'Method not allowed' }, { status: 405 })
   }
 
-  const authorized = await requireUserAccount()
-  if (isAuthResponse(authorized)) return authorized
-  const account = authorized
-  if (!account) {
-    return new Response(`<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>需要登录 | XMusic</title>
-  <style>
-    body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f7f8fa;color:#15181d;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-    main{width:min(520px,calc(100vw - 40px));text-align:left}
-    h1{margin:0 0 12px;font-size:26px}
-    p{margin:0 0 20px;color:#59616d;line-height:1.6}
-    a{color:#0f62fe;text-decoration:none;font-weight:600}
-  </style>
-</head>
-<body>
-  <main>
-    <h1>需要登录</h1>
-    <p>请先登录 XMusic，然后再打开内嵌播放器。</p>
-    <a href="/">返回 XMusic 首页</a>
-  </main>
-</body>
-</html>`, {
-      status: 401,
-      headers: {
-        'content-type': 'text/html; charset=utf-8',
-        'cache-control': 'no-store',
-      },
-    })
-  }
+  const account = await getCurrentAccount({ verifyQQ: false })
+  if (!account) return ampcastPlayerRedirect(request)
 
   const origin = new URL(request.url).origin
   return new Response(ampcastAutoInitHtml(ampcastAutoConnectConfig(account, origin)), {
     headers: {
       'content-type': 'text/html; charset=utf-8',
+      'cache-control': 'no-store',
+    },
+  })
+}
+
+function ampcastPlayerRedirect(request: Request): Response {
+  return new Response(null, {
+    status: 302,
+    headers: {
+      location: new URL('/@player', request.url).toString(),
       'cache-control': 'no-store',
     },
   })
