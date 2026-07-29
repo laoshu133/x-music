@@ -102,7 +102,7 @@ function ampcastPlayerRedirect(request: Request): Response {
   return new Response(null, {
     status: 302,
     headers: {
-      location: new URL('/@player', request.url).toString(),
+      location: '/@player',
       'cache-control': 'no-store',
     },
   })

@@ -320,7 +320,7 @@ test('ampcast auto-init redirects anonymous users to the regular player', async 
   })
 
   assert.equal(response.status, 302)
-  assert.equal(response.headers.get('location'), 'http://local/@player')
+  assert.equal(response.headers.get('location'), '/@player')
   assert.equal(response.headers.get('cache-control'), 'no-store')
 })
 
@@ -339,7 +339,7 @@ test('ampcast auto-init keeps automatic XMusic configuration for signed-in users
     assert.match(response.headers.get('content-type') ?? '', /text\/html/)
     assert.match(body, /"userName":"QQ555779"/)
     assert.match(body, /localStorage\.setItem\(prefix \+ 'token', config\.token\)/)
-    assert.match(body, /window\.location\.replace\('\/@player\/'\)/)
+    assert.match(body, /window\.location\.replace\('\/@player'\)/)
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('555779')
     clearQQLoginCookie()
@@ -656,7 +656,7 @@ test('ampcast auto-init html stores local config and redirects to embedded playe
   assert.match(body, /"subsonic":true/)
   assert.match(body, /localStorage\.setItem\('ampcast\/services\/hidden', JSON\.stringify\(hiddenServices\)\)/)
   assert.match(body, /localStorage\.setItem\('ampcast\/sources\/selectedId', config\.service\)/)
-  assert.match(body, /requestAnimationFrame\(\(\) => window\.location\.replace\('\/@player\/'\)\)/)
+  assert.match(body, /requestAnimationFrame\(\(\) => window\.location\.replace\('\/@player'\)\)/)
 })
 
 test('ampcast auto-init credentials pass startup validation requests', async () => {
@@ -746,7 +746,7 @@ test('ampcast proxy rewrites manifest startup into the player scope', async () =
 
     assert.equal(manifest.id, '/')
     assert.equal(manifest.start_url, '/@player/auto-init')
-    assert.equal(manifest.scope, '/@player/')
+    assert.equal(manifest.scope, '/@player')
     assert.equal(manifest.icons?.[0]?.src, '/@player/icon-192.png')
     assert.equal(manifest.shortcuts?.[0]?.url, '/@player/library')
     assert.equal(manifest.shortcuts?.[0]?.icons?.[0]?.src, '/@player/icons/library.png')

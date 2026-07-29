@@ -205,7 +205,7 @@ export function ampcastAutoInitHtml(config: AmpcastAutoConnectConfig): string {
       localStorage.setItem('ampcast/services/hidden', JSON.stringify(hiddenServices));
       localStorage.setItem('ampcast/sources/selectedId', config.service);
       localStorage.setItem('ampcast/x-music/autoconnect-applied', now);
-      requestAnimationFrame(() => window.location.replace('/@player/'));
+      requestAnimationFrame(() => window.location.replace('/@player'));
     })();
   </script>
 </body>
@@ -243,7 +243,7 @@ function rewriteAmpcastManifest(value: string): string {
     // Preserve the implicit identity of Ampcast's previous start_url so existing installs can update in place.
     manifest.id = '/'
     manifest.start_url = '/@player/auto-init'
-    manifest.scope = '/@player/'
+    manifest.scope = '/@player'
     rewriteManifestImageSources(manifest.icons)
     rewriteManifestImageSources(manifest.screenshots)
     if (Array.isArray(manifest.shortcuts)) {
