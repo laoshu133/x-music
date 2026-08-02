@@ -603,7 +603,7 @@ function assertRecommendationsBusinessSuccess(data: QQRecommendationsResponse): 
 }
 
 function normalizeLimit(value?: number): number {
-  if (!Number.isFinite(value) || !value) return 20
+  if (!Number.isFinite(value) || !value) return 30
   return Math.min(Math.max(Math.trunc(value), 1), 100)
 }
 

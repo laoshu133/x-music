@@ -172,7 +172,7 @@ test('QQ guess recommendations dynamically aggregate fixed five-song batches', a
   assert.equal(new Set(result.list.map(song => song.songmid)).size, 12)
 })
 
-test('recommendations route caps each guess page at 20 songs', async () => {
+test('recommendations route caps each guess page at 30 songs', async () => {
   saveQQLoginCookie('uin=o123462; qm_keyst=test-key')
   const route = await import('@/app/api/recommendations/route')
   let requests = 0
@@ -202,8 +202,8 @@ test('recommendations route caps each guess page at 20 songs', async () => {
   const response = await route.GET(new Request('http://local/api/recommendations?type=guess&limit=100'))
   assert.equal(response.status, 200)
   const payload = await response.json()
-  assert.equal(payload.list.length, 20)
-  assert.equal(requests, 4)
+  assert.equal(payload.list.length, 30)
+  assert.equal(requests, 6)
 })
 
 test('recommendations route keeps QQ radio credential errors scoped to guess recommendations', async () => {

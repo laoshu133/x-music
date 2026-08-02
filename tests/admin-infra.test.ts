@@ -4185,13 +4185,13 @@ test('local emby recommendation playlists cap each page and reuse the per-user p
 
     assert.equal(expandedFirstPage.status, 200)
     const expandedFirstPagePayload = await expandedFirstPage.json()
-    assert.equal(expandedFirstPagePayload.Items.length, 20)
+    assert.equal(expandedFirstPagePayload.Items.length, 30)
     assert.equal(expandedFirstPagePayload.TotalRecordCount, 999)
-    assert.equal(recommendationLimits.length, 5)
+    assert.equal(recommendationLimits.length, 7)
     assert.ok(recommendationLimits.every(limit => limit === 5))
 
     const secondPageRequest = () => dispatchEmbyRequest(
-      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio%2CMusicVideo&ParentId=${encodeURIComponent(guessId)}&Limit=20&StartIndex=20`, {
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio%2CMusicVideo&ParentId=${encodeURIComponent(guessId)}&Limit=30&StartIndex=30`, {
         headers: {
           'X-Emby-Authorization': `MediaBrowser Client="ampcast", Version="0.9.28", Device="PC", Token="${authPayload.AccessToken}"`,
         },
@@ -4201,14 +4201,14 @@ test('local emby recommendation playlists cap each page and reuse the per-user p
     const secondPage = await secondPageRequest()
     assert.equal(secondPage.status, 200)
     const secondPagePayload = await secondPage.json()
-    assert.equal(secondPagePayload.Items.length, 20)
+    assert.equal(secondPagePayload.Items.length, 30)
     assert.equal(secondPagePayload.TotalRecordCount, 999)
-    assert.equal(recommendationLimits.length, 9)
+    assert.equal(recommendationLimits.length, 13)
 
     const repeatedSecondPage = await secondPageRequest()
     assert.equal(repeatedSecondPage.status, 200)
-    assert.equal((await repeatedSecondPage.json()).Items.length, 20)
-    assert.equal(recommendationLimits.length, 9)
+    assert.equal((await repeatedSecondPage.json()).Items.length, 30)
+    assert.equal(recommendationLimits.length, 13)
 
     const jumpedPage = await dispatchEmbyRequest(
       new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio%2CMusicVideo&ParentId=${encodeURIComponent(guessId)}&Limit=1000&StartIndex=300`, {
@@ -4219,8 +4219,8 @@ test('local emby recommendation playlists cap each page and reuse the per-user p
       stripOptionalEmbyPrefix(`/emby/Users/${authPayload.User.Id}/Items`),
     )
     assert.equal(jumpedPage.status, 200)
-    assert.equal((await jumpedPage.json()).Items.length, 20)
-    assert.equal(recommendationLimits.length, 13)
+    assert.equal((await jumpedPage.json()).Items.length, 30)
+    assert.equal(recommendationLimits.length, 19)
 
     const pageBeyondInitialHint = await dispatchEmbyRequest(
       new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio%2CMusicVideo&ParentId=${encodeURIComponent(guessId)}&Limit=30&StartIndex=990`, {
@@ -4232,13 +4232,13 @@ test('local emby recommendation playlists cap each page and reuse the per-user p
     )
     assert.equal(pageBeyondInitialHint.status, 200)
     const pageBeyondInitialHintPayload = await pageBeyondInitialHint.json()
-    assert.equal(pageBeyondInitialHintPayload.Items.length, 20)
-    assert.equal(pageBeyondInitialHintPayload.TotalRecordCount, 1030)
-    assert.equal(recommendationLimits.length, 17)
+    assert.equal(pageBeyondInitialHintPayload.Items.length, 30)
+    assert.equal(pageBeyondInitialHintPayload.TotalRecordCount, 1050)
+    assert.equal(recommendationLimits.length, 25)
 
     recommendationRequestCode = 1000
     const unavailableRecommendationAuthorization = await dispatchEmbyRequest(
-      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio%2CMusicVideo&ParentId=${encodeURIComponent(guessId)}&Limit=20&StartIndex=600`, {
+      new Request(`http://local/emby/Users/${authPayload.User.Id}/Items?IncludeItemTypes=Audio%2CMusicVideo&ParentId=${encodeURIComponent(guessId)}&Limit=30&StartIndex=600`, {
         headers: {
           'X-Emby-Authorization': `MediaBrowser Client="ampcast", Version="0.9.28", Device="PC", Token="${authPayload.AccessToken}"`,
         },
@@ -4248,7 +4248,7 @@ test('local emby recommendation playlists cap each page and reuse the per-user p
     assert.equal(unavailableRecommendationAuthorization.status, 428)
     assert.equal((await unavailableRecommendationAuthorization.json()).code, 'QQ_RECOMMENDATION_AUTH_REQUIRED')
     assert.equal(getAccountByQQ('999018')?.qqAuthState, 'active')
-    assert.equal(recommendationLimits.length, 19)
+    assert.equal(recommendationLimits.length, 27)
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999018')
     clearQQLoginCookie()
