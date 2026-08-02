@@ -58,14 +58,7 @@ export async function requireActiveQQAccount<T extends AccountRecord | undefined
 function handleRefreshFailure(account: AccountRecord, error: unknown): AccountRecord {
   const message = error instanceof Error ? error.message : String(error)
   if (isQQAuthExpiredError(error)) {
-    markAccountQQAuthExpired(account.userId, message)
-    logServiceEvent('qq_auth_marked_expired', {
-      userId: account.userId,
-      error: message,
-      status: error instanceof QQMusicError ? error.status : undefined,
-      payload: summarizeQQAuthErrorPayload(error),
-    }, 'error')
-    throw new QQAuthExpiredError(message)
+    throw markQQAccountAuthorizationExpired(account, error)
   }
 
   logServiceEvent('qq_auth_refresh_degraded', {
@@ -75,6 +68,22 @@ function handleRefreshFailure(account: AccountRecord, error: unknown): AccountRe
     payload: summarizeQQAuthErrorPayload(error),
   }, 'error')
   return getAccountByUserId(account.userId) ?? account
+}
+
+export function markQQAccountAuthorizationExpired(
+  account: AccountRecord,
+  error: unknown,
+): QQAuthExpiredError {
+  const message = error instanceof Error ? error.message : String(error)
+  lastExpiredRecheckByUser.set(account.userId, Date.now())
+  markAccountQQAuthExpired(account.userId, message)
+  logServiceEvent('qq_auth_marked_expired', {
+    userId: account.userId,
+    error: message,
+    status: error instanceof QQMusicError ? error.status : undefined,
+    payload: summarizeQQAuthErrorPayload(error),
+  }, 'error')
+  return error instanceof QQAuthExpiredError ? error : new QQAuthExpiredError(message)
 }
 
 function shouldRecheckExpiredAccount(account: AccountRecord, options: { force?: boolean }): boolean {
@@ -145,6 +154,8 @@ function summarizeQQAuthErrorPayload(error: unknown): unknown {
   return {
     code: payload.code,
     subcode: payload.subcode,
+    upstreamCode: payload.upstreamCode,
+    upstreamRequestCode: payload.upstreamRequestCode,
     message: firstString(payload.message, payload.msg, payload.error, payload.errMsg, payload.desc),
   }
 }

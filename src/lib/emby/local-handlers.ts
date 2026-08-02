@@ -13,6 +13,7 @@ import {
   getQQLoginState,
   getQQLyrics,
   getQQRecommendations,
+  getQQRecommendationsForAccount,
   getQQSongDetail,
   getQQUserPlaylists,
   searchQQMusic,
@@ -93,7 +94,7 @@ const QQ_FAVORITES_MAX_CONCURRENCY = 4
 const QQ_FAVORITES_DEFAULT_TOTAL = 999
 const MAX_EMBY_SEARCH_VIRTUAL_ITEMS = 50
 const VIRTUAL_RECOMMENDATION_PLAYLIST_PLAY_COUNT = '999999999'
-const QQ_RECOMMENDATION_PAGE_LIMIT = 30
+const QQ_RECOMMENDATION_PAGE_LIMIT = 20
 const QQ_RECOMMENDATION_INITIAL_TOTAL_HINT = 999
 const QQ_RECOMMENDATION_POOL_TTL_MS = 60_000
 const PINNED_RECOMMENDATION_COUNT = 2
@@ -2689,6 +2690,9 @@ async function getQQRecommendationsPage(request: Request, page: PageParams): Pro
       cached: pool.songs.length,
       error: error instanceof Error ? error.message : String(error),
     }, 'error')
+    if (recommendationPoolResultWindow(pool, page.startIndex, limit, windowKey).length === 0) {
+      throw error
+    }
   } finally {
     if (pool.pending === pending) pool.pending = undefined
   }
@@ -2732,10 +2736,10 @@ async function loadQQRecommendationSongs(
   existingSongs: MusicInfo[],
 ): Promise<MusicInfo[]> {
   if (limit <= 0) return []
-  const result = await getQQRecommendations({
-    cookie: qqCookieForRequest(request),
-    limit,
-  })
+  const account = authorizedLocalAccount(request)
+  const result = account
+    ? await getQQRecommendationsForAccount(account, { limit })
+    : await getQQRecommendations({ cookie: qqCookieForRequest(request), limit })
   const existing = new Set(existingSongs.map(song => `${song.source}:${song.songmid}`))
   const additions = result.list.filter(song => !existing.has(`${song.source}:${song.songmid}`))
   return additions.slice(0, limit)

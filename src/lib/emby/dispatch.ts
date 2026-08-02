@@ -6,6 +6,8 @@ import { logCompletedRequest, logFailedRequest } from '@/lib/request-log'
 import { markAccountActive } from '@/lib/db/accounts'
 import { findAccountByAccessToken, readEmbyAccessToken } from './tokens'
 import { QQAuthExpiredError, qqAuthExpiredResponse, requireActiveQQAccount } from '@/lib/qq/auth-state'
+import { QQRecommendationAuthError } from '@/lib/qq/recommendations'
+import { qqMusicErrorResponse } from '@/lib/qq/http'
 
 export async function dispatchEmbyRequest(request: Request, embyPath: string): Promise<Response> {
   const startedAt = Date.now()
@@ -26,6 +28,14 @@ export async function dispatchEmbyRequest(request: Request, embyPath: string): P
     ))
     return logCompletedRequest(request, response, startedAt, { embyPath })
   } catch (error) {
+    if (error instanceof QQAuthExpiredError) {
+      const response = withEmbyCors(qqAuthExpiredResponse(error))
+      return logCompletedRequest(request, response, startedAt, { embyPath })
+    }
+    if (error instanceof QQRecommendationAuthError) {
+      const response = withEmbyCors(qqMusicErrorResponse(error))
+      return logCompletedRequest(request, response, startedAt, { embyPath })
+    }
     logFailedRequest(request, startedAt, error, { embyPath })
     return withEmbyCors(Response.json({
       error: '系统出错，请稍后重试。',

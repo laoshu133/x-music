@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { db } from '@/lib/db'
+import { getAccountByQQ } from '@/lib/db/accounts'
 import { clearQQLoginCookie, saveQQLoginCookie } from '@/lib/db/qq-session'
 import { getQQRecommendations } from '@/lib/qq/recommendations'
 
@@ -140,7 +142,7 @@ test('QQ guess recommendations dynamically aggregate fixed five-song batches', a
   assert.equal(new Set(result.list.map(song => song.songmid)).size, 12)
 })
 
-test('recommendations route caps each guess page at 30 songs', async () => {
+test('recommendations route caps each guess page at 20 songs', async () => {
   saveQQLoginCookie('uin=o123462; qm_keyst=test-key')
   const route = await import('@/app/api/recommendations/route')
   let requests = 0
@@ -168,8 +170,127 @@ test('recommendations route caps each guess page at 30 songs', async () => {
   const response = await route.GET(new Request('http://local/api/recommendations?type=guess&limit=100'))
   assert.equal(response.status, 200)
   const payload = await response.json()
-  assert.equal(payload.list.length, 30)
-  assert.equal(requests, 6)
+  assert.equal(payload.list.length, 20)
+  assert.equal(requests, 4)
+})
+
+test('recommendations route keeps QQ radio credential errors scoped to guess recommendations', async () => {
+  const qqUin = '123463'
+  try {
+    saveQQLoginCookie(`uin=o${qqUin}; qm_keyst=test-key`)
+    const route = await import('@/app/api/recommendations/route')
+    let radioRequests = 0
+    let refreshRequests = 0
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'u6.y.qq.com') {
+        refreshRequests += 1
+        return Response.json({
+          code: 0,
+          'music.login.LoginServer.Login': {
+            code: 1000,
+            data: {},
+          },
+        })
+      }
+      radioRequests += 1
+      return Response.json({
+        code: 0,
+        req: { code: 1000, data: { tracks: [] } },
+      })
+    }) as typeof fetch
+
+    const response = await route.GET(new Request('http://local/api/recommendations?type=guess'))
+    assert.equal(response.status, 428)
+    assert.equal((await response.json()).code, 'QQ_RECOMMENDATION_AUTH_REQUIRED')
+    assert.equal(getAccountByQQ(qqUin)?.qqAuthState, 'active')
+    assert.equal(radioRequests, 2)
+    assert.equal(refreshRequests, 1)
+
+    const repeated = await route.GET(new Request('http://local/api/recommendations?type=guess'))
+    assert.equal(repeated.status, 428)
+    assert.equal(radioRequests, 2)
+    assert.equal(refreshRequests, 1)
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run(qqUin)
+  }
+})
+
+test('recommendations route retries QQ radio after refreshing its MusicKey', async () => {
+  const qqUin = '123464'
+  try {
+    saveQQLoginCookie(`uin=o${qqUin}; qm_keyst=old-key; qqmusic_key=old-key`)
+    const route = await import('@/app/api/recommendations/route')
+    let radioRequests = 0
+    let refreshRequests = 0
+    const radioCookies: string[] = []
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(url, init)
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'u6.y.qq.com') {
+        refreshRequests += 1
+        return Response.json({
+          code: 0,
+          'music.login.LoginServer.Login': {
+            code: 1000,
+            data: { musickey: 'next-key' },
+          },
+        })
+      }
+
+      radioRequests += 1
+      radioCookies.push(request.headers.get('cookie') ?? '')
+      if (radioRequests === 1) {
+        return Response.json({ code: 0, req: { code: 1000, data: { tracks: [] } } })
+      }
+      return Response.json({
+        code: 0,
+        req: {
+          code: 0,
+          data: {
+            tracks: Array.from({ length: 5 }, (_, index) => ({
+              id: 2600 + index,
+              mid: `refreshed-guess-${index}`,
+              title: `Refreshed Guess ${index}`,
+            })),
+          },
+        },
+      })
+    }) as typeof fetch
+
+    const response = await route.GET(new Request('http://local/api/recommendations?type=guess&limit=5'))
+    assert.equal(response.status, 200)
+    assert.equal((await response.json()).list.length, 5)
+    assert.equal(radioRequests, 2)
+    assert.equal(refreshRequests, 1)
+    assert.match(radioCookies[1], /qm_keyst=next-key/)
+    assert.equal(getAccountByQQ(qqUin)?.qqmusicKey, 'next-key')
+    assert.equal(getAccountByQQ(qqUin)?.qqAuthState, 'active')
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run(qqUin)
+  }
+})
+
+test('recommendations route expires global QQ auth only when MusicKey refresh returns 401', async () => {
+  const qqUin = '123465'
+  try {
+    saveQQLoginCookie(`uin=o${qqUin}; qm_keyst=old-key; qqmusic_key=old-key`)
+    const route = await import('@/app/api/recommendations/route')
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'u6.y.qq.com') {
+        return new Response(null, { status: 401 })
+      }
+      return Response.json({ code: 0, req: { code: 1000, data: { tracks: [] } } })
+    }) as typeof fetch
+
+    const response = await route.GET(new Request('http://local/api/recommendations?type=guess&limit=5'))
+    assert.equal(response.status, 428)
+    assert.equal((await response.json()).code, 'QQ_AUTH_REQUIRED')
+    assert.equal(getAccountByQQ(qqUin)?.qqAuthState, 'expired')
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run(qqUin)
+  }
 })
 
 test('QQ guess recommendations stop when a batch contains no new songs', async () => {

@@ -8,7 +8,7 @@ export { getQQLyrics, qqLegacyLyricsUrl, qqPlayLyricInfoCacheBody, qqPlayLyricIn
 export { pullRemoteFavorites, syncPendingFavorites } from './favorite-sync'
 export { getQQPlayHistory, syncQQPlayHistory, syncQQPlayHistoryBestEffort } from './history'
 export { pullQQPlayHistory, pushLocalPlayHistoryToQQ } from './history-sync'
-export { getQQDailyRecommendations, getQQRecommendations } from './recommendations'
+export { getQQDailyRecommendations, getQQRecommendations, getQQRecommendationsForAccount, QQRecommendationAuthError } from './recommendations'
 export { checkQQLoginQr, exchangeQQMusicLoginCode, getQQLoginQr, getQQUserAvatar, getQQUserPlaylists, getQQUserProfile } from './user'
 export { refreshAccountQQAuthorizationIfNeeded, shouldRefreshAccountQQAuthorization } from './auth-refresh'
 export { refreshQQMusickey } from './session-refresh'

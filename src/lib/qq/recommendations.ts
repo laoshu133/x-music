@@ -1,6 +1,9 @@
 import type { MusicInfo, PagedResult } from '@/lib/types'
+import type { AccountRecord } from '@/lib/db/accounts'
 import { logServiceEvent } from '@/lib/request-log'
 import { requireQQLoginState, type QQLoginState } from './account'
+import { markQQAccountAuthorizationExpired, QQAuthExpiredError } from './auth-state'
+import { refreshAccountQQAuthorization } from './auth-refresh'
 import { QQMusicError, qqSignedPost } from './http'
 import { compactSongs, type QQSong } from './mapper'
 
@@ -57,9 +60,29 @@ export type RecommendationResult = PagedResult<MusicInfo> & {
 
 const QQ_RADIO_BATCH_SIZE = 5
 const QQ_RADIO_EXTRA_BATCH_ATTEMPTS = 2
+const QQ_RADIO_AUTH_EXPIRED_CODES = new Set([1000, 104400, 104401])
+const QQ_RADIO_AUTH_RETRY_COOLDOWN_MS = 10 * 60 * 1000
 const DEFAULT_QQ_RADIO_BATCH_TIMEOUT_MS = 4_000
 const DEFAULT_QQ_RADIO_TOTAL_TIMEOUT_MS = 12_000
 const DEFAULT_QQ_RADIO_SLOW_LOG_MS = 5_000
+
+type QQRadioAuthFailure = {
+  cookie: string
+  failedAt: number
+}
+
+const qqRadioAuthFailures = new Map<string, QQRadioAuthFailure>()
+
+export class QQRecommendationAuthError extends QQMusicError {
+  constructor(payload: Record<string, unknown> = {}) {
+    super('QQ 猜你喜欢暂时无法验证当前授权。', 428, {
+      ...payload,
+      code: 'QQ_RECOMMENDATION_AUTH_REQUIRED',
+      actionable: '请在设置中刷新或重新绑定 QQ 音乐授权；其他 QQ 音乐功能不受影响。',
+    })
+    this.name = 'QQRecommendationAuthError'
+  }
+}
 
 function common(login: QQLoginState) {
   return {
@@ -156,7 +179,7 @@ export async function getQQRecommendations(input: {
       }
       throw error
     }
-    assertBusinessSuccess(data, 'QQ recommendations request failed')
+    assertRecommendationsBusinessSuccess(data)
 
     let added = 0
     for (const song of compactSongs(extractSongs(data))) {
@@ -194,6 +217,71 @@ export async function getQQRecommendations(input: {
   }
 
   return paged(list.slice(0, limit), limit, 'qq-radio:99')
+}
+
+export async function getQQRecommendationsForAccount(
+  account: AccountRecord,
+  input: { limit?: number } = {},
+): Promise<RecommendationResult> {
+  const recentFailure = qqRadioAuthFailures.get(account.userId)
+  if (recentFailure?.cookie === account.qqCookie
+    && Date.now() - recentFailure.failedAt < QQ_RADIO_AUTH_RETRY_COOLDOWN_MS) {
+    throw new QQRecommendationAuthError({ retrySuppressed: true })
+  }
+  if (recentFailure) qqRadioAuthFailures.delete(account.userId)
+
+  try {
+    const result = await getQQRecommendations({ cookie: account.qqCookie, limit: input.limit })
+    qqRadioAuthFailures.delete(account.userId)
+    return result
+  } catch (error) {
+    if (!(error instanceof QQRecommendationAuthError)) throw error
+  }
+
+  let refreshed: Awaited<ReturnType<typeof refreshAccountQQAuthorization>>
+  try {
+    refreshed = await refreshAccountQQAuthorization(account)
+  } catch (error) {
+    if (isDefinitiveRefreshAuthFailure(error)) {
+      throw markQQAccountAuthorizationExpired(account, error)
+    }
+    rememberQQRadioAuthFailure(account.userId, account.qqCookie)
+    logServiceEvent('qq_recommendation_auth_refresh_failed', {
+      userId: account.userId,
+      error: error instanceof Error ? error.message : String(error),
+      status: error instanceof QQMusicError ? error.status : undefined,
+    }, 'error')
+    throw new QQRecommendationAuthError({ refreshFailed: true })
+  }
+
+  try {
+    const result = await getQQRecommendations({
+      cookie: refreshed.account.qqCookie,
+      limit: input.limit,
+    })
+    qqRadioAuthFailures.delete(account.userId)
+    return result
+  } catch (error) {
+    if (error instanceof QQRecommendationAuthError) {
+      rememberQQRadioAuthFailure(account.userId, refreshed.account.qqCookie)
+      logServiceEvent('qq_recommendation_auth_retry_failed', {
+        userId: account.userId,
+        refreshChanged: refreshed.result.changed,
+        keyRefreshed: refreshed.result.keyRefreshed,
+        tokenRefreshed: refreshed.result.tokenRefreshed,
+      }, 'error')
+    }
+    throw error
+  }
+}
+
+function rememberQQRadioAuthFailure(userId: string, cookie: string): void {
+  qqRadioAuthFailures.set(userId, { cookie, failedAt: Date.now() })
+}
+
+function isDefinitiveRefreshAuthFailure(error: unknown): boolean {
+  return error instanceof QQAuthExpiredError
+    || (error instanceof QQMusicError && error.status === 401)
 }
 
 function recommendationsTimeout(requested: number, collected: number, batches: number): QQMusicError {
@@ -304,8 +392,19 @@ function assertBusinessSuccess(
   })
 }
 
+function assertRecommendationsBusinessSuccess(data: QQRecommendationsResponse): void {
+  const requestCode = data.req?.code
+  if (requestCode !== undefined && QQ_RADIO_AUTH_EXPIRED_CODES.has(requestCode)) {
+    throw new QQRecommendationAuthError({
+      upstreamCode: data.code,
+      upstreamRequestCode: requestCode,
+    })
+  }
+  assertBusinessSuccess(data, 'QQ recommendations request failed')
+}
+
 function normalizeLimit(value?: number): number {
-  if (!Number.isFinite(value) || !value) return 30
+  if (!Number.isFinite(value) || !value) return 20
   return Math.min(Math.max(Math.trunc(value), 1), 100)
 }
 
