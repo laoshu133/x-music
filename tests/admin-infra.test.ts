@@ -73,6 +73,16 @@ function rememberTestVirtualSong(song: MusicInfo): void {
   `).run(`virtual.song.${song.songmid}`, JSON.stringify({ song }))
 }
 
+function qqRadioSessionResponse(): Response {
+  return Response.json({
+    code: 0,
+    req: {
+      code: 0,
+      data: { session: { uid: 'device-session-uid', sid: 'device-session-sid' } },
+    },
+  })
+}
+
 test('settings store persists typed values and merges effective defaults', () => {
   deleteSetting('qq.enabled')
   assert.equal(getSetting('qq.enabled'), undefined)
@@ -4107,6 +4117,7 @@ test('local emby recommendation playlists cap each page and reuse the per-user p
       const requestUrl = new URL(String(url))
       if (requestUrl.hostname === 'u.y.qq.com') {
         const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {}
+        if (body.req?.module === 'music.getSession.session') return qqRadioSessionResponse()
         if (body.req?.module === 'music.radioProxy.MbTrackRadioSvr') {
           const pageSize = Number(body.req.param.num ?? 0)
           recommendationLimits.push(pageSize)
@@ -4237,7 +4248,7 @@ test('local emby recommendation playlists cap each page and reuse the per-user p
     assert.equal(unavailableRecommendationAuthorization.status, 428)
     assert.equal((await unavailableRecommendationAuthorization.json()).code, 'QQ_RECOMMENDATION_AUTH_REQUIRED')
     assert.equal(getAccountByQQ('999018')?.qqAuthState, 'active')
-    assert.equal(recommendationLimits.length, 18)
+    assert.equal(recommendationLimits.length, 19)
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999018')
     clearQQLoginCookie()
@@ -4278,6 +4289,7 @@ test('local emby recommendation playlists filter recently unavailable songs', as
       const requestUrl = new URL(String(url))
       if (requestUrl.hostname === 'u.y.qq.com') {
         const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {}
+        if (body.req?.module === 'music.getSession.session') return qqRadioSessionResponse()
         if (body.req?.module === 'music.radioProxy.MbTrackRadioSvr') {
           return Response.json({
             code: 0,

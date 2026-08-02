@@ -32,13 +32,37 @@ POST https://u.y.qq.com/cgi-bin/musics.fcg?sign=...
 Cookie: 当前用户的 QQ Cookie
 ```
 
+### QQ 移动设备会话
+
+QQ iOS 抓包和开发环境真实授权复验表明，猜你喜欢虽然仍使用 `radioProxy`，但不能只携带 Web Cookie 直接请求。客户端会先建立一个短期移动设备会话：
+
+```text
+module: music.getSession.session
+method: GetSession
+param: { uid: "", vkey: 0, caller: 0 }
+```
+
+请求使用 Android 客户端上下文，并从当前用户 Cookie 中读取 `qm_keyst/qqmusic_key` 作为 `comm.authst`。响应中的 `req.data.session.uid` 和 `sid` 是 QQ 协议设备会话标识，不是 XMusic `user_id`，也不是 QQ UIN；它们只能用于随后发往 QQ 的协议请求，不能进入业务数据所有权字段。
+
+设备会话按当前 QQ UIN 与 MusicKey 指纹隔离，在进程内缓存 23 小时。设备标识和 `uid/sid` 不写入数据库；服务重启、MusicKey 变化或 QQ 返回会话错误时重新获取。这样既避免每个 5 首批次都多一次握手，也不会在不同用户之间复用登录上下文。
+
 ### QQ 猜你喜欢
 
 ```text
 module: music.radioProxy.MbTrackRadioSvr
 method: get_radio_track
-param: { id: 99, num, from: 0, scene: 0, song_ids: [] }
+param: {
+  id: 99,
+  num,
+  from: 0,
+  scene: 0,
+  song_ids: [],
+  should_count_down: 0,
+  ext: { 播放器前后台状态、最近播放状态等 }
+}
 ```
+
+请求 `comm` 使用移动端 `ct=11/cv=14090008`，携带当前 QQ 的 `authst` 以及上一步取得的 `uid/sid`。旧实现使用 Web `ct=24/cv=4747474` 且没有设备会话，线上会稳定返回 `req.code=1000` 和空 `tracks`；该现象不是整份 QQ Cookie 只有猜你喜欢一项过期。
 
 歌曲位于 `req.data.tracks`。旧接口兼容字段 `Tracks`、`songlist`、`v_song` 和 `list` 可以保留解析，但 `tracks` 是当前真实响应的主要字段。
 
@@ -48,7 +72,7 @@ param: { id: 99, num, from: 0, scene: 0, song_ids: [] }
 
 Emby 推荐结果使用按 `user_id` 隔离的 60 秒内存池。连续翻页复用已有结果，每次请求最多新增 20 首；直接跳到较大 `StartIndex` 时只加载目标页，不补抓中间页面。相同页在缓存有效期内直接复用，避免 Ampcast 重复刷新产生额外 QQ 请求。上游扩展失败时，仅当目标页已有缓存歌曲才返回缓存；首屏没有任何缓存时必须透传错误，不能伪装成成功的空列表。
 
-QQ 批次请求保持串行，避免并发调用触发 `req.code=700000`。单批默认超时 4 秒、整次聚合默认超时 12 秒；超时时已有结果则返回部分歌曲，没有任何结果才返回 504。慢请求和超时会记录请求数量、批次数、耗时与停止原因，不记录 Cookie 等授权信息。
+QQ 批次请求保持串行，避免并发调用触发 `req.code=700000`。首次设备会话握手与歌曲请求共用单批超时预算；单批默认超时 4 秒、整次聚合默认超时 12 秒。超时时已有结果则返回部分歌曲，没有任何结果才返回 504。慢请求和超时会记录请求数量、批次数、耗时与停止原因，不记录 Cookie、MusicKey、`uid/sid` 等授权和协议会话信息。
 
 超时和诊断参数可通过环境变量覆盖：
 
@@ -146,7 +170,8 @@ Emby 虚拟歌单请求已经解析为具体 `AccountRecord`。猜你喜欢和�
 
 - 缺少 QQ 授权：返回 `QQ_AUTH_REQUIRED`，不请求公共替代数据。
 - QQ 返回非零业务码：记录经过脱敏的业务码并返回系统错误。
-- 猜你喜欢返回 `req.code=1000/104400/104401`：判定为该能力所需凭据异常，强制刷新 MusicKey 并重试一次。重试仍失败时只返回 `QQ_RECOMMENDATION_AUTH_REQUIRED`，不影响每日推荐、收藏等其他 QQ 功能；相同 Cookie 在 10 分钟内不重复执行慢刷新。只有刷新流程自身明确返回 401 时，才将当前用户的整体 QQ 授权标记为过期。
+- 猜你喜欢在已缓存设备会话下返回 `req.code=1000`：先废弃 `uid/sid` 并重新建立设备会话；新会话仍失败时，才进入 MusicKey 刷新流程。
+- 猜你喜欢在新设备会话下仍返回 `req.code=1000/104400/104401`：判定为该能力所需凭据异常，强制刷新 MusicKey 并重试一次。重试仍失败时只返回 `QQ_RECOMMENDATION_AUTH_REQUIRED`，不影响每日推荐、收藏等其他 QQ 功能；相同 Cookie 在 10 分钟内不重复执行慢刷新。只有刷新流程自身明确返回 401 时，才将当前用户的整体 QQ 授权标记为过期。
 - QQ 猜你喜欢聚合超过批次或总时限：已有歌曲时返回部分结果，否则返回 504。
 - Feed 中找不到每日推荐卡片：返回明确的每日推荐不可用错误。
 - 个性化接口返回空列表：视为接口异常，不回退到公共榜单或歌手搜索。
@@ -158,6 +183,8 @@ QQ 原生 VKey 与本方案无关。当前请求协议仍会收到 `104009 / inv
 ## 验收标准
 
 - 两个绑定不同 QQ 的 XMusic 用户获取到彼此独立的猜你喜欢和每日推荐。
+- 猜你喜欢在首次请求时先建立移动设备会话，后续批次和缓存有效期内不重复握手。
+- MusicKey 变化或缓存会话失效后重新获取 `uid/sid`，且这些协议会话字段不写入业务数据表。
 - 猜你喜欢成功响应中的小写 `tracks` 能正确映射。
 - 猜你喜欢按单页请求数量动态聚合 5 首批次，单页最多返回 20 首且不会无限请求。
 - Ampcast 首次请求 5 首时收到可继续分页的估算总量，后续每页最多新增 20 首。

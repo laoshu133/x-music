@@ -3,7 +3,7 @@ import test from 'node:test'
 import { db } from '@/lib/db'
 import { getAccountByQQ } from '@/lib/db/accounts'
 import { clearQQLoginCookie, saveQQLoginCookie } from '@/lib/db/qq-session'
-import { getQQRecommendations } from '@/lib/qq/recommendations'
+import { clearQQRecommendationSessionCache, getQQRecommendations } from '@/lib/qq/recommendations'
 
 const originalFetch = globalThis.fetch
 
@@ -13,8 +13,25 @@ test.afterEach(() => {
   delete process.env.QQ_RECOMMENDATION_BATCH_TIMEOUT_MS
   delete process.env.QQ_RECOMMENDATION_TOTAL_TIMEOUT_MS
   delete process.env.QQ_RECOMMENDATION_SLOW_LOG_MS
+  clearQQRecommendationSessionCache()
   clearQQLoginCookie()
 })
+
+function qqRadioSessionResponse(): Response {
+  return Response.json({
+    code: 0,
+    req: {
+      code: 0,
+      data: {
+        session: {
+          uid: 'device-session-uid',
+          sid: 'device-session-sid',
+          vkey: 'device-session-vkey',
+        },
+      },
+    },
+  })
+}
 
 test('recommendations route uses authenticated QQ daily feed and radio sources', async () => {
   saveQQLoginCookie('uin=o123456; qm_keyst=test-key; euin=encrypted-uin')
@@ -25,6 +42,8 @@ test('recommendations route uses authenticated QQ daily feed and radio sources',
     const request = new Request(url, init)
     const body = init?.body ? JSON.parse(String(init.body)) : undefined
     requests.push({ url: request.url, headers: request.headers, body })
+
+    if (body?.req?.module === 'music.getSession.session') return qqRadioSessionResponse()
 
     if (body?.req?.module === 'music.recommend.RecommendFeed') {
       return Response.json({
@@ -97,19 +116,29 @@ test('recommendations route uses authenticated QQ daily feed and radio sources',
   assert.equal(guessPayload.list.length, 2)
   assert.equal(guessPayload.list[0].songmid, 'guess-song-0')
 
-  assert.equal(requests.length, 3)
+  assert.equal(requests.length, 4)
   assert.ok(requests.every(item => item.url.includes('/cgi-bin/musics.fcg?sign=')))
   assert.ok(requests.every(item => item.headers.get('cookie')?.includes('uin=o123456')))
   const detail = requests.find(item => item.body?.req?.module === 'music.srfDissInfo.DissInfo')
   assert.equal(detail?.body.req.method, 'CgiGetDiss')
   assert.equal(detail?.body.req.param.disstid, 7804423650)
+  const radio = requests.find(item => item.body?.req?.module === 'music.radioProxy.MbTrackRadioSvr')
+  assert.equal(radio?.body.comm.ct, 11)
+  assert.equal(radio?.body.comm.uid, 'device-session-uid')
+  assert.equal(radio?.body.comm.sid, 'device-session-sid')
+  assert.equal(radio?.body.comm.authst, 'test-key')
   assert.equal(requests.some(item => item.url.includes('client_music_search_songlist')), false)
 })
 
 test('QQ guess recommendations dynamically aggregate fixed five-song batches', async () => {
   const batchSizes: number[] = []
+  let sessionRequests = 0
   globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body))
+    if (body.req?.module === 'music.getSession.session') {
+      sessionRequests += 1
+      return qqRadioSessionResponse()
+    }
     const batch = batchSizes.length
     batchSizes.push(body.req.param.num)
     return Response.json({
@@ -138,6 +167,7 @@ test('QQ guess recommendations dynamically aggregate fixed five-song batches', a
 
   assert.equal(result.list.length, 12)
   assert.equal(result.total, 12)
+  assert.equal(sessionRequests, 1)
   assert.deepEqual(batchSizes, [5, 5, 5])
   assert.equal(new Set(result.list.map(song => song.songmid)).size, 12)
 })
@@ -146,7 +176,9 @@ test('recommendations route caps each guess page at 20 songs', async () => {
   saveQQLoginCookie('uin=o123462; qm_keyst=test-key')
   const route = await import('@/app/api/recommendations/route')
   let requests = 0
-  globalThis.fetch = (async () => {
+  globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body))
+    if (body.req?.module === 'music.getSession.session') return qqRadioSessionResponse()
     const batch = requests
     requests += 1
     return Response.json({
@@ -181,7 +213,7 @@ test('recommendations route keeps QQ radio credential errors scoped to guess rec
     const route = await import('@/app/api/recommendations/route')
     let radioRequests = 0
     let refreshRequests = 0
-    globalThis.fetch = (async (url: string | URL | Request) => {
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       const requestUrl = new URL(String(url))
       if (requestUrl.hostname === 'u6.y.qq.com') {
         refreshRequests += 1
@@ -193,6 +225,8 @@ test('recommendations route keeps QQ radio credential errors scoped to guess rec
           },
         })
       }
+      const body = JSON.parse(String(init?.body))
+      if (body.req?.module === 'music.getSession.session') return qqRadioSessionResponse()
       radioRequests += 1
       return Response.json({
         code: 0,
@@ -238,6 +272,9 @@ test('recommendations route retries QQ radio after refreshing its MusicKey', asy
         })
       }
 
+      const body = JSON.parse(String(init?.body))
+      if (body.req?.module === 'music.getSession.session') return qqRadioSessionResponse()
+
       radioRequests += 1
       radioCookies.push(request.headers.get('cookie') ?? '')
       if (radioRequests === 1) {
@@ -276,11 +313,13 @@ test('recommendations route expires global QQ auth only when MusicKey refresh re
   try {
     saveQQLoginCookie(`uin=o${qqUin}; qm_keyst=old-key; qqmusic_key=old-key`)
     const route = await import('@/app/api/recommendations/route')
-    globalThis.fetch = (async (url: string | URL | Request) => {
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       const requestUrl = new URL(String(url))
       if (requestUrl.hostname === 'u6.y.qq.com') {
         return new Response(null, { status: 401 })
       }
+      const body = JSON.parse(String(init?.body))
+      if (body.req?.module === 'music.getSession.session') return qqRadioSessionResponse()
       return Response.json({ code: 0, req: { code: 1000, data: { tracks: [] } } })
     }) as typeof fetch
 
@@ -295,7 +334,9 @@ test('recommendations route expires global QQ auth only when MusicKey refresh re
 
 test('QQ guess recommendations stop when a batch contains no new songs', async () => {
   let requests = 0
-  globalThis.fetch = (async () => {
+  globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body))
+    if (body.req?.module === 'music.getSession.session') return qqRadioSessionResponse()
     requests += 1
     return Response.json({
       code: 0,
@@ -326,6 +367,8 @@ test('QQ guess recommendations return collected songs when a later batch times o
   process.env.QQ_RECOMMENDATION_TOTAL_TIMEOUT_MS = '100'
   let requests = 0
   globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body))
+    if (body.req?.module === 'music.getSession.session') return qqRadioSessionResponse()
     requests += 1
     if (requests === 1) {
       return Response.json({
@@ -364,6 +407,8 @@ test('QQ guess recommendations fail with 504 when the first batch times out', as
   process.env.QQ_RECOMMENDATION_BATCH_TIMEOUT_MS = '10'
   process.env.QQ_RECOMMENDATION_TOTAL_TIMEOUT_MS = '100'
   globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body))
+    if (body.req?.module === 'music.getSession.session') return qqRadioSessionResponse()
     return new Promise<Response>((_resolve, reject) => {
       const signal = init?.signal
       const abort = () => reject(signal?.reason ?? new DOMException('Aborted', 'AbortError'))
@@ -389,13 +434,15 @@ test('recommendations route does not replace a failed personalized response with
   saveQQLoginCookie('uin=o123457; qm_keyst=test-key')
   const route = await import('@/app/api/recommendations/route')
   const requests: string[] = []
-  globalThis.fetch = (async (url: string | URL | Request) => {
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
     requests.push(String(url))
+    const body = JSON.parse(String(init?.body))
+    if (body.req?.module === 'music.getSession.session') return qqRadioSessionResponse()
     return Response.json({ code: 0, req: { code: 0, data: { tracks: [] } } })
   }) as typeof fetch
 
   const response = await route.GET(new Request('http://local/api/recommendations?type=guess'))
   assert.equal(response.status, 502)
-  assert.equal(requests.length, 1)
+  assert.equal(requests.length, 2)
   assert.ok(requests[0].includes('/cgi-bin/musics.fcg?sign='))
 })

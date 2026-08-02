@@ -1,7 +1,8 @@
+import { createHash, randomUUID } from 'node:crypto'
 import type { MusicInfo, PagedResult } from '@/lib/types'
 import type { AccountRecord } from '@/lib/db/accounts'
 import { logServiceEvent } from '@/lib/request-log'
-import { requireQQLoginState, type QQLoginState } from './account'
+import { parseQQCookieText, requireQQLoginState, type QQLoginState } from './account'
 import { markQQAccountAuthorizationExpired, QQAuthExpiredError } from './auth-state'
 import { refreshAccountQQAuthorization } from './auth-refresh'
 import { QQMusicError, qqSignedPost } from './http'
@@ -19,6 +20,32 @@ type QQRecommendationsResponse = {
       list?: Array<QQSong | { songInfo?: QQSong; songinfo?: QQSong }>
     }
   }
+}
+
+type QQRadioSessionResponse = {
+  code: number
+  req?: {
+    code: number
+    data?: {
+      session?: {
+        uid?: string | number
+        sid?: string
+        vkey?: string | number
+      }
+    }
+  }
+}
+
+type QQRadioSession = {
+  uid: string
+  sid: string
+  deviceId: string
+  expiresAt: number
+}
+
+type QQRadioSessionLookup = {
+  session: QQRadioSession
+  cached: boolean
 }
 
 type QQRecommendFeedCard = {
@@ -61,7 +88,9 @@ export type RecommendationResult = PagedResult<MusicInfo> & {
 const QQ_RADIO_BATCH_SIZE = 5
 const QQ_RADIO_EXTRA_BATCH_ATTEMPTS = 2
 const QQ_RADIO_AUTH_EXPIRED_CODES = new Set([1000, 104400, 104401])
+const QQ_RADIO_SESSION_RETRY_CODES = new Set([1000])
 const QQ_RADIO_AUTH_RETRY_COOLDOWN_MS = 10 * 60 * 1000
+const QQ_RADIO_SESSION_TTL_MS = 23 * 60 * 60 * 1000
 const DEFAULT_QQ_RADIO_BATCH_TIMEOUT_MS = 4_000
 const DEFAULT_QQ_RADIO_TOTAL_TIMEOUT_MS = 12_000
 const DEFAULT_QQ_RADIO_SLOW_LOG_MS = 5_000
@@ -72,6 +101,9 @@ type QQRadioAuthFailure = {
 }
 
 const qqRadioAuthFailures = new Map<string, QQRadioAuthFailure>()
+const qqRadioSessions = new Map<string, QQRadioSession>()
+const qqRadioSessionRequests = new Map<string, Promise<QQRadioSession>>()
+const qqRadioDeviceIds = new Map<string, string>()
 
 export class QQRecommendationAuthError extends QQMusicError {
   constructor(payload: Record<string, unknown> = {}) {
@@ -101,9 +133,9 @@ function authenticatedHeaders(login: QQLoginState) {
   }
 }
 
-function buildRecommendationsPayload(login: QQLoginState) {
+function buildRecommendationsPayload(login: QQLoginState, session: QQRadioSession) {
   return {
-    comm: common(login),
+    comm: androidCommon(login, session),
     req: {
       module: 'music.radioProxy.MbTrackRadioSvr',
       method: 'get_radio_track',
@@ -113,9 +145,177 @@ function buildRecommendationsPayload(login: QQLoginState) {
         from: 0,
         scene: 0,
         song_ids: [],
+        should_count_down: 0,
+        ext: {
+          USER_APPFRONT_STATUS: '1',
+          USER_PLAYPAGEFRONT_STATUS: '0',
+          IMMERSED_PLAYER: '1',
+          ENABLE_VIDEO: '1',
+          song_play_status: '0',
+          recent_play_song_list: '',
+          bluetooth: '',
+        },
       },
     },
   }
+}
+
+function androidCommon(login: QQLoginState, session?: QQRadioSession) {
+  const deviceId = session?.deviceId ?? getQQRadioDeviceId(login.uin)
+  return {
+    ct: 11,
+    cv: 14090008,
+    v: 14090008,
+    chid: '10003505',
+    qq: login.uin,
+    authst: login.qqmusicKey,
+    tmeAppID: 'qqmusic',
+    tmeLoginType: qqLoginType(login),
+    QIMEI: '',
+    QIMEI36: '',
+    OpenUDID: deviceId,
+    OpenUDID2: deviceId,
+    udid: deviceId,
+    uid: session?.uid ?? '',
+    sid: session?.sid ?? '',
+    aid: '',
+    os_ver: '12',
+    phonetype: 'XMusic',
+    devicelevel: '31',
+    newdevicelevel: '31',
+    rom: 'XMusic',
+  }
+}
+
+async function requestQQRadioBatch(
+  login: QQLoginState,
+  signal: AbortSignal,
+): Promise<QQRecommendationsResponse> {
+  let lookup = await getQQRadioSession(login, signal)
+  let data = await qqSignedPost<QQRecommendationsResponse>(
+    buildRecommendationsPayload(login, lookup.session),
+    { headers: authenticatedHeaders(login), signal },
+  )
+
+  if (lookup.cached && QQ_RADIO_SESSION_RETRY_CODES.has(data.req?.code ?? 0)) {
+    invalidateQQRadioSession(login)
+    lookup = await getQQRadioSession(login, signal)
+    data = await qqSignedPost<QQRecommendationsResponse>(
+      buildRecommendationsPayload(login, lookup.session),
+      { headers: authenticatedHeaders(login), signal },
+    )
+  }
+
+  return data
+}
+
+async function getQQRadioSession(
+  login: QQLoginState,
+  signal: AbortSignal,
+): Promise<QQRadioSessionLookup> {
+  if (!login.qqmusicKey) {
+    throw new QQRecommendationAuthError({ missingQQMusicKey: true })
+  }
+
+  const cacheKey = qqRadioSessionCacheKey(login)
+  const cached = qqRadioSessions.get(cacheKey)
+  if (cached && cached.expiresAt > Date.now()) return { session: cached, cached: true }
+  if (cached) qqRadioSessions.delete(cacheKey)
+
+  let pending = qqRadioSessionRequests.get(cacheKey)
+  if (!pending) {
+    pending = createQQRadioSession(login, signal)
+    qqRadioSessionRequests.set(cacheKey, pending)
+    void pending.finally(() => qqRadioSessionRequests.delete(cacheKey)).catch(() => undefined)
+  }
+
+  const session = await pending
+  qqRadioSessions.set(cacheKey, session)
+  return { session, cached: false }
+}
+
+async function createQQRadioSession(
+  login: QQLoginState,
+  signal: AbortSignal,
+): Promise<QQRadioSession> {
+  const data = await qqSignedPost<QQRadioSessionResponse>({
+    comm: androidCommon(login),
+    req: {
+      module: 'music.getSession.session',
+      method: 'GetSession',
+      param: { uid: '', vkey: 0, caller: 0 },
+    },
+  }, { headers: authenticatedHeaders(login), signal })
+
+  const upstreamCode = data.code
+  const upstreamRequestCode = data.req?.code
+  const rawSession = data.req?.data?.session
+  const uid = String(rawSession?.uid ?? '').trim()
+  const sid = String(rawSession?.sid ?? '').trim()
+  if (upstreamCode !== 0 || upstreamRequestCode !== 0 || !uid || uid === '0' || !sid) {
+    if (QQ_RADIO_AUTH_EXPIRED_CODES.has(upstreamRequestCode ?? 0)) {
+      throw new QQRecommendationAuthError({
+        phase: 'session',
+        upstreamCode,
+        upstreamRequestCode,
+      })
+    }
+    throw new QQMusicError('QQ recommendation device session request failed', 502, {
+      code: upstreamCode,
+      requestCode: upstreamRequestCode,
+      hasUid: Boolean(uid && uid !== '0'),
+      hasSid: Boolean(sid),
+    })
+  }
+
+  return {
+    uid,
+    sid,
+    deviceId: getQQRadioDeviceId(login.uin),
+    expiresAt: Date.now() + QQ_RADIO_SESSION_TTL_MS,
+  }
+}
+
+function qqRadioSessionCacheKey(login: Pick<QQLoginState, 'uin' | 'qqmusicKey'>): string {
+  return `${login.uin}:${qqRadioCredentialFingerprint(login)}`
+}
+
+function qqRadioCredentialFingerprint(login: Pick<QQLoginState, 'uin' | 'qqmusicKey'>): string {
+  return createHash('sha256')
+    .update(login.uin)
+    .update('\0')
+    .update(login.qqmusicKey ?? '')
+    .digest('base64url')
+}
+
+function getQQRadioDeviceId(uin: string): string {
+  const cached = qqRadioDeviceIds.get(uin)
+  if (cached) return cached
+  const value = randomUUID().replaceAll('-', '')
+  qqRadioDeviceIds.set(uin, value)
+  return value
+}
+
+function qqLoginType(login: QQLoginState): number {
+  const value = Number(parseQQCookieText(login.cookie).get('tmeLoginType'))
+  if (Number.isInteger(value) && value > 0) return value
+  return login.qqmusicKey?.startsWith('W_X') ? 1 : 2
+}
+
+function invalidateQQRadioSession(login: Pick<QQLoginState, 'uin' | 'qqmusicKey'>): void {
+  qqRadioSessions.delete(qqRadioSessionCacheKey(login))
+}
+
+function invalidateQQRadioSessionsForUin(uin: string): void {
+  for (const cacheKey of qqRadioSessions.keys()) {
+    if (cacheKey.startsWith(`${uin}:`)) qqRadioSessions.delete(cacheKey)
+  }
+}
+
+export function clearQQRecommendationSessionCache(): void {
+  qqRadioSessions.clear()
+  qqRadioSessionRequests.clear()
+  qqRadioDeviceIds.clear()
 }
 
 function extractSongs(data: QQRecommendationsResponse): QQSong[] {
@@ -163,12 +363,9 @@ export async function getQQRecommendations(input: {
 
     let data: QQRecommendationsResponse
     try {
-      data = await qqSignedPost<QQRecommendationsResponse>(
-        buildRecommendationsPayload(login),
-        {
-          headers: authenticatedHeaders(login),
-          signal: AbortSignal.timeout(Math.max(1, Math.min(batchTimeoutMs, remainingMs))),
-        },
+      data = await requestQQRadioBatch(
+        login,
+        AbortSignal.timeout(Math.max(1, Math.min(batchTimeoutMs, remainingMs))),
       )
       batches += 1
     } catch (error) {
@@ -253,6 +450,8 @@ export async function getQQRecommendationsForAccount(
     }, 'error')
     throw new QQRecommendationAuthError({ refreshFailed: true })
   }
+
+  invalidateQQRadioSessionsForUin(account.qqUin)
 
   try {
     const result = await getQQRecommendations({
