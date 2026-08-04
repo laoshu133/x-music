@@ -639,7 +639,7 @@ test('ampcast player path maps to embedded proxy route', () => {
   assert.equal(playerPathFromEmbyPath('/@player/assets/app.js'), '/assets/app.js')
   assert.equal(playerPathFromEmbyPath(normalizeEmbyPath(['@player'])), '/')
   assert.equal(playerPathFromEmbyPath(normalizeEmbyPath(['@player', 'assets', 'app.js'])), '/assets/app.js')
-  assert.equal(playerPathFromEmbyPath('/v0.9.28/lib/media-services.js'), '/v0.9.28/lib/media-services.js')
+  assert.equal(playerPathFromEmbyPath('/v0.9.31/lib/media-services.js'), '/v0.9.31/lib/media-services.js')
   assert.equal(playerPathFromEmbyPath('/service-worker-v2.js'), '/service-worker-v2.js')
   assert.equal(playerPathFromEmbyPath('/Items'), undefined)
 })
@@ -658,7 +658,7 @@ test('ampcast auto-init html stores local config and redirects to embedded playe
   assert.match(body, /"libraryId":"x-music-music"/)
   assert.match(body, /localStorage\.setItem\(prefix \+ 'deviceId', deviceId\)/)
   assert.match(body, /localStorage\.setItem\(prefix \+ 'isLocal', 'true'\)/)
-  assert.match(body, /localStorage\.setItem\('ampcast\/installed-version', '0\.9\.28'\)/)
+  assert.match(body, /localStorage\.setItem\('ampcast\/installed-version', '0\.9\.31'\)/)
   assert.match(body, /localStorage\.setItem\('ampcast\/playback\/repeatMode', localStorage\.getItem\('ampcast\/playback\/repeatMode'\) \|\| '0'\)/)
   assert.match(body, /localStorage\.setItem\('ampcast\/services\/fields', localStorage\.getItem\('ampcast\/services\/fields'\) \|\| ''\)/)
   assert.match(body, /const hiddenServices = \{"spotify\/charts":true/)
@@ -703,7 +703,7 @@ test('ampcast proxy forwards to configured upstream and rewrites embedded assets
     let forwardedUrl = ''
     globalThis.fetch = (async (url: string | URL | Request) => {
       forwardedUrl = url.toString()
-      return new Response('<script src="/assets/app.js"></script><link href="/style.css"><script>import("/v0.9.28/lib/media-services.js")</script><main action="/login"></main>', {
+      return new Response('<script src="/assets/app.js"></script><link href="/style.css"><script>import("/v0.9.31/lib/media-services.js")</script><main action="/login"></main>', {
         headers: {
           'content-type': 'text/html',
           'content-encoding': 'br',
@@ -722,7 +722,7 @@ test('ampcast proxy forwards to configured upstream and rewrites embedded assets
     assert.equal(response.headers.get('x-frame-options'), null)
     assert.match(text, /src="\/@player\/assets\/app\.js"/)
     assert.match(text, /href="\/@player\/style\.css"/)
-    assert.match(text, /"\/@player\/v0\.9\.28\/lib\/media-services\.js"/)
+    assert.match(text, /"\/@player\/v0\.9\.31\/lib\/media-services\.js"/)
     assert.match(text, /action="\/@player\/login"/)
   } finally {
     globalThis.fetch = originalFetch
@@ -806,9 +806,9 @@ test('ampcast proxy maps root versioned assets to the configured upstream', asyn
       })
     }) as typeof fetch
 
-    const response = await proxyToAmpcast(new Request('http://local/v0.9.28/lib/media-services.js'), '/v0.9.28/lib/media-services.js')
+    const response = await proxyToAmpcast(new Request('http://local/v0.9.31/lib/media-services.js'), '/v0.9.31/lib/media-services.js')
 
-    assert.equal(forwardedUrl, 'http://ampcast:8000/v0.9.28/lib/media-services.js')
+    assert.equal(forwardedUrl, 'http://ampcast:8000/v0.9.31/lib/media-services.js')
     assert.equal(response.headers.get('content-type'), 'application/javascript')
     assert.equal(await response.text(), 'console.log("media")')
   } finally {
@@ -8159,45 +8159,49 @@ test('local emby root library reads cached QQ favorites and playlists without up
       const requestUrl = new URL(String(url))
       if (requestUrl.hostname === 'u.y.qq.com' && requestUrl.pathname.includes('/cgi-bin/musics.fcg')) {
         const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {}
-        assert.equal(body.req?.method, 'CgiGetDiss')
-        favoriteRequests += 1
-        return Response.json({
-          code: 0,
-          req: {
+        if (body.req?.method === 'CgiGetDiss') {
+          favoriteRequests += 1
+          return Response.json({
             code: 0,
-            data: {
-              songlist: [{
-                id: 123,
-                mid: 'qq-root-song-1',
-                title: 'Root Favorite Song',
-                interval: 180,
-                singer: [{ name: 'Root Artist', mid: 'root-artist-1' }],
-                album: { name: 'Root Album', mid: 'root-album-1', time_public: '2025-01-02' },
-                file: { media_mid: 'root-media-1', size_320mp3: 2048 },
-              }],
-              total_song_num: 1,
+            req: {
+              code: 0,
+              data: {
+                songlist: [{
+                  id: 123,
+                  mid: 'qq-root-song-1',
+                  title: 'Root Favorite Song',
+                  interval: 180,
+                  singer: [{ name: 'Root Artist', mid: 'root-artist-1' }],
+                  album: { name: 'Root Album', mid: 'root-album-1', time_public: '2025-01-02' },
+                  file: { media_mid: 'root-media-1', size_320mp3: 2048 },
+                }],
+                total_song_num: 1,
+              },
             },
-          },
-        })
-      }
-
-      if (requestUrl.hostname === 'c6.y.qq.com' && requestUrl.pathname.includes('/rsc/fcgi-bin/fcg_get_profile_homepage.fcg')) {
-        playlistRequests += 1
-        return Response.json({
-          code: 0,
-          data: {
-            mydiss: {
-              list: [{
-                dissid: 'root-playlist-1',
-                dissname: 'Root Playlist',
-                song_cnt: 12,
-                dir_create_time: '2025-02-03 04:05:06',
-                creator: { name: 'Root User' },
-                logo: 'https://y.qq.com/root-playlist.jpg',
-              }],
+          })
+        }
+        if (body.req?.method === 'GetPlaylistByUin') {
+          assert.equal(body.req.module, 'music.musicasset.PlaylistBaseRead')
+          playlistRequests += 1
+          return Response.json({
+            code: 0,
+            req: {
+              code: 0,
+              data: {
+                total: 1,
+                bFinish: true,
+                v_playlist: [{
+                  tid: 'root-playlist-1',
+                  dirName: 'Root Playlist',
+                  songNum: 12,
+                  updateTime: 1738555506,
+                  nick: 'Root User',
+                  picUrl: 'https://y.qq.com/root-playlist.jpg',
+                }],
+              },
             },
-          },
-        })
+          })
+        }
       }
 
       return Response.json({ error: 'unexpected request' }, { status: 500 })

@@ -2439,8 +2439,11 @@ async function listVirtualPlaylists(request: Request, limit: number): Promise<QQ
 
   try {
     result.push(...await listQQUserPlaylistsWindow(request, limit))
-  } catch {
+  } catch (error) {
     // User playlists require a valid QQ login; dynamic recommendation playlists still remain available.
+    logServiceEvent('qq_user_playlists_load_failed', {
+      error: error instanceof Error ? error.message : String(error),
+    }, 'error')
   }
 
   result.unshift(defaultVirtualPlaylist('__daily__'), defaultVirtualPlaylist('__guess__'))

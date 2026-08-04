@@ -37,7 +37,7 @@ const rootAssetPathPatterns = [
   /^\/sw\.js$/i,
 ]
 
-const ampcastInstalledVersion = '0.9.28'
+const ampcastInstalledVersion = '0.9.31'
 const localServerId = 'x-music'
 const localMusicLibraryId = 'x-music-music'
 const localMusicLibraryTitle = 'XMusic'

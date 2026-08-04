@@ -1,8 +1,8 @@
 import type { PagedResult, QQPlaylistInfo } from '@/lib/types'
 import { logServiceEvent } from '@/lib/request-log'
 import { formatPlayCount } from './format'
-import { QQMusicError } from './http'
-import { getQQLoginState } from './account'
+import { QQMusicError, qqSignedPost } from './http'
+import { getQQLoginState, requireQQLoginState, type QQLoginState } from './account'
 
 export interface QQLoginQr {
   img: string
@@ -37,6 +37,9 @@ export interface QQUserProfile {
 }
 
 type UserPlaylistRaw = {
+  tid?: string | number
+  dirId?: string | number
+  dirName?: string
   dissid?: string | number
   dissname?: string
   title?: string
@@ -55,6 +58,25 @@ type UserPlaylistRaw = {
   visitnum?: number
   dir_create_time?: string
   createtime?: string | number
+  createTime?: string | number
+  updateTime?: string | number
+  songNum?: number
+  picUrl?: string
+  bigpicUrl?: string
+  albumPicUrl?: string
+  nick?: string
+  play_cnt?: number
+}
+
+type QQUserPlaylistsResponse = {
+  code?: number
+  req?: {
+    code?: number
+    data?: {
+      total?: number
+      v_playlist?: UserPlaylistRaw[]
+    }
+  }
 }
 
 const REQUEST_TIMEOUT_MS = 10000
@@ -248,19 +270,28 @@ function extractProfile(payload: Record<string, any>, uin: string): QQUserProfil
 }
 
 function mapUserPlaylist(item: UserPlaylistRaw): QQPlaylistInfo {
-  const id = item.dissid ?? ''
-  const listenCount = item.listen_num ?? item.listennum ?? item.visitnum
+  const id = item.tid ?? item.dissid ?? item.dirId ?? ''
+  const listenCount = item.play_cnt ?? item.listen_num ?? item.listennum ?? item.visitnum
   return {
     source: 'tx',
     id: String(id),
-    name: item.dissname ?? item.title ?? item.name ?? '',
-    author: item.creator?.name ?? item.creator?.nick ?? item.nickname,
-    img: item.logo ?? item.imgurl ?? item.picurl,
+    name: item.dirName ?? item.dissname ?? item.title ?? item.name ?? '',
+    author: item.nick ?? item.creator?.name ?? item.creator?.nick ?? item.nickname,
+    img: item.picUrl ?? item.bigpicUrl ?? item.albumPicUrl ?? item.logo ?? item.imgurl ?? item.picurl,
     desc: item.desc ?? item.introduction,
-    total: item.song_cnt ?? item.song_count,
+    total: item.songNum ?? item.song_cnt ?? item.song_count,
     playCount: formatPlayCount(listenCount),
-    time: typeof item.createtime === 'number' ? String(item.createtime) : item.dir_create_time ?? item.createtime,
+    time: playlistTime(item.updateTime ?? item.createTime ?? item.dir_create_time ?? item.createtime),
   }
+}
+
+function playlistTime(value: string | number | undefined): string | undefined {
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return undefined
+    const milliseconds = value > 10_000_000_000 ? value : value * 1000
+    return new Date(milliseconds).toISOString()
+  }
+  return value
 }
 
 export async function getQQLoginQr(): Promise<QQLoginQr> {
@@ -448,14 +479,21 @@ export async function getQQUserPlaylists(input: {
   offset?: number
   limit?: number
 }): Promise<PagedResult<QQPlaylistInfo> & { offset: number }> {
-  const login = getQQLoginState({ cookie: input.cookie })
+  const login = requireQQLoginState({ cookie: input.cookie })
   const uin = input.uin ?? login?.uin
   if (!uin) throw new QQMusicError('QQ user UIN is required', 400)
 
   const offset = input.offset ?? 0
   const limit = input.limit ?? 30
-  const payload = await fetchQQUserHomepage(uin, login?.cookie)
-  const rawList = extractPlaylists(payload)
+  const payload = await fetchQQUserPlaylists(uin, login)
+  const rawList = payload.req?.data?.v_playlist
+  if (!Array.isArray(rawList)) {
+    throw new QQMusicError('QQ user playlist response did not include a playlist list', 502, {
+      code: payload.code,
+      requestCode: payload.req?.code,
+      dataKeys: payload.req?.data && typeof payload.req.data === 'object' ? Object.keys(payload.req.data) : [],
+    })
+  }
   const list = rawList.slice(offset, offset + limit).map(mapUserPlaylist).filter(item => item.id)
 
   return {
@@ -467,6 +505,37 @@ export async function getQQUserPlaylists(input: {
     total: rawList.length,
     allPage: Math.ceil(rawList.length / limit),
   }
+}
+
+async function fetchQQUserPlaylists(uin: string, login: QQLoginState): Promise<QQUserPlaylistsResponse> {
+  const payload = await qqSignedPost<QQUserPlaylistsResponse>({
+    comm: {
+      cv: 4747474,
+      ct: 24,
+      format: 'json',
+      uin,
+      g_tk: 5381,
+    },
+    req: {
+      module: 'music.musicasset.PlaylistBaseRead',
+      method: 'GetPlaylistByUin',
+      param: { uin },
+    },
+  }, {
+    headers: {
+      cookie: login.cookie,
+      referer: 'https://y.qq.com/n/ryqq/',
+    },
+  })
+
+  if (payload.code !== 0 || payload.req?.code !== 0) {
+    throw new QQMusicError('QQ user playlists request was rejected', 502, {
+      code: payload.code,
+      requestCode: payload.req?.code,
+      dataKeys: payload.req?.data && typeof payload.req.data === 'object' ? Object.keys(payload.req.data) : [],
+    })
+  }
+  return payload
 }
 
 export async function getQQUserProfile(input: {
