@@ -32,13 +32,16 @@ test('new account architecture isolates QQ and user-owned sync state', () => {
       /QQ_ALREADY_BOUND/,
     )
 
+    db.prepare('UPDATE user_emby_profiles SET source_webdav_dsn = ? WHERE user_id = ?')
+      .run('https://webdav.example/dav/music', first.user.id)
     const song = { source: 'tx', songmid: 'shared-track', name: 'Shared Track', singer: 'Tester' }
     const track = ensureTrack(song)
-    requestUserTrackSync(first.user.id, track.id, 'playback')
-    requestUserTrackSync(second.user.id, track.id, 'favorite')
+    assert.equal(requestUserTrackSync(first.user.id, track.id, 'playback'), true)
+    assert.equal(requestUserTrackSync(second.user.id, track.id, 'favorite'), false)
     enqueuePendingEmbyTrackSyncs(song)
     const jobs = db.prepare("SELECT user_id FROM jobs WHERE type = 'sync_emby_track' ORDER BY user_id").all()
-    assert.deepEqual(jobs.map(row => row.user_id).sort(), [first.user.id, second.user.id].sort())
+    assert.deepEqual(jobs.map(row => row.user_id), [first.user.id])
+    assert.equal(db.prepare('SELECT 1 FROM user_track_sync_requests WHERE user_id = ? AND track_id = ?').get(second.user.id, track.id), undefined)
     assert.notEqual(localEmbyUserId(first.user.id), localEmbyUserId(second.user.id))
     assert.equal(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'accounts'").get(), undefined)
   `

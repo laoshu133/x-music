@@ -4713,19 +4713,27 @@ test('local emby virtual song lyrics return timed lyric lines', async () => {
 
     globalThis.fetch = (async (url: string | URL | Request) => {
       const requestUrl = new URL(String(url))
-      if (requestUrl.hostname === 'u.y.qq.com') {
+      if (requestUrl.pathname.includes('/lyric/fcgi-bin/fcg_query_lyric_new.fcg')) {
         return Response.json({
-          code: 0,
-          lyric: {
-            code: 0,
-            data: {
-              lyric: '[00:01.23]第一句\n[00:04.00]第二句',
-            },
-          },
+          lyric: Buffer.from('[00:01.23]第一句\n[00:04.00]第二句', 'utf8').toString('base64'),
         })
       }
       return Response.json({ error: 'unexpected upstream request' }, { status: 500 })
     }) as typeof fetch
+
+    const prefetchedPlayback = await dispatchEmbyRequest(
+      new Request(`http://local/Items/${encodeURIComponent(songId)}/PlaybackInfo`, {
+        headers: { authorization: authHeader, 'user-agent': 'Amcfy Music/1.2.5' },
+      }),
+      stripOptionalEmbyPrefix(`/Items/${encodeURIComponent(songId)}/PlaybackInfo`),
+    )
+    assert.equal(prefetchedPlayback.status, 200)
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const cached = db.prepare("SELECT 1 FROM resource_cache WHERE resource_type = 'lyrics' AND url LIKE ?").get('%qq-lyrics-song-1%')
+      if (cached) break
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+    assert.ok(db.prepare("SELECT 1 FROM resource_cache WHERE resource_type = 'lyrics' AND url LIKE ?").get('%qq-lyrics-song-1%'))
 
     const response = await dispatchEmbyRequest(
       new Request(`http://local/Items/${encodeURIComponent(songId)}/Lyrics`, {
@@ -4771,6 +4779,7 @@ test('local emby virtual song lyrics return timed lyric lines', async () => {
     const playbackPayload = await playbackInfo.json()
     assert.equal(playbackPayload.MediaSources[0].MediaStreams[1].Type, 'Subtitle')
     assert.equal(playbackPayload.MediaSources[0].MediaStreams[1].Index, 1)
+    assert.equal(playbackPayload.MediaSources[0].MediaStreams[1].IsDefault, true)
     assert.equal(playbackPayload.MediaSources[0].DefaultSubtitleStreamIndex, 1)
     assert.equal(playbackPayload.MediaSources[0].MediaStreams[1].DeliveryMethod, 'External')
     assert.match(playbackPayload.MediaSources[0].MediaStreams[1].DeliveryUrl, /Stream\.js$/)
@@ -4798,8 +4807,8 @@ test('local emby virtual song lyrics return timed lyric lines', async () => {
     assert.match(await subtitle.text(), /第一句/)
 
     const amcfySubtitle = await dispatchEmbyRequest(
-      new Request(`http://local/Items/${encodeURIComponent(songId)}/Subtitles/2/Stream.js?id=${encodeURIComponent(songId)}&content-type=application%2Fjson&X-Emby-Client=Amcfy%20Music%20for%20iOS&X-Emby-Token=${authPayload.AccessToken}`, {
-        headers: { 'user-agent': 'Amcfy Music/1.0.20' },
+      new Request(`http://local/Items/${encodeURIComponent(songId)}/Subtitles/2/Stream.js?id=${encodeURIComponent(songId)}&content-type=application%2Fjson&X-Emby-Client=Amcfy%20Music%20for%20iOS&X-Emby-Client-Version=1.2.5&X-Emby-Token=${authPayload.AccessToken}`, {
+        headers: { 'user-agent': 'Amcfy Music/1.2.5' },
       }),
       stripOptionalEmbyPrefix(`/Items/${encodeURIComponent(songId)}/Subtitles/2/Stream.js`),
     )
@@ -4876,15 +4885,9 @@ test('narjo subsonic lyric requests resolve mapped upstream item ids locally', a
 
     globalThis.fetch = (async (url: string | URL | Request) => {
       const requestUrl = new URL(String(url))
-      if (requestUrl.hostname === 'u.y.qq.com') {
+      if (requestUrl.pathname.includes('/lyric/fcgi-bin/fcg_query_lyric_new.fcg')) {
         return Response.json({
-          code: 0,
-          lyric: {
-            code: 0,
-            data: {
-              lyric: '[00:02.00]Narjo 第一行\n[00:05.50]Narjo 第二行',
-            },
-          },
+          lyric: Buffer.from('[00:02.00]Narjo 第一行\n[00:05.50]Narjo 第二行', 'utf8').toString('base64'),
         })
       }
       return Response.json({ error: 'should not proxy upstream' }, { status: 500 })
@@ -5088,6 +5091,7 @@ test('virtual song lyrics persist QQ fallback to local sidecar for Emby sync', a
     db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track' AND json_extract(payload_json, '$.songmid') = ?").run(songmid)
     saveQQLoginCookie('uin=o999046; qm_keyst=test-key')
     markAccountUpstreamBound('999046')
+    configureAccountUpstreamWebdav('999046')
     const account = getAccountByQQ('999046')
     assert.ok(account)
 
@@ -5123,15 +5127,9 @@ test('virtual song lyrics persist QQ fallback to local sidecar for Emby sync', a
 
     globalThis.fetch = (async (url: string | URL | Request) => {
       const requestUrl = new URL(String(url))
-      if (requestUrl.hostname === 'u.y.qq.com') {
+      if (requestUrl.pathname.includes('/lyric/fcgi-bin/fcg_query_lyric_new.fcg')) {
         return Response.json({
-          code: 0,
-          req: {
-            code: 0,
-            data: {
-              lyric: '[00:01.00]QQ落盘歌词',
-            },
-          },
+          lyric: Buffer.from('[00:01.00]QQ落盘歌词', 'utf8').toString('base64'),
         })
       }
       return Response.json({ error: 'unexpected upstream request' }, { status: 500 })
@@ -6926,15 +6924,9 @@ test('stale mapped Emby item detail falls back to QQ and removes mapping', async
     const upstreamRequests: string[] = []
     globalThis.fetch = (async (url: string | URL | Request) => {
       const requestUrl = new URL(String(url))
-      if (requestUrl.hostname === 'u.y.qq.com') {
+      if (requestUrl.pathname.includes('/lyric/fcgi-bin/fcg_query_lyric_new.fcg')) {
         return Response.json({
-          code: 0,
-          lyric: {
-            code: 0,
-            data: {
-              lyric: '[00:01.00]映射歌词',
-            },
-          },
+          lyric: Buffer.from('[00:01.00]映射歌词', 'utf8').toString('base64'),
         })
       }
       upstreamRequests.push(String(url))

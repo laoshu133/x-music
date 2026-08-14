@@ -73,6 +73,18 @@ export async function getCachedResource(input: {
   return pending
 }
 
+export function isResourceCached(input: {
+  source: string
+  resourceType: CachedResourceType
+  url: string
+  method?: string
+  body?: BodyInit | null
+}): boolean {
+  const cacheKey = cacheKeyFor(input.source, input.resourceType, requestCacheIdentity(input.url, input.method, input.body))
+  const existing = findCachedResource(cacheKey)
+  return Boolean(existing && fs.existsSync(existing.filePath))
+}
+
 export async function cachedResourceResponse(input: {
   source: string
   resourceType: CachedResourceType
@@ -115,7 +127,9 @@ export async function cachedResourceResponse(input: {
     contentType,
   })
 
-  inflight.set(cacheKey, completion.finally(() => inflight.delete(cacheKey)))
+  inflight.set(cacheKey, completion
+    .catch(() => undefined)
+    .finally(() => inflight.delete(cacheKey)))
   return {
     response: new Response(body, {
       status: upstream.status,
@@ -396,7 +410,7 @@ async function createResourceWriter(input: {
   await mkdir(dir, { recursive: true })
   const extension = extensionFromContentType(input.contentType, input.url)
   const filePath = path.join(dir, `${input.cacheKey}${extension}`)
-  const partPath = path.join(dir, `${input.cacheKey}-${Date.now()}.part`)
+  const partPath = path.join(dir, `${input.cacheKey}-${Date.now()}-${crypto.randomUUID()}.part`)
   const writeStream = fs.createWriteStream(partPath)
   let writtenBytes = 0
 

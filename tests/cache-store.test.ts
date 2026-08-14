@@ -545,6 +545,39 @@ test('resource response streams first miss while caching for later hits', async 
   }
 })
 
+test('concurrent resource misses use independent temporary files', async () => {
+  const originalFetch = globalThis.fetch
+  const originalDateNow = Date.now
+  const url = `https://cache-stream.example/concurrent-${Date.now()}.jpg`
+  try {
+    db.prepare('DELETE FROM resource_cache WHERE url = ?').run(url)
+    Date.now = () => 123456789
+    globalThis.fetch = (async () => new Response('same-image', {
+      headers: { 'content-type': 'image/jpeg' },
+    })) as typeof fetch
+
+    const [first, second] = await Promise.all([
+      cachedResourceResponse({ source: 'test', resourceType: 'image', url }),
+      cachedResourceResponse({ source: 'test', resourceType: 'image', url }),
+    ])
+    assert.ok(first)
+    assert.ok(second)
+    assert.equal(await first.response.text(), 'same-image')
+    assert.equal(await second.response.text(), 'same-image')
+    await Promise.all([first.completion, second.completion])
+
+    const row = db.prepare('SELECT file_path AS filePath FROM resource_cache WHERE url = ?').get(url) as { filePath: string } | undefined
+    assert.ok(row?.filePath)
+    assert.equal(fs.readFileSync(row.filePath, 'utf8'), 'same-image')
+  } finally {
+    Date.now = originalDateNow
+    const row = db.prepare('SELECT file_path FROM resource_cache WHERE url = ?').get(url) as { file_path: string } | undefined
+    if (row) fs.rmSync(row.file_path, { force: true })
+    db.prepare('DELETE FROM resource_cache WHERE url = ?').run(url)
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('empty transformed text resources are not cached', async () => {
   const originalFetch = globalThis.fetch
   const url = `https://cache-text.example/empty-${Date.now()}.json`
@@ -567,25 +600,15 @@ test('empty transformed text resources are not cached', async () => {
   }
 })
 
-test('QQ lyrics falls back when modern API returns encrypted hex payload', async () => {
+test('QQ lyrics uses only the legacy API and decodes timed lyrics', async () => {
   const originalFetch = globalThis.fetch
-  const songmid = `LYRICS_FALLBACK_${Date.now()}`
+  const songmid = `LYRICS_LEGACY_${Date.now()}`
   try {
     db.prepare("DELETE FROM resource_cache WHERE resource_type = 'lyrics'").run()
+    const requestedHosts: string[] = []
     globalThis.fetch = (async (url: string | URL | Request) => {
       const requestUrl = new URL(String(url))
-      if (requestUrl.hostname === 'u.y.qq.com') {
-        return Response.json({
-          code: 0,
-          lyric: {
-            code: 0,
-            data: {
-              crypt: 0,
-              lyric: '94049BF6BE72CA653B3D80A72127964A7DC2BAB2A6A291FF',
-            },
-          },
-        })
-      }
+      requestedHosts.push(requestUrl.hostname)
       if (requestUrl.pathname.includes('/lyric/fcgi-bin/fcg_query_lyric_new.fcg')) {
         return Response.json({
           lyric: Buffer.from('[00:01.00]旧接口歌词', 'utf8').toString('base64'),
@@ -596,66 +619,11 @@ test('QQ lyrics falls back when modern API returns encrypted hex payload', async
 
     const lyrics = await getQQLyrics(songmid)
     assert.equal(lyrics, '[00:01.00]旧接口歌词')
+    assert.deepEqual(requestedHosts, ['c.y.qq.com'])
     const rows = db.prepare("SELECT url FROM resource_cache WHERE resource_type = 'lyrics'").all() as Array<{ url: string }>
     assert.deepEqual(rows.map(row => row.url), [expectLegacyLyricsUrl(songmid)])
   } finally {
     db.prepare("DELETE FROM resource_cache WHERE resource_type = 'lyrics'").run()
-    globalThis.fetch = originalFetch
-  }
-})
-
-test('QQ lyrics uses LX-style PlayLyricInfo request and parses millisecond lyric lines', async () => {
-  const originalFetch = globalThis.fetch
-  const songmid = `LYRICS_LX_STYLE_${Date.now()}`
-  try {
-    db.prepare("DELETE FROM resource_cache WHERE resource_type IN ('lyrics', 'metadata')").run()
-    const requests: unknown[] = []
-    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
-      const requestUrl = new URL(String(url))
-      if (requestUrl.hostname === 'u.y.qq.com') {
-        const body = JSON.parse(String(init?.body ?? '{}'))
-        requests.push(body)
-        if (body.songinfo) {
-          return Response.json({
-            code: 0,
-            songinfo: {
-              code: 0,
-              data: {
-                track_info: {
-                  id: 123456,
-                  mid: songmid,
-                  title: 'LX Style Lyrics',
-                  singer: [{ name: 'Singer' }],
-                  album: { mid: 'album-mid', name: 'Album' },
-                  file: { media_mid: songmid, size_320mp3: 10 },
-                },
-              },
-            },
-          })
-        }
-        return Response.json({
-          code: 0,
-          req: {
-            code: 0,
-            data: {
-              lyric: '[1230,2000](1230,500)第一句\\n[4000,2000](4000,500)第二句',
-              trans: '[00:01.23]First line\\n[00:04.00]Second line',
-            },
-          },
-        })
-      }
-      return Response.json({ error: 'unexpected request' }, { status: 500 })
-    }) as typeof fetch
-
-    const lyrics = await getQQLyrics(songmid)
-    assert.equal(lyrics, '[00:01.230]第一句\n[00:01.230]First line\n[00:04.000]第二句\n[00:04.000]Second line')
-
-    const lyricRequest = requests.find((body) => Boolean((body as any).req)) as any
-    assert.equal(lyricRequest.req.param.songID, 123456)
-    assert.equal(lyricRequest.req.param.crypt, 1)
-    assert.equal(lyricRequest.req.param.type, -1)
-  } finally {
-    db.prepare("DELETE FROM resource_cache WHERE resource_type IN ('lyrics', 'metadata')").run()
     globalThis.fetch = originalFetch
   }
 })

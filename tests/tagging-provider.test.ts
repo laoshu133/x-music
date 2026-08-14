@@ -176,6 +176,8 @@ test('manual tag job processing preserves XMusic user context for Emby sync', as
   const track = ensureTrack(musicInfo)
   const trackFile = upsertTrackFileStatus(track.id, '128k', 'tagging', { rawPath, finalPath: rawPath })
   saveQQLoginCookie('uin=o700003; qm_keyst=test-key')
+  db.prepare('UPDATE user_emby_profiles SET source_webdav_dsn = ? WHERE user_id = ?')
+    .run('https://webdav.example/dav/music', '700003')
   requestUserTrackSync('700003', track.id, 'manual')
   const job = createJob({
     type: 'tag_track_file',

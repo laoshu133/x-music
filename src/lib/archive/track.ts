@@ -88,7 +88,7 @@ export async function archiveTrack(payload: ArchiveTrackJobPayload): Promise<voi
 
   for (const quality of qualityFallbacks(preferredQuality)) {
     if (getPlayableTrackFile(musicInfo.source, musicInfo.songmid, quality)) return
-    if (hasActiveTrackFile(musicInfo.source, musicInfo.songmid, [quality])) return
+    if (await waitForActiveTrackFile(musicInfo, quality)) return
 
     try {
       upsertTrackFileStatus(track.id, quality, 'resolving_url')
@@ -117,6 +117,27 @@ export async function archiveTrack(payload: ArchiveTrackJobPayload): Promise<voi
   }
 
   throw new Error(`Unable to archive track ${musicInfo.source}:${musicInfo.songmid}. ${attempts.map(attempt => `${attempt.quality}${attempt.source ? `/${attempt.source}` : ''}: ${attempt.error}`).join('; ')}`)
+}
+
+async function waitForActiveTrackFile(musicInfo: MusicInfo, quality: MusicQuality): Promise<boolean> {
+  if (!hasActiveTrackFile(musicInfo.source, musicInfo.songmid, [quality])) return false
+
+  const waitMs = numericEnv('ARCHIVE_ACTIVE_WAIT_MS', 30_000, 0)
+  const pollIntervalMs = numericEnv('ARCHIVE_ACTIVE_POLL_INTERVAL_MS', 250, 10)
+  const deadline = Date.now() + waitMs
+  for (;;) {
+    if (getPlayableTrackFile(musicInfo.source, musicInfo.songmid, quality)) return true
+    if (!hasActiveTrackFile(musicInfo.source, musicInfo.songmid, [quality])) return false
+    if (Date.now() >= deadline) {
+      throw new Error(`Timed out waiting for active track cache ${musicInfo.source}:${musicInfo.songmid}:${quality}`)
+    }
+    await new Promise(resolve => setTimeout(resolve, Math.max(10, Math.min(pollIntervalMs, deadline - Date.now()))))
+  }
+}
+
+function numericEnv(name: string, fallback: number, minimum: number): number {
+  const value = Number(process.env[name] ?? fallback)
+  return Number.isFinite(value) ? Math.max(minimum, value) : fallback
 }
 
 function musicUrlErrorMessage(error: unknown): string {

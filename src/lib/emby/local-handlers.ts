@@ -1,5 +1,5 @@
 import { ensureTrack, getPlayableTrackFile, getTrack, insertPlayEvent, listPlayHistory, upsertTrackFileStatus } from '@/lib/cache/store'
-import { cachedResourceResponse } from '@/lib/cache/resources'
+import { cachedResourceResponse, isResourceCached } from '@/lib/cache/resources'
 import { createUpstreamTeeResponse } from '@/lib/cache/stream'
 import { encryptedQQAudioRequiresKeyMessage, isEncryptedQQAudioFileName, isEncryptedQQAudioRequiresKeyError } from '@/lib/cache/decrypt'
 import { db } from '@/lib/db'
@@ -12,6 +12,7 @@ import {
   getQQDailyRecommendations,
   getQQLoginState,
   getQQLyrics,
+  qqLegacyLyricsUrl,
   getQQRecommendations,
   getQQRecommendationsForAccount,
   getQQSongDetail,
@@ -327,7 +328,7 @@ const LOCAL_ROUTES: LocalRoute[] = [
     name: 'playback-info',
     authorize: true,
     match: ({ request, embyPath }) => (request.method === 'GET' || request.method === 'POST') && isPlaybackInfoRequest(embyPath),
-    handle: ({ embyPath }) => handlePlaybackInfoRequest(embyPath),
+    handle: ({ request, embyPath, account }) => handlePlaybackInfoRequest(request, embyPath, account),
   },
   {
     name: 'similar-items',
@@ -1291,7 +1292,11 @@ async function handleItemRequest(request: Request, embyPath: string): Promise<Re
   return Response.json(songToEmbyItem(stored.song, decoded.playlistId ?? stored.playlistId, false, account))
 }
 
-async function handlePlaybackInfoRequest(embyPath: string): Promise<Response | undefined> {
+async function handlePlaybackInfoRequest(
+  request: Request,
+  embyPath: string,
+  account?: AccountRecord,
+): Promise<Response | undefined> {
   const itemId = extractNestedItemId(embyPath, 'PlaybackInfo')
   const decoded = itemId ? decodeVirtualId(itemId) : undefined
   if (!decoded || decoded.kind !== 'qq-song') return undefined
@@ -1301,6 +1306,7 @@ async function handlePlaybackInfoRequest(embyPath: string): Promise<Response | u
     return Response.json({ error: 'Virtual QQ song metadata is not cached. Search or open the virtual playlist again.' }, { status: 404 })
   }
 
+  prefetchLyricsBestEffort(stored.song, decoded.playlistId ?? stored.playlistId, account, request, 'playback_info')
   const mediaSource = songMediaSource(stored.song, intervalToTicks(stored.song.interval))
   return Response.json({
     MediaSources: [mediaSource],
@@ -1345,7 +1351,7 @@ async function handleLyricsRequest(request: Request, embyPath: string): Promise<
   const decoded = itemId ? await resolveSongVirtualId(itemId, account) : undefined
   if (!decoded) return undefined
 
-  const lyrics = await fetchLyrics(decoded.songmid, decoded.playlistId, account)
+  const lyrics = await fetchLyrics(decoded.songmid, decoded.playlistId, account, { request, endpoint: 'lyrics' })
   if (wantsRawLyrics(request)) {
     return markRequestSource(new Response(lyrics ?? '', {
       status: lyrics ? 200 : 404,
@@ -1400,7 +1406,7 @@ async function handleSubsonicLyricsRequest(request: Request): Promise<Response> 
   const decoded = await resolveSongVirtualId(rawId, account)
   if (!decoded) return subsonicResponse(request, { lyricsList: { structuredLyrics: [] } })
 
-  const lyrics = await fetchLyrics(decoded.songmid, decoded.playlistId, account)
+  const lyrics = await fetchLyrics(decoded.songmid, decoded.playlistId, account, { request, endpoint: 'subsonic_lyrics' })
   return subsonicResponse(request, {
     lyricsList: {
       structuredLyrics: lyrics ? [subsonicStructuredLyrics(lyrics)] : [],
@@ -1421,8 +1427,8 @@ async function handleSubtitleStreamRequest(request: Request, embyPath: string): 
   const decoded = itemId ? await resolveSongVirtualId(itemId, account) : undefined
   if (!decoded) return undefined
 
-  const lyrics = await fetchLyrics(decoded.songmid, decoded.playlistId, account)
   const format = subtitleStreamFormat(embyPath)
+  const lyrics = await fetchLyrics(decoded.songmid, decoded.playlistId, account, { request, endpoint: `subtitle_${format}` })
   const headers = {
     'content-type': subtitleContentType(format),
     'cache-control': 'public, max-age=86400',
@@ -1673,6 +1679,7 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
     const playableHeaders = await virtualAudioHeadHeaders(musicInfo, preferredAudioQualityForRequest(request, musicInfo))
     return markRequestSource(new Response(null, { status: 200, headers: playableHeaders }), playableHeaders.get('content-length') ? 'local' : 'upstream')
   }
+  prefetchLyricsBestEffort(musicInfo, decoded.playlistId ?? stored.playlistId, account, request, 'audio')
 
   const preferredQuality = preferredAudioQualityForRequest(request, musicInfo)
   const track = ensureTrack(musicInfo)
@@ -3269,7 +3276,7 @@ function songMediaSource(song: MusicInfo, runtimeTicks?: number, itemId = songVi
         Codec: 'lrc',
         DisplayTitle: 'QQ Music Lyrics',
         IsInterlaced: false,
-        IsDefault: false,
+        IsDefault: true,
         IsForced: false,
         IsHearingImpaired: false,
         Type: 'Subtitle',
@@ -3365,25 +3372,76 @@ function readNestedString(record: Record<string, unknown>, keys: string[]): stri
   return typeof current === 'string' && current.trim() ? current.trim() : undefined
 }
 
-async function fetchLyrics(songmid: string, playlistId?: string, account?: AccountRecord): Promise<string | undefined> {
+type LyricsDiagnosticContext = {
+  request: Request
+  endpoint: string
+}
+
+async function fetchLyrics(
+  songmid: string,
+  playlistId?: string,
+  account?: AccountRecord,
+  diagnostics?: LyricsDiagnosticContext,
+): Promise<string | undefined> {
+  const startedAt = Date.now()
+  const finish = (lyrics: string | undefined, source: 'local' | 'emby' | 'qq' | 'none', cacheHit: boolean): string | undefined => {
+    if (diagnostics) {
+      logServiceEvent('virtual_lyrics_resolved', {
+        songmid,
+        endpoint: diagnostics.endpoint,
+        source,
+        cacheHit,
+        found: Boolean(lyrics),
+        durationMs: Date.now() - startedAt,
+        userAgent: diagnostics.request.headers.get('user-agent') ?? undefined,
+      })
+    }
+    return lyrics
+  }
+
   const stored = await loadOrFetchVirtualSong(songmid, playlistId)
   const cachedLyrics = await readCachedTrackLyrics({ source: 'tx', songmid })
   if (cachedLyrics) {
     void cleanupCachedLyricsIfEmbyHasLyrics(stored?.song, account).catch(() => undefined)
-    return cachedLyrics
+    return finish(cachedLyrics, 'local', true)
   }
 
   if (stored) {
     const embyLyrics = await fetchEmbyLyrics(stored.song, account)
     if (embyLyrics) {
       await cleanupCachedTrackLyrics({ source: 'tx', songmid }).catch(() => undefined)
-      return embyLyrics
+      return finish(embyLyrics, 'emby', false)
     }
   }
 
-  const qqLyrics = await getQQLyrics(songmid, { songId: readQQSongId(stored?.song), timeoutMs: 10_000 })
+  const qqCacheHit = isResourceCached({
+    source: 'tx',
+    resourceType: 'lyrics',
+    url: qqLegacyLyricsUrl(songmid),
+  })
+  const qqLyrics = await getQQLyrics(songmid, { timeoutMs: 10_000 })
   if (qqLyrics) await persistQQLyricsToLocalCache(stored?.song, qqLyrics).catch(() => undefined)
-  return qqLyrics
+  return finish(qqLyrics, qqLyrics ? 'qq' : 'none', qqCacheHit)
+}
+
+function prefetchLyricsBestEffort(
+  song: MusicInfo,
+  playlistId: string | undefined,
+  account: AccountRecord | undefined,
+  request: Request,
+  endpoint: string,
+): void {
+  void fetchLyrics(song.songmid, playlistId, account, {
+    request,
+    endpoint: `${endpoint}_prefetch`,
+  }).catch((error: unknown) => {
+    logServiceEvent('virtual_lyrics_prefetch_failed', {
+      songmid: song.songmid,
+      endpoint,
+      error: errorMessage(error),
+      userAgent: request.headers.get('user-agent') ?? undefined,
+    }, 'error')
+  })
 }
 
 function readQQSongId(song?: MusicInfo): number | undefined {

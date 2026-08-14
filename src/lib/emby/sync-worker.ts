@@ -24,7 +24,7 @@ import { highestAvailableQuality } from '@/lib/quality'
 import type { SyncEmbyTrackJobPayload } from './sync'
 import type { MusicQuality } from '@/lib/types'
 import { syncMediaFilesToEmbyWebdav } from './webdav'
-import { qqLegacyLyricsUrl, qqPlayLyricInfoCacheBody, qqPlayLyricInfoCacheUrl } from '@/lib/qq'
+import { qqLegacyLyricsUrl } from '@/lib/qq'
 import { embyConfigForAccount, hasAccountUpstreamEmby } from './config'
 
 export interface EmbySyncJobOptions {
@@ -158,11 +158,6 @@ async function processClaimedEmbySyncJob(
         songmid: job.payload.songmid,
         imageUrl: job.payload.musicInfo.img,
         lyricsUrls: [qqLegacyLyricsUrl(job.payload.songmid)],
-        lyricRequests: [{
-          url: qqPlayLyricInfoCacheUrl(),
-          method: 'POST',
-          body: qqPlayLyricInfoCacheBody(job.payload.songmid, readQQSongId(job.payload.musicInfo)),
-        }],
       }).catch(() => undefined)
       await deleteLocalSyncedMedia({
         source: job.payload.source,
@@ -234,11 +229,6 @@ async function processClaimedEmbySyncJob(
       songmid: job.payload.songmid,
       imageUrl: job.payload.musicInfo.img,
       lyricsUrls: [qqLegacyLyricsUrl(job.payload.songmid)],
-      lyricRequests: [{
-        url: qqPlayLyricInfoCacheUrl(),
-        method: 'POST',
-        body: qqPlayLyricInfoCacheBody(job.payload.songmid, readQQSongId(job.payload.musicInfo)),
-      }],
     }).catch(() => undefined)
     if (syncedMedia) {
       await deleteLocalSyncedMedia({
@@ -580,11 +570,4 @@ async function waitForEmbyAudio(
     if (Date.now() >= deadline) return undefined
     await sleep(Math.max(100, Math.min(options.pollIntervalMs, deadline - Date.now())))
   }
-}
-
-function readQQSongId(song?: SyncEmbyTrackJobPayload['musicInfo']): number | undefined {
-  const raw = song?.raw
-  if (!raw || typeof raw !== 'object') return undefined
-  const value = (raw as Record<string, unknown>).songId
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }

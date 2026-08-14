@@ -981,6 +981,75 @@ test('archive track job retries stale active track file state', async () => {
   }
 })
 
+test('archive track job takes over after a concurrent playback cache fails', async () => {
+  const originalFetch = globalThis.fetch
+  const originalLxMusicSourceScript = process.env.LX_MUSIC_SOURCE_SCRIPT
+  const originalWaitMs = process.env.ARCHIVE_ACTIVE_WAIT_MS
+  const originalPollMs = process.env.ARCHIVE_ACTIVE_POLL_INTERVAL_MS
+  const songmid = `ARCHIVE_ACTIVE_FAIL_${Date.now()}`
+  const requestedQualities: string[] = []
+  db.prepare("DELETE FROM jobs WHERE type = 'archive_track'").run()
+  try {
+    process.env.ARCHIVE_ACTIVE_WAIT_MS = '200'
+    process.env.ARCHIVE_ACTIVE_POLL_INTERVAL_MS = '10'
+    process.env.LX_MUSIC_SOURCE_SCRIPT = 'https://script.example/script/lxmusic?key=test-key'
+    const musicInfo = {
+      source: 'tx' as const,
+      songmid,
+      name: 'Archive Concurrent Playback Failure',
+      singer: 'Archive Tester',
+      types: [{ type: '128k' as const, size: '3 MB' }],
+    }
+    const track = ensureTrack(musicInfo)
+    upsertTrackFileStatus(track.id, '128k', 'resolving_url')
+    const created = createJob({
+      type: 'archive_track',
+      payload: { source: 'tx' as const, songmid, musicInfo, reason: 'playback_completed' as const },
+    })
+
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = new URL(String(url))
+      if (requestUrl.hostname === 'script.example') {
+        const body = JSON.parse(String(init?.body ?? '{}')) as { quality?: string }
+        requestedQualities.push(body.quality ?? '')
+        return Response.json({ url: 'https://cdn.example/archive-active-fail.mp3' })
+      }
+      if (requestUrl.hostname === 'cdn.example') {
+        return new Response('archive-audio', { headers: { 'content-type': 'audio/mpeg' } })
+      }
+      return Response.json({ error: 'unexpected request' }, { status: 500 })
+    }) as typeof fetch
+
+    const processing = processOneArchiveTrackJob(1)
+    setTimeout(() => {
+      upsertTrackFileStatus(track.id, '128k', 'failed', {
+        error: 'Redirected to non-encrypted upstream without local cache',
+      })
+    }, 20)
+
+    assert.equal(await processing, true)
+    assert.equal(getJob(created.id)?.status, 'completed')
+    assert.deepEqual(requestedQualities, ['128k'])
+    const row = db.prepare(`
+      SELECT tf.status
+      FROM track_files tf
+      INNER JOIN tracks t ON t.id = tf.track_id
+      WHERE t.source = 'tx' AND t.songmid = ? AND tf.quality = '128k'
+    `).get(songmid) as { status: string } | undefined
+    assert.match(row?.status ?? '', /^(tagging|ready|cached_raw)$/)
+  } finally {
+    db.prepare("DELETE FROM jobs WHERE json_extract(payload_json, '$.songmid') = ?").run(songmid)
+    db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run(songmid)
+    globalThis.fetch = originalFetch
+    if (originalLxMusicSourceScript === undefined) delete process.env.LX_MUSIC_SOURCE_SCRIPT
+    else process.env.LX_MUSIC_SOURCE_SCRIPT = originalLxMusicSourceScript
+    if (originalWaitMs === undefined) delete process.env.ARCHIVE_ACTIVE_WAIT_MS
+    else process.env.ARCHIVE_ACTIVE_WAIT_MS = originalWaitMs
+    if (originalPollMs === undefined) delete process.env.ARCHIVE_ACTIVE_POLL_INTERVAL_MS
+    else process.env.ARCHIVE_ACTIVE_POLL_INTERVAL_MS = originalPollMs
+  }
+})
+
 test('archive track job downloads from QQ LX even when upstream Emby is configured', async () => {
   const originalFetch = globalThis.fetch
   const originalLxMusicSourceScript = process.env.LX_MUSIC_SOURCE_SCRIPT
