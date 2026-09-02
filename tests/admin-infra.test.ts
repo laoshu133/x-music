@@ -3740,7 +3740,12 @@ test('musiver favorite list keeps selected virtual song ids stable across detail
             singer: [{ name: '珂拉琪 Collage', mid: 'qq-artist-collage' }],
             album: { name: 'MEmento MORI', mid: 'qq-album-collage' },
             fav_time: '2024-01-01T00:00:00.000Z',
-            file: { media_mid: '004a6D4b14LK4E', size_flac: 49_863_855 },
+            file: {
+              media_mid: '004a6D4b14LK4E',
+              size_flac: 49_863_855,
+              size_320mp3: 7_520_000,
+              size_128mp3: 3_008_000,
+            },
           },
         ].slice(begin, begin + count)
         return Response.json({
@@ -3800,9 +3805,25 @@ test('musiver favorite list keeps selected virtual song ids stable across detail
     )
     assert.equal(playbackInfo.status, 200)
     const playbackPayload = await playbackInfo.json()
+    assert.equal(playbackPayload.MediaSources.length, 3)
     assert.equal(playbackPayload.MediaSources[0].Id, targetId)
     assert.equal(playbackPayload.MediaSources[0].ItemId, targetId)
     assert.equal(playbackPayload.MediaSources[0].Path, target.MediaSources[0].Path)
+    assert.deepEqual(
+      playbackPayload.MediaSources.map((source: { Bitrate: number }) => source.Bitrate),
+      [900_000, 320_000, 128_000],
+    )
+    assert.deepEqual(
+      playbackPayload.MediaSources.map((source: { SupportsTranscoding: boolean }) => source.SupportsTranscoding),
+      [false, false, false],
+    )
+    assert.ok(playbackPayload.MediaSources.every((source: { SupportsDirectPlay: boolean }) => source.SupportsDirectPlay))
+    assert.ok(playbackPayload.MediaSources.every((source: { SupportsDirectStream: boolean }) => source.SupportsDirectStream))
+    assert.equal(playbackPayload.MediaSources[0].DirectStreamUrl, `/Audio/${encodeURIComponent(targetId)}/universal?quality=flac`)
+    assert.equal(playbackPayload.MediaSources[1].Path, `/Audio/${encodeURIComponent(targetId)}/universal?quality=320k`)
+    assert.equal(playbackPayload.MediaSources[1].DirectStreamUrl, playbackPayload.MediaSources[1].Path)
+    assert.equal(playbackPayload.MediaSources[2].Path, `/Audio/${encodeURIComponent(targetId)}/universal?quality=128k`)
+    assert.ok(playbackPayload.MediaSources.every((source: { AddApiKeyToDirectStreamUrl: boolean }) => source.AddApiKeyToDirectStreamUrl))
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999043')
     clearQQLoginCookie()
@@ -5880,7 +5901,7 @@ test('local emby virtual audio caches unavailable music-url responses as 451', a
     )
     assert.equal(first.status, 451)
     assert.match((await first.json()).error, /ERR无版权/)
-    assert.equal(musicUrlRequests, 3)
+    assert.equal(musicUrlRequests, 1)
 
     const second = await dispatchEmbyRequest(
       new Request(`http://local/emby/Audio/${encodeURIComponent(songId)}/universal?api_key=${authPayload.AccessToken}`, {
@@ -5889,7 +5910,7 @@ test('local emby virtual audio caches unavailable music-url responses as 451', a
       stripOptionalEmbyPrefix(`/emby/Audio/${encodeURIComponent(songId)}/universal`),
     )
     assert.equal(second.status, 451)
-    assert.equal(musicUrlRequests, 6)
+    assert.equal(musicUrlRequests, 2)
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999121')
     clearQQLoginCookie()
@@ -6073,11 +6094,12 @@ test('local emby virtual audio retries stale quality unavailable cache before re
   }
 })
 
-test('musiver virtual audio stream prefers mp3 quality requested by client', async () => {
+test('musiver virtual audio stream respects a 192k streaming bitrate limit', async () => {
   const originalFetch = globalThis.fetch
   const originalLxMusicSourceScript = process.env.LX_MUSIC_SOURCE_SCRIPT
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999032')
+    db.prepare("DELETE FROM app_settings WHERE key LIKE 'music-url.unplayable.tx.003CnoIy3AcyPE%'").run()
     process.env.LX_MUSIC_SOURCE_SCRIPT = 'https://script.example/script/lxmusic?key=test-key'
     saveQQLoginCookie('uin=o999032; qm_keyst=test-key')
     markAccountUpstreamBound('999032')
@@ -6105,7 +6127,7 @@ test('musiver virtual audio stream prefers mp3 quality requested by client', asy
         albumName: '天公疼憨人',
         albumId: '001ujqZ31d05Tm',
         interval: '4:22',
-        types: [{ type: '128k', size: '4.01MB' }],
+        types: [{ type: 'flac', size: '30MB' }, { type: '320k', size: '10MB' }, { type: '128k', size: '4.01MB' }],
         raw: { songId: 104833610, strMediaMid: '000Tgfyk3sAoaL' },
       },
     }))
@@ -6126,18 +6148,19 @@ test('musiver virtual audio stream prefers mp3 quality requested by client', asy
     }) as typeof fetch
 
     const response = await dispatchEmbyRequest(
-      new Request(`http://local/Audio/${encodeURIComponent(songId)}/stream?UserId=${authPayload.User.Id}&Container=mp3&AudioCodec=mp3&api_key=${authPayload.AccessToken}`, {
+      new Request(`http://local/Audio/${encodeURIComponent(songId)}/stream?UserId=${authPayload.User.Id}&MaxStreamingBitrate=192000&Container=mp3&AudioCodec=mp3&api_key=${authPayload.AccessToken}`, {
         headers: { authorization: authHeader, 'user-agent': 'musiver/1.3.9 (Macintosh)' },
       }),
       stripOptionalEmbyPrefix(`/Audio/${encodeURIComponent(songId)}/stream`),
     )
     assert.equal(response.status, 302)
     assert.equal(response.headers.get('location'), 'https://cdn.example/audio.mp3')
-    assert.deepEqual(requestedQualities, ['128k'])
+    assert.equal(requestedQualities[0], '128k')
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999032')
     clearQQLoginCookie()
     db.prepare('DELETE FROM app_settings WHERE key = ?').run('virtual.song.003CnoIy3AcyPE')
+    db.prepare("DELETE FROM app_settings WHERE key LIKE 'music-url.unplayable.tx.003CnoIy3AcyPE%'").run()
     db.prepare("DELETE FROM tracks WHERE songmid = ? AND source = 'tx'").run('003CnoIy3AcyPE')
     db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track' AND json_extract(payload_json, '$.songmid') = ?").run('003CnoIy3AcyPE')
     globalThis.fetch = originalFetch
@@ -6498,7 +6521,7 @@ test('local emby audio falls back to upstream Emby when QQ LX is unavailable', a
     )
     assert.equal(response.status, 206)
     assert.equal(await response.text(), 'emby-fallback-audio')
-    assert.equal(lxRequests.length, 3)
+    assert.equal(lxRequests.length, 1)
     assert.deepEqual(proxiedAudioPaths, ['/Audio/11783440/universal'])
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999050')
@@ -7238,7 +7261,7 @@ test('local emby virtual audio falls back to WebDAV after LX sources fail', asyn
     assert.equal(response.status, 206)
     assert.equal(response.headers.get('x-x-music-stream-mode'), 'webdav')
     assert.equal(await response.text(), 'webdav-audio-bytes')
-    assert.deepEqual(lxQualities, ['flac', '320k', '128k'])
+    assert.deepEqual(lxQualities, ['flac'])
     assert.deepEqual(webdavPaths, ['/dav/music/WebDAV%20Artist/WebDAV%20Album/WebDAV%20Artist%20-%20WebDAV%20Playback%20Song.flac'])
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999052')
@@ -7307,7 +7330,7 @@ test('local emby virtual audio keeps low quality playback cache out of Emby unti
     }) as typeof fetch
 
     const response = await dispatchEmbyRequest(
-      new Request(`http://local/Audio/${encodeURIComponent(songId)}/stream?Container=mp3&AudioCodec=mp3&api_key=${authPayload.AccessToken}`, {
+      new Request(`http://local/Audio/${encodeURIComponent(songId)}/stream?MaxStreamingBitrate=320000&Container=mp3&AudioCodec=mp3&api_key=${authPayload.AccessToken}`, {
         headers: { authorization: authHeader, 'user-agent': 'musiver/1.3.9 (Macintosh)' },
       }),
       stripOptionalEmbyPrefix(`/Audio/${encodeURIComponent(songId)}/stream`),
@@ -7348,7 +7371,7 @@ test('local emby virtual audio keeps low quality playback cache out of Emby unti
   }
 })
 
-test('local emby virtual audio syncs best available fallback quality when requested flac is unavailable', async () => {
+test('local emby virtual audio errors after requested and highest qualities both fail', async () => {
   const originalFetch = globalThis.fetch
   const originalLxMusicSourceScript = process.env.LX_MUSIC_SOURCE_SCRIPT
   const originalScanWaitMs = process.env.EMBY_SYNC_SCAN_WAIT_MS
@@ -7390,10 +7413,7 @@ test('local emby virtual audio syncs best available fallback quality when reques
       if (requestUrl.hostname === 'script.example') {
         const body = JSON.parse(String(init?.body ?? '{}')) as { quality?: string }
         requestedQualities.push(body.quality ?? '')
-        if (body.quality === 'flac') {
-          return Response.json({ error: 'flac unavailable' }, { status: 404 })
-        }
-        return Response.json({ url: 'https://cdn.example/audio-320k.mp3' })
+        return Response.json({ error: `${body.quality} unavailable` }, { status: 404 })
       }
       if (requestUrl.hostname === 'cdn.example') {
         return new Response('audio-320k', { headers: { 'content-type': 'audio/mpeg' } })
@@ -7403,14 +7423,13 @@ test('local emby virtual audio syncs best available fallback quality when reques
     }) as typeof fetch
 
     const response = await dispatchEmbyRequest(
-      new Request(`http://local/emby/Audio/${encodeURIComponent(songId)}/universal?Container=opus%2Cwebm%7Copus%2Cmp3%2Caac%2Cflac&AudioCodec=aac&api_key=${authPayload.AccessToken}`, {
+      new Request(`http://local/emby/Audio/${encodeURIComponent(songId)}/universal?quality=320k&api_key=${authPayload.AccessToken}`, {
         headers: { 'X-Emby-Authorization': authHeader },
       }),
       stripOptionalEmbyPrefix(`/emby/Audio/${encodeURIComponent(songId)}/universal`),
     )
-    assert.equal(response.status, 302)
-    assert.equal(response.headers.get('location'), 'https://cdn.example/audio-320k.mp3')
-    assert.deepEqual(requestedQualities.slice(0, 2), ['flac', '320k'])
+    assert.equal(response.status, 502)
+    assert.deepEqual(requestedQualities, ['320k', 'flac'])
 
     const rows = db.prepare(`
       SELECT tf.quality, tf.status, tf.final_path AS finalPath, tf.raw_path AS rawPath, tf.error
@@ -7424,7 +7443,7 @@ test('local emby virtual audio syncs best available fallback quality when reques
     assert.equal(flac?.status, 'failed')
     assert.match(flac?.error ?? '', /404/)
     assert.equal(fallback?.status, 'failed')
-    assert.equal(fallback?.error, 'Redirected to non-encrypted upstream without local cache')
+    assert.match(fallback?.error ?? '', /404/)
     assert.equal(fallback?.finalPath ?? null, null)
     assert.equal(fallback?.rawPath ?? null, null)
 

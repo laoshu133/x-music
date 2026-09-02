@@ -5,7 +5,7 @@ import { encryptedQQAudioRequiresKeyMessage, isEncryptedQQAudioFileName, isEncry
 import { db } from '@/lib/db'
 import { isMusicUrlUnavailableError, isMusicUrlUnavailableMessage, MusicUrlConfigError, MusicUrlResolveError, qualityFallbacks, resolveMusicUrl } from '@/lib/music-url/resolve'
 import { getCachedUnplayableQuality, isRecentlyUnplayableSong, markUnplayableQuality } from '@/lib/music-url/unplayable'
-import { isHighestAvailableQuality } from '@/lib/quality'
+import { isHighestAvailableQuality, isMusicQuality } from '@/lib/quality'
 import {
   getQQPlaylistDetail,
   getQQFavoriteSongs,
@@ -1307,9 +1307,8 @@ async function handlePlaybackInfoRequest(
   }
 
   prefetchLyricsBestEffort(stored.song, decoded.playlistId ?? stored.playlistId, account, request, 'playback_info')
-  const mediaSource = songMediaSource(stored.song, intervalToTicks(stored.song.interval))
   return Response.json({
-    MediaSources: [mediaSource],
+    MediaSources: songMediaSources(stored.song, intervalToTicks(stored.song.interval)),
     PlaySessionId: crypto.randomUUID(),
     ErrorCode: 'NoError',
   })
@@ -1684,9 +1683,7 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
   const preferredQuality = preferredAudioQualityForRequest(request, musicInfo)
   const track = ensureTrack(musicInfo)
   try {
-    const resolved = await resolvePlayableUpstreamResponse(musicInfo, preferredQuality, track, request, {
-      allowFullFallback: shouldAllowFullAudioFallback(request),
-    })
+    const resolved = await resolvePlayableUpstreamResponse(musicInfo, preferredQuality, track, request)
     const account = authorizedLocalAccount(request)
     if (isPlaybackStartRequest(request)) {
       insertPlayEvent(track.id, resolved.quality, account?.userId)
@@ -1720,7 +1717,6 @@ async function handleAudioRequest(request: Request, embyPath: string): Promise<R
       playlistId: decoded.playlistId ?? stored.playlistId,
       preferredQuality,
       availableQualities: availableSongQualities(musicInfo),
-      allowFullFallback: shouldAllowFullAudioFallback(request),
       error: message,
       attempts: error instanceof MusicUrlResolveError ? error.attempts : undefined,
     }, 'error')
@@ -1874,7 +1870,6 @@ async function resolvePlayableUpstreamResponse(
   preferredQuality: MusicQuality,
   track: TrackRecord,
   request: Request,
-  options: { allowFullFallback?: boolean } = {},
 ): Promise<{
   url: string
   quality: MusicQuality
@@ -1961,7 +1956,7 @@ async function resolvePlayableUpstreamResponse(
     }
   }
 
-  const qualities = audioQualityFallbacks(preferredQuality, musicInfo, options)
+  const qualities = audioQualityFallbacks(preferredQuality, musicInfo)
   for (const quality of qualities) {
     const cachedUnplayable = getCachedUnplayableQuality(musicInfo, quality)
     if (cachedUnplayable) {
@@ -2298,15 +2293,39 @@ function playableQualityForSong(musicInfo: MusicInfo): MusicQuality | undefined 
 
 function preferredAudioQualityForRequest(request: Request, musicInfo: MusicInfo): MusicQuality {
   const url = new URL(request.url)
+  const explicitQuality = (url.searchParams.get('quality') ?? url.searchParams.get('Quality') ?? '').toLowerCase()
+  if (isMusicQuality(explicitQuality)) return explicitQuality
+
+  const available = availableSongQualities(musicInfo)
+  const bitrateLimit = requestAudioBitrateLimit(url)
+  if (bitrateLimit !== undefined) {
+    return available.find(quality => audioQualityBitrate(quality) <= bitrateLimit)
+      ?? available[available.length - 1]
+      ?? 'flac'
+  }
+
   const pathQuality = preferredAudioQualityForPath(url.pathname)
-  if (pathQuality && availableSongQualities(musicInfo).includes(pathQuality)) return pathQuality
+  if (pathQuality && available.includes(pathQuality)) return pathQuality
   const container = (url.searchParams.get('Container') ?? url.searchParams.get('container') ?? '').toLowerCase()
   const audioCodec = (url.searchParams.get('AudioCodec') ?? url.searchParams.get('audioCodec') ?? '').toLowerCase()
-  const available = availableSongQualities(musicInfo)
   if (containerSupportsFlac(container) && available.includes('flac')) return 'flac'
   if ((container.includes('mp3') || audioCodec.includes('mp3')) && available.includes('320k')) return '320k'
   if ((container.includes('mp3') || audioCodec.includes('mp3')) && available.includes('128k')) return '128k'
   return available[0] ?? 'flac'
+}
+
+function requestAudioBitrateLimit(url: URL): number | undefined {
+  for (const key of ['MaxStreamingBitrate', 'maxStreamingBitrate', 'AudioBitrate', 'audioBitrate']) {
+    const value = Number.parseInt(url.searchParams.get(key) ?? '', 10)
+    if (Number.isFinite(value) && value > 0) return value
+  }
+  return undefined
+}
+
+function audioQualityBitrate(quality: MusicQuality): number {
+  if (quality === 'flac') return 900_000
+  if (quality === '320k') return 320_000
+  return 128_000
 }
 
 function preferredAudioQualityForPath(pathname: string): MusicQuality | undefined {
@@ -2316,23 +2335,12 @@ function preferredAudioQualityForPath(pathname: string): MusicQuality | undefine
   return undefined
 }
 
-function shouldAllowFullAudioFallback(request: Request): boolean {
-  const userAgent = request.headers.get('user-agent')?.toLowerCase() ?? ''
-  if (userAgent.includes('narjo')) return true
-  const pathname = new URL(request.url).pathname.toLowerCase()
-  return pathname.endsWith('.mp3') || pathname.endsWith('.flac')
-}
-
 function audioQualityFallbacks(
   preferredQuality: MusicQuality,
   musicInfo: MusicInfo,
-  options: { allowFullFallback?: boolean } = {},
 ): MusicQuality[] {
-  const fallback = qualityFallbacks(preferredQuality)
-  if (!options.allowFullFallback) return fallback
-  const available = availableSongQualities(musicInfo)
-  const ordered = [preferredQuality, ...available, ...fallback].filter((quality, index, values) => values.indexOf(quality) === index)
-  return ordered.length ? ordered : fallback
+  return [preferredQuality, highestAvailableSongQuality(musicInfo)]
+    .filter((quality, index, values) => values.indexOf(quality) === index)
 }
 
 function logVirtualAudioEvent(
@@ -3241,11 +3249,23 @@ function readNestedRawValue(raw: unknown, keys: string[]): unknown {
   return undefined
 }
 
-function songMediaSource(song: MusicInfo, runtimeTicks?: number, itemId = songVirtualId(song), _virtualId = songVirtualId(song)) {
-  const quality = preferredSongQuality(song)
-  const bitrate = quality === 'flac' ? 900_000 : quality === '128k' ? 128_000 : 320_000
+function songMediaSources(song: MusicInfo, runtimeTicks?: number, itemId = songVirtualId(song), virtualId = songVirtualId(song)) {
+  return availableSongQualities(song).map(quality => songMediaSource(song, runtimeTicks, itemId, virtualId, quality))
+}
+
+function songMediaSource(
+  song: MusicInfo,
+  runtimeTicks?: number,
+  itemId = songVirtualId(song),
+  _virtualId = songVirtualId(song),
+  quality = preferredSongQuality(song),
+) {
+  const highestQuality = preferredSongQuality(song)
+  const bitrate = audioQualityBitrate(quality)
   const container = quality === 'flac' ? 'flac' : 'mp3'
   const codec = quality === 'flac' ? 'flac' : 'mp3'
+  const audioPath = `/Audio/${encodeURIComponent(itemId)}/universal`
+  const qualityQuery = `quality=${encodeURIComponent(quality)}`
   const subtitleDeliveryUrl = `/Items/${encodeURIComponent(itemId)}/Subtitles/1/Stream.js`
   const mediaStreams = compactRecord({
     Codec: codec,
@@ -3294,8 +3314,9 @@ function songMediaSource(song: MusicInfo, runtimeTicks?: number, itemId = songVi
 
   return {
     Protocol: 'Http',
-    Id: itemId,
-    Path: `/Audio/${encodeURIComponent(itemId)}/universal`,
+    Id: quality === highestQuality ? itemId : `${itemId}-${quality}`,
+    Path: quality === highestQuality ? audioPath : `${audioPath}?${qualityQuery}`,
+    DirectStreamUrl: `${audioPath}?${qualityQuery}`,
     Type: 'Default',
     Container: container,
     Size: readSongQualitySize(song, quality),
@@ -3303,7 +3324,7 @@ function songMediaSource(song: MusicInfo, runtimeTicks?: number, itemId = songVi
     IsRemote: true,
     HasMixedProtocols: false,
     RunTimeTicks: runtimeTicks,
-    SupportsTranscoding: true,
+    SupportsTranscoding: false,
     SupportsDirectStream: true,
     SupportsDirectPlay: true,
     IsInfiniteStream: false,
@@ -3315,7 +3336,7 @@ function songMediaSource(song: MusicInfo, runtimeTicks?: number, itemId = songVi
     Formats: [],
     Bitrate: bitrate,
     RequiredHttpHeaders: {},
-    AddApiKeyToDirectStreamUrl: false,
+    AddApiKeyToDirectStreamUrl: true,
     ReadAtNativeFramerate: false,
     DefaultAudioStreamIndex: 0,
     DefaultSubtitleStreamIndex: subtitleStream ? 1 : undefined,
