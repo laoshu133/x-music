@@ -3778,6 +3778,7 @@ test('musiver favorite list keeps selected virtual song ids stable across detail
     const target = listPayload.Items[1]
     const targetId = encodeVirtualId({ kind: 'qq-song', songmid: '004a6D4b14LK4E' })
     assert.equal(target.Id, targetId)
+    assert.equal(target.MediaSources.length, 3)
     assert.equal(target.MediaSources[0].Id, targetId)
     assert.equal(target.MediaSources[0].ItemId, targetId)
     assert.equal(target.MediaSources[0].Path, `/Audio/${encodeURIComponent(targetId)}/universal`)
@@ -3824,6 +3825,22 @@ test('musiver favorite list keeps selected virtual song ids stable across detail
     assert.equal(playbackPayload.MediaSources[1].DirectStreamUrl, playbackPayload.MediaSources[1].Path)
     assert.equal(playbackPayload.MediaSources[2].Path, `/Audio/${encodeURIComponent(targetId)}/universal?quality=128k`)
     assert.ok(playbackPayload.MediaSources.every((source: { AddApiKeyToDirectStreamUrl: boolean }) => source.AddApiKeyToDirectStreamUrl))
+
+    const remotePlaybackInfo = await dispatchEmbyRequest(
+      new Request(`http://local/Items/${encodeURIComponent(targetId)}/PlaybackInfo`, {
+        method: 'POST',
+        headers: { authorization: authHeader, 'content-type': 'application/json', 'user-agent': 'Amcfy Music/1.2.10' },
+        body: JSON.stringify({ MaxStreamingBitrate: 320_000 }),
+      }),
+      stripOptionalEmbyPrefix(`/Items/${encodeURIComponent(targetId)}/PlaybackInfo`),
+    )
+    assert.equal(remotePlaybackInfo.status, 200)
+    const remotePlaybackPayload = await remotePlaybackInfo.json()
+    assert.deepEqual(
+      remotePlaybackPayload.MediaSources.map((source: { Bitrate: number }) => source.Bitrate),
+      [320_000, 128_000, 900_000],
+    )
+    assert.match(remotePlaybackPayload.MediaSources[0].DirectStreamUrl, /quality=320k$/)
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999043')
     clearQQLoginCookie()
@@ -6094,7 +6111,7 @@ test('local emby virtual audio retries stale quality unavailable cache before re
   }
 })
 
-test('musiver virtual audio stream respects a 192k streaming bitrate limit', async () => {
+test('Amcfy remote main.m3u8 request uses direct audio at the bitrate limit', async () => {
   const originalFetch = globalThis.fetch
   const originalLxMusicSourceScript = process.env.LX_MUSIC_SOURCE_SCRIPT
   try {
@@ -6113,7 +6130,7 @@ test('musiver virtual audio stream respects a 192k streaming bitrate limit', asy
     assert.equal(auth?.status, 200)
     const authPayload = await auth!.json()
     const songId = encodeVirtualId({ kind: 'qq-song', songmid: '003CnoIy3AcyPE' })
-    const authHeader = `MediaBrowser Client="Musiver", Device="Mi-Mini-M2", Version="1.3.9", Token="${authPayload.AccessToken}"`
+    const authHeader = `MediaBrowser Client="Amcfy Music for iOS", Device="iPhone", Version="1.2.10", Token="${authPayload.AccessToken}"`
     db.prepare(`
       INSERT INTO app_settings (key, value_json, updated_at)
       VALUES (?, ?, CURRENT_TIMESTAMP)
@@ -6147,15 +6164,28 @@ test('musiver virtual audio stream respects a 192k streaming bitrate limit', asy
       return Response.json({ Items: [], TotalRecordCount: 0 })
     }) as typeof fetch
 
-    const response = await dispatchEmbyRequest(
-      new Request(`http://local/Audio/${encodeURIComponent(songId)}/stream?UserId=${authPayload.User.Id}&MaxStreamingBitrate=192000&Container=mp3&AudioCodec=mp3&api_key=${authPayload.AccessToken}`, {
-        headers: { authorization: authHeader, 'user-agent': 'musiver/1.3.9 (Macintosh)' },
+    const requestPath = `/Audio/${encodeURIComponent(songId)}/main.m3u8`
+    const requestQuery = `MaxStreamingBitrate=320000&AudioCodec=mp3&TranscodingContainer=ts&TranscodingProtocol=hls&EnableRedirection=true&api_key=${authPayload.AccessToken}`
+    const head = await dispatchEmbyRequest(
+      new Request(`http://local/emby${requestPath}?${requestQuery}`, {
+        method: 'HEAD',
+        headers: { authorization: authHeader, 'user-agent': 'Amcfy Music/1.2.10' },
       }),
-      stripOptionalEmbyPrefix(`/Audio/${encodeURIComponent(songId)}/stream`),
+      stripOptionalEmbyPrefix(requestPath),
+    )
+    assert.equal(head.status, 200)
+    assert.equal(head.headers.get('content-type'), 'audio/mpeg')
+    assert.equal(requestedQualities.length, 0)
+
+    const response = await dispatchEmbyRequest(
+      new Request(`http://local/emby${requestPath}?${requestQuery}`, {
+        headers: { authorization: authHeader, 'user-agent': 'Amcfy Music/1.2.10' },
+      }),
+      stripOptionalEmbyPrefix(requestPath),
     )
     assert.equal(response.status, 302)
     assert.equal(response.headers.get('location'), 'https://cdn.example/audio.mp3')
-    assert.equal(requestedQualities[0], '128k')
+    assert.equal(requestedQualities[0], '320k')
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999032')
     clearQQLoginCookie()

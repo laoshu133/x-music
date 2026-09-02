@@ -65,12 +65,13 @@ test('emby route compatibility accepts legacy and modern mutation endpoints', ()
   assert.equal(isFavoriteItemMutation('GET', '/Users/user-1/FavoriteItems/mix_virtual_song'), false)
 })
 
-test('emby audio route compatibility accepts Narjo extension suffixes', () => {
+test('emby audio route compatibility accepts Narjo suffixes and Amcfy remote playback', () => {
   const itemId = 'mix_virtual_song'
   assert.equal(isAudioRequest(`/Audio/${itemId}/universal`), true)
   assert.equal(isAudioRequest(`/Audio/${itemId}/stream`), true)
   assert.equal(isAudioRequest(`/Audio/${itemId}/universal.flac`), true)
   assert.equal(isAudioRequest(`/Audio/${itemId}/stream.mp3`), true)
+  assert.equal(isAudioRequest(`/Audio/${itemId}/main.m3u8`), true)
 })
 
 test('narjo lyric and subsonic compatibility paths are handled locally', () => {

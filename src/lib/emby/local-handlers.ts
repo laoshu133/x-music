@@ -1307,8 +1307,9 @@ async function handlePlaybackInfoRequest(
   }
 
   prefetchLyricsBestEffort(stored.song, decoded.playlistId ?? stored.playlistId, account, request, 'playback_info')
+  const preferredQuality = await preferredPlaybackInfoQualityForRequest(request, stored.song)
   return Response.json({
-    MediaSources: songMediaSources(stored.song, intervalToTicks(stored.song.interval)),
+    MediaSources: songMediaSources(stored.song, intervalToTicks(stored.song.interval), itemId, itemId, preferredQuality),
     PlaySessionId: crypto.randomUUID(),
     ErrorCode: 'NoError',
   })
@@ -2299,9 +2300,7 @@ function preferredAudioQualityForRequest(request: Request, musicInfo: MusicInfo)
   const available = availableSongQualities(musicInfo)
   const bitrateLimit = requestAudioBitrateLimit(url)
   if (bitrateLimit !== undefined) {
-    return available.find(quality => audioQualityBitrate(quality) <= bitrateLimit)
-      ?? available[available.length - 1]
-      ?? 'flac'
+    return audioQualityForBitrateLimit(available, bitrateLimit)
   }
 
   const pathQuality = preferredAudioQualityForPath(url.pathname)
@@ -2312,6 +2311,43 @@ function preferredAudioQualityForRequest(request: Request, musicInfo: MusicInfo)
   if ((container.includes('mp3') || audioCodec.includes('mp3')) && available.includes('320k')) return '320k'
   if ((container.includes('mp3') || audioCodec.includes('mp3')) && available.includes('128k')) return '128k'
   return available[0] ?? 'flac'
+}
+
+async function preferredPlaybackInfoQualityForRequest(request: Request, musicInfo: MusicInfo): Promise<MusicQuality> {
+  const bodyBitrateLimit = await playbackInfoBodyBitrateLimit(request)
+  if (bodyBitrateLimit !== undefined) {
+    return audioQualityForBitrateLimit(availableSongQualities(musicInfo), bodyBitrateLimit)
+  }
+  return preferredAudioQualityForRequest(request, musicInfo)
+}
+
+async function playbackInfoBodyBitrateLimit(request: Request): Promise<number | undefined> {
+  if (request.method !== 'POST') return undefined
+  try {
+    const body = await request.clone().json() as Record<string, unknown>
+    const deviceProfile = body.DeviceProfile && typeof body.DeviceProfile === 'object'
+      ? body.DeviceProfile as Record<string, unknown>
+      : undefined
+    for (const value of [
+      body.MaxStreamingBitrate,
+      body.maxStreamingBitrate,
+      body.AudioBitrate,
+      body.audioBitrate,
+      deviceProfile?.MaxStreamingBitrate,
+    ]) {
+      const bitrate = typeof value === 'number' ? value : Number.parseInt(String(value ?? ''), 10)
+      if (Number.isFinite(bitrate) && bitrate > 0) return bitrate
+    }
+  } catch {
+    // Some clients send an empty POST body and keep playback limits in the URL.
+  }
+  return undefined
+}
+
+function audioQualityForBitrateLimit(available: MusicQuality[], bitrateLimit: number): MusicQuality {
+  return available.find(quality => audioQualityBitrate(quality) <= bitrateLimit)
+    ?? available[available.length - 1]
+    ?? 'flac'
 }
 
 function requestAudioBitrateLimit(url: URL): number | undefined {
@@ -3162,7 +3198,8 @@ function songToEmbyItem(song: MusicInfo, _playlistId?: string, isFavorite = fals
   const runtimeTicks = intervalToTicks(song.interval)
   const itemId = embyFacingSongItemId(song, account)
   const virtualId = songVirtualId(song)
-  const mediaSource = songMediaSource(song, runtimeTicks, itemId, virtualId)
+  const mediaSources = songMediaSources(song, runtimeTicks, itemId, virtualId)
+  const mediaSource = mediaSources[0]
   const imageTag = songImageTag(song, itemId)
   const albumId = nonEmptyString(song.albumId)
 
@@ -3192,7 +3229,7 @@ function songToEmbyItem(song: MusicInfo, _playlistId?: string, isFavorite = fals
     Composers: [],
     RunTimeTicks: runtimeTicks,
     HasLyrics: true,
-    MediaSources: [mediaSource],
+    MediaSources: mediaSources,
     ImageTags: imageTag ? { Primary: imageTag } : {},
     UserData: {
       PlaybackPositionTicks: 0,
@@ -3249,8 +3286,19 @@ function readNestedRawValue(raw: unknown, keys: string[]): unknown {
   return undefined
 }
 
-function songMediaSources(song: MusicInfo, runtimeTicks?: number, itemId = songVirtualId(song), virtualId = songVirtualId(song)) {
-  return availableSongQualities(song).map(quality => songMediaSource(song, runtimeTicks, itemId, virtualId, quality))
+function songMediaSources(
+  song: MusicInfo,
+  runtimeTicks?: number,
+  itemId = songVirtualId(song),
+  virtualId = songVirtualId(song),
+  preferredQuality = preferredSongQuality(song),
+) {
+  const available = availableSongQualities(song)
+  const preferredIndex = available.indexOf(preferredQuality)
+  const ordered = preferredIndex < 0
+    ? available
+    : [...available.slice(preferredIndex), ...available.slice(0, preferredIndex)]
+  return ordered.map(quality => songMediaSource(song, runtimeTicks, itemId, virtualId, quality))
 }
 
 function songMediaSource(
