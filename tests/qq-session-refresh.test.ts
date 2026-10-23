@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { db } from '@/lib/db'
-import { getAccountByQQ, type AccountRecord } from '@/lib/db/accounts'
+import { getAccountByQQ, summarizeAccount, type AccountRecord } from '@/lib/db/accounts'
 import { clearQQLoginCookie, getStoredQQLoginState, saveQQLoginCookie } from '@/lib/db/qq-session'
 import { buildQQLoginState, parseQQAccessTokenExpiresAt, parseQQMusickeyCreatedAt, replaceQQCookieValues } from '@/lib/qq/account'
 import { getAccountQQAuthorizationRefreshDecision, refreshAccountQQAuthorization, refreshAccountQQAuthorizationIfNeeded } from '@/lib/qq/auth-refresh'
@@ -41,6 +41,21 @@ test('QQ login state exposes musickey creation time from cookie', () => {
     parseQQMusickeyCreatedAt('uin=o123456; qm_keyst=key; psrf_musickey_createtime=1782666210'),
     '2026-06-28T17:03:30.000Z',
   )
+})
+
+test('account summary exposes persisted QQ authorization timing', () => {
+  saveQQLoginCookie([
+    'uin=o123456',
+    'qm_keyst=key',
+    'psrf_access_token_expiresAt=1787850210',
+    'psrf_musickey_createtime=1782666210',
+  ].join('; '))
+  const account = getAccountByQQ('123456')
+  assert.ok(account)
+
+  const summary = summarizeAccount(account)
+  assert.equal(summary.qq.accessTokenExpiresAt, '2026-08-27T17:03:30.000Z')
+  assert.equal(summary.qq.musickeyCreatedAt, '2026-06-28T17:03:30.000Z')
 })
 
 test('refreshQQMusickey exchanges current musickey for a new one', async () => {

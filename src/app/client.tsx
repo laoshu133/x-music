@@ -49,12 +49,19 @@ interface AccountState {
   loggedIn: boolean
   user?: { id: string; username: string; role: 'admin' | 'user'; status: 'active' | 'disabled' }
   username?: string
-  qq?: { authorized: boolean; status: 'missing' | 'active' | 'expired'; uin?: string; nickname?: string; error?: string }
+  qq?: {
+    authorized: boolean
+    status: 'missing' | 'active' | 'expired'
+    uin?: string
+    nickname?: string
+    hasEncryptedUin?: boolean
+    hasQQMusicKey?: boolean
+    accessTokenExpiresAt?: string
+    musickeyCreatedAt?: string
+    error?: string
+  }
   systemError?: boolean
   isAdmin?: boolean
-  hasEncryptedUin?: boolean
-  hasQQMusicKey?: boolean
-  accessTokenExpiresAt?: string
   actionable?: string
   emby?: {
     username?: string
@@ -1289,8 +1296,11 @@ function HomePanel({
   onRefreshQQAuthorization: () => void
 }) {
   const accessTokenExpiresAt = accountRefresh.data?.accessTokenExpiresAt
-    ?? accountRefresh.data?.account?.accessTokenExpiresAt
-    ?? account.accessTokenExpiresAt
+    ?? accountRefresh.data?.account?.qq?.accessTokenExpiresAt
+    ?? account.qq?.accessTokenExpiresAt
+  const lastRefreshedAt = accountRefresh.data?.refreshedAt
+    ?? accountRefresh.data?.account?.qq?.musickeyCreatedAt
+    ?? account.qq?.musickeyCreatedAt
 
   return (
     <div className="home-layout">
@@ -1326,7 +1336,7 @@ function HomePanel({
         <div className="status-table">
           <div>
             <span>上次刷新</span>
-            <strong>{accountRefresh.data?.refreshedAt ? formatDateTime(accountRefresh.data.refreshedAt) : '-'}</strong>
+            <strong>{lastRefreshedAt ? formatDateTime(lastRefreshedAt) : '-'}</strong>
           </div>
           <div>
             <span>有效期</span>

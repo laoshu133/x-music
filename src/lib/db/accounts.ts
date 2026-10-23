@@ -1,6 +1,6 @@
 import { db } from '@/lib/db'
 import { normalizeDbDateTime, normalizeOptionalDbDateTime } from '@/lib/db/time'
-import { buildQQLoginState, parseQQAccessTokenExpiresAt, type QQLoginState } from '@/lib/qq/account'
+import { buildQQLoginState, parseQQAccessTokenExpiresAt, parseQQMusickeyCreatedAt, type QQLoginState } from '@/lib/qq/account'
 import { getQQFavoriteSongs } from '@/lib/qq/favorites'
 import { getQQUserProfile } from '@/lib/qq/user'
 import { decryptSecret, encryptSecret } from '@/lib/security'
@@ -427,6 +427,7 @@ function summarizeAccountQQ(account: AccountRecord) {
     hasEncryptedUin: Boolean(account.encryptedUin),
     hasQQMusicKey: Boolean(account.qqmusicKey),
     accessTokenExpiresAt: account.qqCookie ? parseQQAccessTokenExpiresAt(account.qqCookie) : undefined,
+    musickeyCreatedAt: account.qqCookie ? parseQQMusickeyCreatedAt(account.qqCookie) : undefined,
     error: account.qqAuthError,
   }
 }
