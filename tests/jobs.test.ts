@@ -23,11 +23,18 @@ import {
   failExhaustedQueuedJobs,
   getJob,
   requeueJob,
+  serializeJobError,
 } from '@/lib/jobs'
 import { getJobSummary, listJobs } from '@/lib/jobs/status'
 import { processWorkerTick } from '@/worker/index'
 import { saveQQLoginCookie } from '@/lib/db/qq-session'
 import { setLocalFavoriteSynced } from '@/lib/db/favorites'
+import {
+  enqueuePendingEmbyTrackSyncs,
+  reconcilePendingEmbyTrackSyncs,
+  replayFailedEmbyTrackSyncs,
+  requestUserTrackSync,
+} from '@/lib/emby/sync'
 
 const TEST_EMBY_QQ_UIN = '998001'
 const TEST_EMBY_WEBDAV_DSN = 'https://webdav-user:webdav-pass@webdav.example/dav/music'
@@ -100,6 +107,168 @@ test('job lifecycle claim complete and retry states', () => {
   completeJob(created.id)
   assert.equal(getJob(created.id)?.status, 'completed')
   assert.equal(getJob(created.id)?.error, null)
+})
+
+test('job errors preserve fetch failure causes for diagnostics', () => {
+  db.prepare("DELETE FROM jobs WHERE type = 'tag_track_file'").run()
+  const created = createJob({
+    type: 'tag_track_file',
+    payload: { trackFileId: Date.now(), rawPath: '/tmp/cause.flac' },
+  })
+  const cause = Object.assign(new Error('connect ECONNREFUSED 172.16.3.1:5243'), {
+    code: 'ECONNREFUSED',
+    syscall: 'connect',
+    address: '172.16.3.1',
+    port: 5243,
+  })
+  const error = new Error('fetch failed', { cause })
+
+  const serialized = serializeJobError(error)
+  failJob(created.id, error)
+
+  assert.match(serialized, /fetch failed/)
+  assert.match(serialized, /connect ECONNREFUSED 172\.16\.3\.1:5243/)
+  assert.match(serialized, /code=ECONNREFUSED/)
+  assert.equal(getJob(created.id)?.error, serialized)
+})
+
+test('pending Emby sync requests are removed once their job is enqueued', () => {
+  const songmid = `REQUEST_LIFECYCLE_${Date.now()}`
+  configureTestAccountEmby({ webdav: true })
+  const musicInfo = { source: 'tx' as const, songmid, name: 'Request Lifecycle', singer: 'Tester' }
+  const track = ensureTrack(musicInfo)
+  const userId = TEST_EMBY_QQ_UIN
+  db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track' AND json_extract(payload_json, '$.songmid') = ?").run(songmid)
+  db.prepare('DELETE FROM user_track_sync_requests WHERE user_id = ? AND track_id = ?').run(userId, track.id)
+
+  assert.equal(requestUserTrackSync(userId, track.id, 'playback'), true)
+  assert.ok(db.prepare('SELECT 1 FROM user_track_sync_requests WHERE user_id = ? AND track_id = ?').get(userId, track.id))
+
+  enqueuePendingEmbyTrackSyncs(musicInfo)
+
+  assert.equal(db.prepare('SELECT 1 FROM user_track_sync_requests WHERE user_id = ? AND track_id = ?').get(userId, track.id), undefined)
+  assert.ok(db.prepare("SELECT 1 FROM jobs WHERE type = 'sync_emby_track' AND user_id = ? AND json_extract(payload_json, '$.songmid') = ?").get(userId, songmid))
+})
+
+test('legacy Emby sync requests are reconciled once and deduplicated', () => {
+  const songmid = `REQUEST_RECONCILE_${Date.now()}`
+  configureTestAccountEmby({ webdav: true })
+  const userId = TEST_EMBY_QQ_UIN
+  const musicInfo = { source: 'tx' as const, songmid, name: 'Reconcile', singer: 'Tester' }
+  const track = ensureTrack(musicInfo)
+  const filePath = path.join(appConfig.musicDir, 'Reconcile', `${songmid}.mp3`)
+  mkdirSync(path.dirname(filePath), { recursive: true })
+  writeFileSync(filePath, 'audio')
+  upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath: filePath })
+  db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track' AND json_extract(payload_json, '$.songmid') = ?").run(songmid)
+  db.prepare(`
+    INSERT INTO user_track_sync_requests (user_id, track_id, reason, status, updated_at)
+    VALUES (?, ?, 'playback', 'queued', CURRENT_TIMESTAMP)
+  `).run(userId, track.id)
+
+  try {
+    const dryRun = reconcilePendingEmbyTrackSyncs({ dryRun: true })
+    assert.ok(dryRun.total >= 1)
+    assert.ok(dryRun.enqueued >= 1)
+    assert.ok(db.prepare('SELECT 1 FROM user_track_sync_requests WHERE user_id = ? AND track_id = ?').get(userId, track.id))
+
+    const applied = reconcilePendingEmbyTrackSyncs()
+    assert.ok(applied.total >= 1)
+    assert.ok(applied.enqueued >= 1)
+    assert.equal(db.prepare('SELECT 1 FROM user_track_sync_requests WHERE user_id = ? AND track_id = ?').get(userId, track.id), undefined)
+    const jobs = db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM jobs
+      WHERE type = 'sync_emby_track'
+        AND user_id = ?
+        AND json_extract(payload_json, '$.songmid') = ?
+        AND status IN ('queued', 'running')
+    `).get(userId, songmid) as { count: number }
+    assert.equal(jobs.count, 1)
+
+    reconcilePendingEmbyTrackSyncs()
+    assert.equal((db.prepare('SELECT COUNT(*) AS count FROM user_track_sync_requests WHERE user_id = ? AND track_id = ?')
+      .get(userId, track.id) as { count: number }).count, 0)
+  } finally {
+    db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track' AND json_extract(payload_json, '$.songmid') = ?").run(songmid)
+    db.prepare('DELETE FROM tracks WHERE id = ?').run(track.id)
+    rmSync(path.dirname(filePath), { recursive: true, force: true })
+  }
+})
+
+test('failed Emby sync combinations are dry-run and replayed without duplicates', () => {
+  const readySongmid = `FAILED_REPLAY_READY_${Date.now()}`
+  const missingSongmid = `FAILED_REPLAY_MISSING_${Date.now()}`
+  const userId = TEST_EMBY_QQ_UIN
+  configureTestAccountEmby({ webdav: true })
+  const readySong = { source: 'tx' as const, songmid: readySongmid, name: 'Replay Ready', singer: 'Tester' }
+  const missingSong = { source: 'tx' as const, songmid: missingSongmid, name: 'Replay Missing', singer: 'Tester' }
+  const readyTrack = ensureTrack(readySong)
+  const missingTrack = ensureTrack(missingSong)
+  const filePath = path.join(appConfig.musicDir, 'Replay', `${readySongmid}.mp3`)
+  mkdirSync(path.dirname(filePath), { recursive: true })
+  writeFileSync(filePath, 'audio')
+  upsertTrackFileStatus(readyTrack.id, '320k', 'ready', { finalPath: filePath })
+
+  const createFailed = (song: typeof readySong) => {
+    const job = createJob({
+      type: 'sync_emby_track',
+      userId,
+      payload: { source: 'tx', songmid: song.songmid, musicInfo: song },
+    })
+    failJob(job.id, 'old WebDAV endpoint failed')
+    return job
+  }
+
+  try {
+    db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track' AND json_extract(payload_json, '$.songmid') IN (?, ?)")
+      .run(readySongmid, missingSongmid)
+    createFailed(readySong)
+    createFailed(readySong)
+    createFailed(missingSong)
+
+    const dryRun = replayFailedEmbyTrackSyncs({ userId, dryRun: true, limit: 50 })
+    assert.ok(dryRun.eligible >= 1)
+    assert.ok(dryRun.skippedNoCache >= 1)
+    assert.equal(dryRun.enqueued, 0)
+    assert.equal((db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM jobs
+      WHERE type = 'sync_emby_track'
+        AND user_id = ?
+        AND json_extract(payload_json, '$.songmid') = ?
+    `).get(userId, readySongmid) as { count: number }).count, 2)
+
+    const applied = replayFailedEmbyTrackSyncs({ userId, dryRun: false, limit: 50 })
+    assert.ok(applied.eligible >= 1)
+    assert.ok(applied.enqueued >= 1)
+    const replayed = db.prepare(`
+      SELECT id, status
+      FROM jobs
+      WHERE type = 'sync_emby_track'
+        AND user_id = ?
+        AND json_extract(payload_json, '$.songmid') = ?
+      ORDER BY id ASC
+    `).all(userId, readySongmid) as Array<{ id: number; status: string }>
+    assert.equal(replayed.length, 3)
+    assert.deepEqual(replayed.slice(0, 2).map(job => job.status), ['failed', 'failed'])
+    assert.equal(replayed[2]?.status, 'queued')
+
+    const repeated = replayFailedEmbyTrackSyncs({ userId, dryRun: false, limit: 50 })
+    assert.equal(repeated.enqueued, 0)
+    assert.equal((db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM jobs
+      WHERE type = 'sync_emby_track'
+        AND user_id = ?
+        AND json_extract(payload_json, '$.songmid') = ?
+    `).get(userId, readySongmid) as { count: number }).count, 3)
+  } finally {
+    db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track' AND json_extract(payload_json, '$.songmid') IN (?, ?)")
+      .run(readySongmid, missingSongmid)
+    db.prepare('DELETE FROM tracks WHERE id IN (?, ?)').run(readyTrack.id, missingTrack.id)
+    rmSync(path.dirname(filePath), { recursive: true, force: true })
+  }
 })
 
 test('job retry helpers do not leave exhausted queued jobs claimable', () => {
@@ -626,6 +795,10 @@ test('worker tick gives emby sync a turn when tag processing did work', async ()
   const didWork = await processWorkerTick({
     scheduleCleanupResourceCacheJob: false,
     scheduleQQAuthSweep: false,
+    async processFavoriteSync() {
+      calls.push('favorite')
+      return false
+    },
     async processTagJob() {
       calls.push('tag')
       return true
@@ -645,7 +818,7 @@ test('worker tick gives emby sync a turn when tag processing did work', async ()
   })
 
   assert.equal(didWork, true)
-  assert.deepEqual(calls, ['tag', 'emby', 'cleanup', 'track-cleanup'])
+  assert.deepEqual(calls, ['favorite', 'tag', 'emby', 'cleanup', 'track-cleanup'])
 })
 
 test('worker tick processes queued UM crypto refresh jobs', async () => {
@@ -653,6 +826,7 @@ test('worker tick processes queued UM crypto refresh jobs', async () => {
   const didWork = await processWorkerTick({
     scheduleCleanupResourceCacheJob: false,
     scheduleQQAuthSweep: false,
+    processFavoriteSync: async () => false,
     async processRefreshUmCryptoJob() {
       calls.push('um')
       return true
@@ -683,6 +857,7 @@ test('worker tick runs the scheduled QQ authorization sweep', async () => {
   const calls: string[] = []
   const didWork = await processWorkerTick({
     scheduleCleanupResourceCacheJob: false,
+    processFavoriteSync: async () => false,
     async processQQAuthSweep() {
       calls.push('qq-auth')
       return true
@@ -1146,6 +1321,7 @@ exports.detectAudioType = () => ({ audioType: 'mp3', needMore: false });
     assert.equal(await processWorkerTick({
       scheduleCleanupResourceCacheJob: false,
       scheduleQQAuthSweep: false,
+      processFavoriteSync: async () => false,
       processTagJob: async () => false,
       processEmbySyncJob: async () => false,
       processCleanupResourceCacheJob: async () => false,
@@ -1156,6 +1332,7 @@ exports.detectAudioType = () => ({ audioType: 'mp3', needMore: false });
     assert.equal(await processWorkerTick({
       scheduleCleanupResourceCacheJob: false,
       scheduleQQAuthSweep: false,
+      processFavoriteSync: async () => false,
       processTagJob: async () => false,
       processEmbySyncJob: async () => false,
       processCleanupResourceCacheJob: async () => false,
@@ -1858,6 +2035,61 @@ test('emby sync job requires path match after WebDAV upload', async () => {
     assert.match(job?.error ?? '', /item was not found/)
   } finally {
     rmSync(path.join(appConfig.musicDir, 'WebDAV Artist'), { recursive: true, force: true })
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('emby sync stops retrying when the WebDAV endpoint is read-only', async () => {
+  const originalFetch = globalThis.fetch
+  const songmid = `SYNC_WEBDAV_READ_ONLY_${Date.now()}`
+  const relativeDir = path.join('Read Only Artist', 'Read Only Album')
+  const finalPath = path.join(appConfig.musicDir, relativeDir, `Read Only Artist - ${songmid}.flac`)
+  const webdavRequests: string[] = []
+
+  db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track'").run()
+  mkdirSync(path.dirname(finalPath), { recursive: true })
+  writeFileSync(finalPath, 'fake audio')
+  configureTestAccountEmby({ webdav: true })
+  try {
+    const musicInfo = { source: 'tx' as const, songmid, name: 'Read Only Song', singer: 'Read Only Artist' }
+    const track = ensureTrack(musicInfo)
+    upsertTrackFileStatus(track.id, '320k', 'ready', { finalPath })
+    const created = createJob({
+      type: 'sync_emby_track',
+      payload: { source: 'tx', userId: TEST_EMBY_QQ_UIN, songmid, musicInfo },
+    })
+
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = new URL(String(url))
+      const method = init?.method ?? 'GET'
+      webdavRequests.push(`${method} ${requestUrl.pathname}`)
+      if (method === 'PUT' && init?.body && typeof (init.body as { resume?: unknown }).resume === 'function') {
+        await new Promise<void>((resolve, reject) => {
+          const stream = init.body as unknown as NodeJS.ReadableStream
+          stream.on('end', resolve)
+          stream.on('error', reject)
+          stream.resume()
+        })
+      }
+      if (method === 'HEAD') return new Response(null, { status: 404 })
+      if (method === 'MKCOL') return new Response('Conflict', { status: 409 })
+      if (method === 'PUT') return new Response('Method Not Allowed', { status: 405 })
+      return Response.json({}, { status: 404 })
+    }) as typeof fetch
+
+    assert.equal(await processOneEmbySyncJob({
+      maxAttempts: 3,
+      cacheWaitMs: 0,
+    }), true)
+    const job = getJob(created.id)
+    assert.equal(job?.status, 'failed')
+    assert.equal(job?.attempts, 1)
+    assert.match(job?.error ?? '', /writable WebDAV endpoint/)
+    assert.equal(webdavRequests.some(request => request.startsWith('PUT ')), true)
+  } finally {
+    rmSync(path.join(appConfig.musicDir, 'Read Only Artist'), { recursive: true, force: true })
+    db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track' AND json_extract(payload_json, '$.songmid') = ?").run(songmid)
+    db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run(songmid)
     globalThis.fetch = originalFetch
   }
 })

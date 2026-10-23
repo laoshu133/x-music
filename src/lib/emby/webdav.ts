@@ -15,6 +15,13 @@ export interface WebdavPlaybackCandidate {
   relativePath: string
 }
 
+export class WebdavWriteUnavailableError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'WebdavWriteUnavailableError'
+  }
+}
+
 interface WebdavConfig {
   baseUrl: URL
   authHeader?: string
@@ -150,7 +157,7 @@ async function ensureRemoteDirectories(config: WebdavConfig, relativeDir: string
     const response = await webdavFetch(config, current, {
       method: 'MKCOL',
     }, timeoutMs)
-    if (!response.ok && response.status !== 405) {
+    if (!response.ok && response.status !== 405 && response.status !== 409) {
       throw new Error(`WebDAV MKCOL ${current} failed with ${response.status}: ${(await response.text().catch(() => '')).slice(0, 300)}`)
     }
     createdDirectories.add(current)
@@ -169,6 +176,11 @@ async function putFile(config: WebdavConfig, relativePath: string, filePath: str
     duplex: 'half',
   } as RequestInit, timeoutMs)
   if (!response.ok) {
+    if (response.status === 405) {
+      throw new WebdavWriteUnavailableError(
+        `WebDAV PUT ${relativePath} was rejected with 405. Configure a writable WebDAV endpoint; read-only sources can still be used for playback.`,
+      )
+    }
     throw new Error(`WebDAV PUT ${relativePath} failed with ${response.status}: ${(await response.text().catch(() => '')).slice(0, 300)}`)
   }
 }

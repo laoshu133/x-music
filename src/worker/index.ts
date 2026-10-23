@@ -14,10 +14,12 @@ import {
   requeueJob,
 } from '@/lib/jobs'
 import { processOneEmbySyncJob } from '@/lib/emby/sync-worker'
+import { reconcilePendingEmbyTrackSyncs } from '@/lib/emby/sync'
 import { cleanupInboxFile } from '@/lib/tagging/cleanup'
 import { createTaggingProvider } from '@/lib/tagging/provider'
 import type { TagTrackFileJobPayload } from '@/lib/tagging/types'
 import { sweepQQAuthorizations } from '@/lib/qq/auth-sweep'
+import { processPendingFavoriteSyncs } from '@/lib/qq/favorite-sync'
 import { fileURLToPath } from 'node:url'
 
 const pollIntervalMs = Number(process.env.WORKER_POLL_INTERVAL_MS ?? 5000)
@@ -144,6 +146,7 @@ interface WorkerTickProcessors {
   processCleanupResourceCacheJob?: () => Promise<boolean>
   processCleanupTrackCacheJob?: () => Promise<boolean>
   processRefreshUmCryptoJob?: () => Promise<boolean>
+  processFavoriteSync?: () => Promise<boolean>
   processQQAuthSweep?: () => Promise<boolean>
   scheduleCleanupResourceCacheJob?: boolean
   scheduleQQAuthSweep?: boolean
@@ -159,6 +162,9 @@ export async function processWorkerTick(processors: WorkerTickProcessors = {}): 
   const processedRefreshUmCryptoJob = await (
     processors.processRefreshUmCryptoJob ?? (() => processOneRefreshUmCryptoJob(maxAttempts))
   )()
+  const processedFavoriteSync = await (
+    processors.processFavoriteSync ?? (() => processPendingFavoriteSyncs())
+  )()
   const processedArchiveTrackJob = await (processors.processArchiveTrackJob ?? (() => processOneArchiveTrackJob(maxAttempts)))()
   const processedTagJob = await (processors.processTagJob ?? processTagJob)()
   const processedEmbySyncJob = await (processors.processEmbySyncJob ?? processEmbySyncJob)()
@@ -170,6 +176,7 @@ export async function processWorkerTick(processors: WorkerTickProcessors = {}): 
   )()
   return processedQQAuthSweep
     || processedRefreshUmCryptoJob
+    || processedFavoriteSync
     || processedArchiveTrackJob
     || processedTagJob
     || processedEmbySyncJob
@@ -185,6 +192,7 @@ async function main(): Promise<void> {
     maxAttempts,
   })
   const exhausted = failExhaustedQueuedJobs(maxAttempts)
+  const reconciled = reconcilePendingEmbyTrackSyncs()
 
   console.log('XMusic worker started')
   console.log(`data dir: ${appConfig.dataDir}`)
@@ -194,6 +202,9 @@ async function main(): Promise<void> {
   }
   if (exhausted.failed) {
     console.log(`failed exhausted queued jobs: ${exhausted.failed}`)
+  }
+  if (reconciled.total) {
+    console.log(`reconciled Emby sync requests: ${JSON.stringify(reconciled)}`)
   }
 
   while (!stopping) {

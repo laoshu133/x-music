@@ -23,7 +23,7 @@ import { qualityFallbacks } from '@/lib/music-url/resolve'
 import { highestAvailableQuality } from '@/lib/quality'
 import type { SyncEmbyTrackJobPayload } from './sync'
 import type { MusicQuality } from '@/lib/types'
-import { syncMediaFilesToEmbyWebdav } from './webdav'
+import { syncMediaFilesToEmbyWebdav, WebdavWriteUnavailableError } from './webdav'
 import { qqLegacyLyricsUrl } from '@/lib/qq'
 import { embyConfigForAccount, hasAccountUpstreamEmby } from './config'
 
@@ -247,7 +247,9 @@ async function processClaimedEmbySyncJob(
 
     completeJob(job.id)
   } catch (error) {
-    if (job.attempts >= options.maxAttempts) {
+    if (error instanceof WebdavWriteUnavailableError) {
+      failJob(job.id, error)
+    } else if (job.attempts >= options.maxAttempts) {
       failJob(job.id, error)
     } else {
       requeueJob(job.id, error, options.maxAttempts)

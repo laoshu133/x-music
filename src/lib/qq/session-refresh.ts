@@ -1,22 +1,31 @@
-import { replaceQQCookieValues, requireQQLoginState } from './account'
-import { zzcSign } from './crypto'
-import { QQMusicError } from './http'
-
-const REFRESH_REQ_KEY = 'music.login.LoginServer.Login'
+import crypto from 'node:crypto'
+import {
+  parseQQCookieText,
+  replaceQQCookieValues,
+  requireQQLoginState,
+  type QQLoginState,
+} from './account'
+import { QQMusicError, qqPost } from './http'
 
 type RefreshMusickeyResponse = {
   code?: number
-  traceid?: string
-  [REFRESH_REQ_KEY]?: {
+  QQRefreshKey?: {
     code?: number
     data?: {
       musickey?: string
       access_token?: string
       refresh_token?: string
+      refresh_key?: string
+      openid?: string
+      unionid?: string
+      encryptUin?: string
+      musicid?: number
       expired_at?: number
+      musickeyCreateTime?: number
       keyExpiresIn?: number
       needRefreshKeyIn?: number
     }
+    traceid?: string
   }
 }
 
@@ -30,6 +39,7 @@ export interface QQMusickeyRefreshResult {
   refreshedAt: string
   upstreamCode?: number
   traceid?: string
+  accessTokenExpiresAt?: string
 }
 
 export async function refreshQQMusickey(input: { cookie?: string } = {}): Promise<QQMusickeyRefreshResult> {
@@ -41,82 +51,140 @@ export async function refreshQQMusickey(input: { cookie?: string } = {}): Promis
     })
   }
 
+  const cookies = parseQQCookieText(login.cookie)
+  const accessToken = cookies.get('psrf_qqaccess_token')
+  const refreshToken = cookies.get('psrf_qqrefresh_token')
+  const openid = cookies.get('psrf_qqopenid')
+  const unionid = cookies.get('psrf_qqunionid')
+  if (!accessToken || !refreshToken || !openid) {
+    throw new QQMusicError('QQ Music refresh credentials are incomplete', 401, {
+      code: 'QQ_AUTH_EXPIRED',
+      actionable: '重新完成 QQ 授权登录，以取得 access token、refresh token 和 openid。',
+      hasAccessToken: Boolean(accessToken),
+      hasRefreshToken: Boolean(refreshToken),
+      hasOpenid: Boolean(openid),
+    })
+  }
+
+  const loginType = parseLoginType(cookies.get('tmeLoginType'))
+  const expiredAt = parsePositiveInteger(cookies.get('psrf_access_token_expiresAt')) ?? 0
+  const refreshKey = firstCookieValue(cookies, ['psrf_qqrefreshkey', 'psrf_qqrefresh_key']) ?? ''
+  const guid = crypto.randomBytes(16).toString('hex').toUpperCase()
+  const wid = BigInt(`0x${crypto.randomBytes(8).toString('hex')}`).toString()
   const payload = {
-    [REFRESH_REQ_KEY]: {
+    QQRefreshKey: {
       module: 'music.login.LoginServer',
       method: 'Login',
       param: {
-        qq: login.uin,
+        access_token: accessToken,
+        appid: 100497308,
+        deviceName: `DESKTOP-${crypto.randomBytes(6).toString('hex').toUpperCase()}`,
+        deviceType: 'Windows',
+        expired_in: expiredAt,
+        forceRefreshToken: 0,
+        musicid: Number(login.uin),
         musickey,
+        onlyNeedAccessToken: 0,
+        openid,
+        refresh_key: refreshKey,
+        refresh_token: refreshToken,
       },
+    },
+    comm: {
+      _channelid: '0',
+      _os_version: '6.2.9200-2',
+      authst: musickey,
+      ct: '19',
+      cv: '2192',
+      guid,
+      patch: '118',
+      psrf_access_token_expiresAt: expiredAt,
+      psrf_qqaccess_token: accessToken,
+      psrf_qqopenid: openid,
+      psrf_qqunionid: unionid ?? '',
+      tmeAppID: 'qqmusic',
+      tmeLoginType: loginType,
+      uin: login.uin,
+      wid,
     },
   }
 
-  const data = await qqSignedGet<RefreshMusickeyResponse>(payload, login.cookie)
-  const refreshData = data[REFRESH_REQ_KEY]?.data
+  const data = await qqPost<RefreshMusickeyResponse>('https://u.y.qq.com/cgi-bin/musicu.fcg', payload, {
+    headers: {
+      accept: '*/*',
+      cookie: login.cookie,
+      'content-type': 'application/x-www-form-urlencoded',
+      'user-agent': 'Mozilla/5.0 (compatible; MSIE 9.0; Windows NT 6.1; WOW64; Trident/5.0)',
+    },
+  })
+  const refreshData = data.QQRefreshKey?.data
   const nextMusickey = nonEmpty(refreshData?.musickey)
   const nextAccessToken = nonEmpty(refreshData?.access_token)
   const nextRefreshToken = nonEmpty(refreshData?.refresh_token)
-  const upstreamCode = data[REFRESH_REQ_KEY]?.code ?? data.code
-  if (upstreamCode !== 1000 && !nextMusickey) {
-    throw new QQMusicError('QQ Music key refresh failed', 502, {
+  const upstreamCode = data.QQRefreshKey?.code ?? data.code
+  if (data.code !== 0 || data.QQRefreshKey?.code !== 0 || !nextMusickey) {
+    throw new QQMusicError('QQ Music key refresh failed', 401, {
       code: upstreamCode,
       actionable: 'QQ 音乐没有返回新的 musickey，请重新完成 QQ 授权登录。',
-      payload: data,
+      upstreamCode: data.code,
+      response: data,
+      traceid: data.QQRefreshKey?.traceid,
     })
   }
 
   const nowSeconds = Math.floor(Date.now() / 1000)
+  const nextExpiresAt = refreshData?.expired_at && refreshData.expired_at > 0
+    ? refreshData.expired_at
+    : undefined
   const cookie = replaceQQCookieValues(login.cookie, {
     qm_keyst: nextMusickey,
     qqmusic_key: nextMusickey,
-    psrf_musickey_createtime: nextMusickey ? String(nowSeconds) : undefined,
+    psrf_musickey_createtime: String(refreshData?.musickeyCreateTime ?? nowSeconds),
     psrf_qqaccess_token: nextAccessToken,
     psrf_qqrefresh_token: nextRefreshToken,
-    psrf_access_token_expiresAt: nextAccessToken && refreshData?.expired_at
-      ? String(nowSeconds + refreshData.expired_at)
-      : undefined,
+    psrf_access_token_expiresAt: nextExpiresAt ? String(nextExpiresAt) : undefined,
+    psrf_qqopenid: nonEmpty(refreshData?.openid),
+    psrf_qqunionid: nonEmpty(refreshData?.unionid),
+    psrf_qqrefreshkey: nonEmpty(refreshData?.refresh_key),
+    euin: nonEmpty(refreshData?.encryptUin),
   })
 
   return {
     uin: login.uin,
     cookie,
     musickey: nextMusickey,
-    keyRefreshed: Boolean(nextMusickey),
+    keyRefreshed: Boolean(nextMusickey && nextMusickey !== musickey),
     tokenRefreshed: Boolean(nextAccessToken || nextRefreshToken),
-    changed: Boolean(nextMusickey || nextAccessToken || nextRefreshToken),
+    changed: Boolean(
+      (nextMusickey && nextMusickey !== musickey)
+      || (nextAccessToken && nextAccessToken !== accessToken)
+      || (nextRefreshToken && nextRefreshToken !== refreshToken)
+      || refreshData?.refresh_key
+      || refreshData?.encryptUin,
+    ),
     refreshedAt: new Date().toISOString(),
     upstreamCode,
-    traceid: data.traceid,
+    traceid: data.QQRefreshKey?.traceid,
+    accessTokenExpiresAt: nextExpiresAt ? new Date(nextExpiresAt * 1000).toISOString() : undefined,
   }
 }
 
-async function qqSignedGet<T>(body: unknown, cookie: string): Promise<T> {
-  const text = JSON.stringify(body)
-  const sign = zzcSign(text)
-  const response = await fetch(
-    `https://u6.y.qq.com/cgi-bin/musics.fcg?sign=${sign}&format=json&inCharset=utf8&outCharset=utf-8&data=${encodeURIComponent(text)}`,
-    {
-      headers: {
-        accept: 'application/json, text/plain, */*',
-        cookie,
-        origin: 'https://y.qq.com',
-        referer: 'https://y.qq.com/',
-        'user-agent': 'QQMusic 14090508(android 12)',
-      },
-      cache: 'no-store',
-    },
-  )
-  if (!response.ok) throw new QQMusicError('QQ Music key refresh request failed', response.status)
-  const textBody = await response.text()
-  try {
-    return JSON.parse(textBody) as T
-  } catch (error) {
-    throw new QQMusicError('Failed to parse QQ Music key refresh response', response.status, {
-      cause: error instanceof Error ? error.message : String(error),
-      body: textBody.slice(0, 500),
-    })
+function parseLoginType(value: string | undefined) {
+  const parsed = Number(value)
+  return parsed === 1 || parsed === 2 ? parsed : 2
+}
+
+function parsePositiveInteger(value: string | undefined) {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : undefined
+}
+
+function firstCookieValue(cookies: Map<string, string>, keys: string[]) {
+  for (const key of keys) {
+    const value = cookies.get(key)
+    if (value) return value
   }
+  return undefined
 }
 
 function nonEmpty(value: unknown): string | undefined {

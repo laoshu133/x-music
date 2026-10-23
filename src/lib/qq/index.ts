@@ -3,9 +3,17 @@ export { getQQSongDetail } from './song'
 export { getQQToplistDetail, getQQToplists } from './toplists'
 export { getQQPlaylistDetail } from './playlists'
 export { buildQQLoginState, getQQLoginState, requireQQLoginState, summarizeQQLoginState } from './account'
-export { getQQFavoriteSongs, setQQFavoriteSong } from './favorites'
+export { getQQFavoriteSongs, isQQSongFavorited, setQQFavoriteSong } from './favorites'
 export { getQQLyrics, qqLegacyLyricsUrl } from './lyrics'
-export { pullRemoteFavorites, syncPendingFavorites } from './favorite-sync'
+export {
+  favoriteSyncMaxAttempts,
+  favoriteSyncRetryDelaySeconds,
+  processPendingFavoriteSyncs,
+  pullRemoteFavorites,
+  recordFavoriteSyncFailure,
+  refreshAccountForFavorite,
+  syncPendingFavorites,
+} from './favorite-sync'
 export { getQQPlayHistory, syncQQPlayHistory, syncQQPlayHistoryBestEffort } from './history'
 export { pullQQPlayHistory, pushLocalPlayHistoryToQQ } from './history-sync'
 export { getQQDailyRecommendations, getQQRecommendations, getQQRecommendationsForAccount, QQRecommendationAuthError } from './recommendations'

@@ -102,6 +102,7 @@ export interface AccountDetail {
     hasEmbyPassword: boolean
     hasEmbyAccessToken: boolean
     embyDsn?: string
+    sourceWebdavDsn?: string
     hasEmbySourceWebdavDsn: boolean
     embyProxyTimeoutMs?: number
   }
@@ -255,6 +256,7 @@ export function getAccountProfile(userId: string): AccountProfile | undefined {
       hasEmbyPassword: Boolean(account.embyPassword),
       hasEmbyAccessToken: Boolean(account.embyAccessToken),
       embyDsn: account.embyDsn,
+      sourceWebdavDsn: account.embySourceWebdavDsn,
       hasEmbySourceWebdavDsn: Boolean(account.embySourceWebdavDsn),
       embyProxyTimeoutMs: account.embyProxyTimeoutMs,
     },

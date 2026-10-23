@@ -227,7 +227,7 @@ export function failJob(id: number, error: unknown): void {
     WHERE id = @id
   `).run({
     id,
-    error: error instanceof Error ? error.message : String(error),
+    error: serializeJobError(error),
   })
 }
 
@@ -250,9 +250,39 @@ export function requeueJob(id: number, error: unknown, maxAttempts?: number): vo
     WHERE id = @id
   `).run({
     id,
-    error: error instanceof Error ? error.message : String(error),
+    error: serializeJobError(error),
     delay: nextRunAt,
   })
+}
+
+export function serializeJobError(error: unknown): string {
+  if (!(error instanceof Error)) return truncateError(String(error))
+  const detail = describeError(error)
+  const cause = error.cause && typeof error.cause === 'object'
+    ? error.cause as Record<string, unknown>
+    : undefined
+  const causeDetail = cause ? describeError(cause) : undefined
+  return truncateError([detail, causeDetail ? `cause: ${causeDetail}` : undefined].filter(Boolean).join(' | '))
+}
+
+function describeError(error: Error | Record<string, unknown>): string {
+  const record = error as Record<string, unknown>
+  const name = typeof record.name === 'string' ? record.name : undefined
+  const message = typeof record.message === 'string' ? record.message : String(error)
+  const details = [
+    record.status !== undefined ? `status=${String(record.status)}` : undefined,
+    record.code !== undefined ? `code=${String(record.code)}` : undefined,
+    record.errno !== undefined ? `errno=${String(record.errno)}` : undefined,
+    record.syscall !== undefined ? `syscall=${String(record.syscall)}` : undefined,
+    record.address !== undefined ? `address=${String(record.address)}` : undefined,
+    record.port !== undefined ? `port=${String(record.port)}` : undefined,
+  ].filter((value): value is string => Boolean(value))
+  const prefix = name && name !== 'Error' ? `${name}: ` : ''
+  return `${prefix}${message}${details.length ? ` (${details.join(', ')})` : ''}`
+}
+
+function truncateError(value: string): string {
+  return value.length > 2000 ? `${value.slice(0, 1997)}...` : value
 }
 
 export function clearStaleRunningJobs(options: ClearStaleJobsOptions): StaleRunningJobsResult {

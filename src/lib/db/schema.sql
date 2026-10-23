@@ -150,6 +150,9 @@ CREATE TABLE IF NOT EXISTS user_favorites (
   desired_state TEXT NOT NULL,
   sync_state TEXT NOT NULL,
   error TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_retry_at TEXT,
+  last_attempt_at TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (user_id, track_id)

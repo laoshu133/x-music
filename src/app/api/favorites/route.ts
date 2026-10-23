@@ -1,6 +1,15 @@
 import { NextResponse } from 'next/server'
 import { listLocalFavorites, setLocalFavorite, setLocalFavoriteSynced } from '@/lib/db/favorites'
-import { getQQFavoriteSongs, pullRemoteFavorites, QQMusicError, qqMusicErrorResponse, setQQFavoriteSong, syncPendingFavorites } from '@/lib/qq'
+import {
+  getQQFavoriteSongs,
+  pullRemoteFavorites,
+  QQMusicError,
+  qqMusicErrorResponse,
+  recordFavoriteSyncFailure,
+  refreshAccountForFavorite,
+  setQQFavoriteSong,
+  syncPendingFavorites,
+} from '@/lib/qq'
 import type { MusicInfo } from '@/lib/types'
 import { getCurrentAccount } from '@/lib/session'
 import { pullEmbyFavorites, pushLocalFavoritesToEmby, syncEmbyFavoritesFromQQList, syncMappedEmbyFavoriteBestEffort } from '@/lib/emby/favorites'
@@ -115,7 +124,8 @@ export async function POST(request: Request) {
   const url = new URL(request.url)
   const account = await getCurrentAccount()
   if (!account) return NextResponse.json({ error: 'Login required', code: 'AUTH_REQUIRED' }, { status: 401 })
-  const cookie = account.qqCookie
+  const favoriteAccount = await refreshAccountForFavorite(account)
+  const cookie = favoriteAccount.qqCookie
   if (url.searchParams.get('sync') === 'push') {
     if (url.searchParams.get('remote') === 'emby') {
       try {
@@ -133,6 +143,8 @@ export async function POST(request: Request) {
         userId: account.userId,
         cookie,
         limit: getPositiveInt(url.searchParams.get('limit'), 50, 200),
+        includeFailed: true,
+        includeFuture: true,
       }))
     } catch (error) {
       return qqMusicErrorResponse(error)
@@ -172,6 +184,7 @@ export async function POST(request: Request) {
     } catch (error) {
       remoteError = error instanceof Error ? error.message : String(error)
       remotePayload = error instanceof QQMusicError ? error.payload : undefined
+      record = recordFavoriteSyncFailure({ userId: account.userId, record, error }).record ?? record
     }
     const embySync = await syncMappedEmbyFavoriteBestEffort(account, musicInfo, body.favorite)
     embySyncAttempted = embySync.attempted
@@ -225,7 +238,8 @@ export async function DELETE(request: Request) {
   const url = new URL(request.url)
   const account = await getCurrentAccount()
   if (!account) return NextResponse.json({ error: 'Login required', code: 'AUTH_REQUIRED' }, { status: 401 })
-  const cookie = account.qqCookie
+  const favoriteAccount = await refreshAccountForFavorite(account)
+  const cookie = favoriteAccount.qqCookie
   if (url.searchParams.get('remote') !== 'qq') {
     const musicInfo = parseMusicInfo(body)
     if (!musicInfo) {
@@ -253,6 +267,7 @@ export async function DELETE(request: Request) {
     } catch (error) {
       remoteError = error instanceof Error ? error.message : String(error)
       remotePayload = error instanceof QQMusicError ? error.payload : undefined
+      record = recordFavoriteSyncFailure({ userId: account.userId, record, error }).record ?? record
     }
     const embySync = await syncMappedEmbyFavoriteBestEffort(account, musicInfo, false)
     embySyncAttempted = embySync.attempted

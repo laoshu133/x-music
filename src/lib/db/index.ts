@@ -87,6 +87,9 @@ function applyPreservedTableMigrations(database: Database.Database): void {
     'ALTER TABLE track_files ADD COLUMN cover_path TEXT',
     'ALTER TABLE track_files ADD COLUMN tagged_at TEXT',
     'ALTER TABLE resource_cache ADD COLUMN last_accessed_at TEXT',
+    'ALTER TABLE user_favorites ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0',
+    'ALTER TABLE user_favorites ADD COLUMN next_retry_at TEXT',
+    'ALTER TABLE user_favorites ADD COLUMN last_attempt_at TEXT',
   ]) {
     try {
       database.exec(statement)

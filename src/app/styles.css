@@ -2190,6 +2190,12 @@ button.user-row.active {
   font-weight: 600;
 }
 
+.technical-details .user-info-grid dd span {
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
+}
+
 .technical-details[open] summary,
 .job-payload[open] summary {
   margin-bottom: 12px;

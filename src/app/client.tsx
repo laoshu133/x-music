@@ -209,6 +209,8 @@ interface UserDetail {
     hasQQMusicKey: boolean
     hasEmbyPassword: boolean
     hasEmbyAccessToken: boolean
+    embyDsn?: string
+    sourceWebdavDsn?: string
   }
   qq: {
     authorized: boolean
@@ -1824,7 +1826,7 @@ function UsersPanel({ users }: { users: UsersResult }) {
         </div>
         {users.items.map(user => (
           <button className={`user-row ${selectedUser?.userId === user.userId ? 'active' : ''}`} key={user.userId} onClick={() => void openUser(user)}>
-            <span className="user-cell-main"><strong>{user.username}</strong><small>{user.qqNickname ? `${user.qqNickname} · QQ ${user.qqUin}` : '未绑定 QQ'}</small></span>
+            <span className="user-cell-main"><strong>{user.username}</strong><small>{user.qqUin ? (user.qqNickname ? `${user.qqNickname} · QQ ${user.qqUin}` : `QQ ${user.qqUin}`) : '未绑定 QQ'}</small></span>
             <span><StatusBadge status={user.isAdmin ? 'admin' : 'user'} /></span>
             <span className="numeric-cell">{user.playCount}</span>
             <span className="numeric-cell">{user.favoriteCount}</span>
@@ -1946,7 +1948,8 @@ function UserDetailDialog({
             <details className="technical-details">
               <summary>技术信息</summary>
               <dl className="user-info-grid">
-                <div><dt>Emby ID</dt><dd><span>{account.embyUserId ?? '-'}</span></dd></div>
+                <div><dt>Emby</dt><dd><span>{profile.data?.account.embyDsn ?? '未配置'}</span></dd></div>
+                <div><dt>WebDAV</dt><dd><span>{profile.data?.account.sourceWebdavDsn ?? '未配置'}</span></dd></div>
                 <div><dt>QQ Key</dt><dd><span>{profile.data?.account.hasQQMusicKey ? '已保存' : '未保存'}</span></dd></div>
                 <div><dt>加密 UIN</dt><dd><span>{profile.data?.account.encryptedUin ?? '-'}</span></dd></div>
                 <div><dt>最近登录 IP</dt><dd><span>{account.lastLoginIp ?? '-'}</span></dd></div>

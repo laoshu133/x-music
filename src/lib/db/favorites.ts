@@ -1,5 +1,5 @@
 import { db } from '@/lib/db'
-import { normalizeDbDateTime } from '@/lib/db/time'
+import { normalizeDbDateTime, normalizeNullableDbDateTime } from '@/lib/db/time'
 import { ensureTrack } from '@/lib/cache/store'
 import type { MusicInfo, OnlineSource } from '@/lib/types'
 
@@ -10,11 +10,20 @@ export interface FavoriteRecord extends MusicInfo {
   desiredState: FavoriteDesiredState
   syncState: FavoriteSyncState
   error?: string
+  attempts: number
+  nextRetryAt?: string
+  lastAttemptAt?: string
   updatedAt: string
 }
 
 export interface FavoriteSummary { favoriteCount: number; pendingCount: number; failedCount: number }
 export interface FavoriteSyncResult { synced: number; failed: number; total: number; errors: Array<{ songmid: string; error: string }> }
+export interface FavoriteSyncFailureResult {
+  record?: FavoriteRecord
+  attempts: number
+  terminal: boolean
+  nextRetryAt?: string
+}
 type FavoriteStatus = { favorite: boolean; syncState: FavoriteSyncState | null; desiredState: FavoriteDesiredState | null; pending: boolean; error?: string }
 
 interface FavoriteRow {
@@ -30,13 +39,16 @@ interface FavoriteRow {
   desired_state: FavoriteDesiredState
   sync_state: FavoriteSyncState
   error: string | null
+  attempts: number
+  next_retry_at: string | null
+  last_attempt_at: string | null
   updated_at: string
 }
 
 const favoriteSelect = `
   SELECT t.source, t.songmid, t.name, t.singer, t.album_name, t.album_id,
          t.interval, t.image_url, t.raw_json, uf.desired_state, uf.sync_state,
-         uf.error, uf.updated_at
+         uf.error, uf.attempts, uf.next_retry_at, uf.last_attempt_at, uf.updated_at
   FROM user_favorites uf INNER JOIN tracks t ON t.id = uf.track_id
 `
 
@@ -74,12 +86,21 @@ function writeFavorite(musicInfo: MusicInfo, favorite: boolean, syncState: Favor
   const track = ensureTrack(musicInfo)
   const desiredState: FavoriteDesiredState = favorite ? 'favorite' : 'unfavorite'
   db.prepare(`
-    INSERT INTO user_favorites (user_id, track_id, desired_state, sync_state, error, updated_at)
-    VALUES (@userId, @trackId, @desiredState, @syncState, NULL, CURRENT_TIMESTAMP)
+    INSERT INTO user_favorites (
+      user_id, track_id, desired_state, sync_state, error, attempts, next_retry_at, last_attempt_at, updated_at
+    )
+    VALUES (
+      @userId, @trackId, @desiredState, @syncState, NULL, 0, NULL,
+      CASE WHEN @syncState = 'synced' THEN CURRENT_TIMESTAMP ELSE NULL END,
+      CURRENT_TIMESTAMP
+    )
     ON CONFLICT(user_id, track_id) DO UPDATE SET
       desired_state = excluded.desired_state,
       sync_state = excluded.sync_state,
       error = NULL,
+      attempts = 0,
+      next_retry_at = NULL,
+      last_attempt_at = excluded.last_attempt_at,
       updated_at = CURRENT_TIMESTAMP
   `).run({ userId, trackId: track.id, desiredState, syncState })
   return getFavoriteRecord(userId, musicInfo.source, musicInfo.songmid)!
@@ -93,13 +114,115 @@ export const markFavoriteSyncState = (
   error?: string,
 ): void => {
   db.prepare(`
-    UPDATE user_favorites SET sync_state = @syncState, error = @error, updated_at = CURRENT_TIMESTAMP
+    UPDATE user_favorites
+    SET sync_state = @syncState,
+        error = @error,
+        attempts = 0,
+        next_retry_at = NULL,
+        last_attempt_at = CASE WHEN @syncState = 'synced' THEN CURRENT_TIMESTAMP ELSE last_attempt_at END,
+        updated_at = CURRENT_TIMESTAMP
     WHERE user_id = @userId AND track_id = (SELECT id FROM tracks WHERE source = @source AND songmid = @songmid)
   `).run({ userId, source, songmid, syncState, error: error ?? null })
 }
 
 export const listPendingFavoriteSync = (userId: string, limit = 50): FavoriteRecord[] =>
-  (db.prepare(`${favoriteSelect} WHERE uf.user_id = ? AND uf.sync_state IN ('pending', 'failed') ORDER BY uf.updated_at ASC LIMIT ?`).all(userId, limit) as FavoriteRow[]).map(mapFavorite)
+  listFavoriteSyncCandidates(userId, { limit })
+
+export const listFavoriteSyncCandidates = (
+  userId: string,
+  options: { limit?: number; includeFailed?: boolean; includeFuture?: boolean } = {},
+): FavoriteRecord[] => {
+  const states = options.includeFailed ? "('pending', 'failed')" : "('pending')"
+  const dueClause = options.includeFuture ? '' : 'AND (uf.next_retry_at IS NULL OR uf.next_retry_at <= CURRENT_TIMESTAMP)'
+  const limit = Math.min(Math.max(Math.trunc(options.limit ?? 50), 1), 200)
+  return (db.prepare(`
+    ${favoriteSelect}
+    WHERE uf.user_id = ?
+      AND uf.sync_state IN ${states}
+      ${dueClause}
+    ORDER BY COALESCE(uf.next_retry_at, uf.updated_at) ASC
+    LIMIT ?
+  `).all(userId, limit) as FavoriteRow[]).map(mapFavorite)
+}
+
+export const completeFavoriteSyncAttempt = (
+  userId: string,
+  source: OnlineSource,
+  songmid: string,
+  desiredState: FavoriteDesiredState,
+): FavoriteRecord | undefined => {
+  const result = db.prepare(`
+    UPDATE user_favorites
+    SET sync_state = 'synced',
+        error = NULL,
+        attempts = 0,
+        next_retry_at = NULL,
+        last_attempt_at = CURRENT_TIMESTAMP,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE user_id = @userId
+      AND desired_state = @desiredState
+      AND track_id = (SELECT id FROM tracks WHERE source = @source AND songmid = @songmid)
+      AND sync_state IN ('pending', 'failed')
+  `).run({ userId, source, songmid, desiredState })
+  return result.changes ? getFavoriteRecord(userId, source, songmid) : undefined
+}
+
+export const failFavoriteSyncAttempt = (input: {
+  userId: string
+  source: OnlineSource
+  songmid: string
+  desiredState: FavoriteDesiredState
+  error: string
+  retryable: boolean
+  maxAttempts: number
+  retryDelaySeconds: number
+}): FavoriteSyncFailureResult => {
+  return db.transaction(() => {
+    const current = db.prepare(`
+      SELECT uf.attempts
+      FROM user_favorites uf
+      INNER JOIN tracks t ON t.id = uf.track_id
+      WHERE uf.user_id = @userId
+        AND uf.desired_state = @desiredState
+        AND uf.sync_state IN ('pending', 'failed')
+        AND t.source = @source
+        AND t.songmid = @songmid
+    `).get(input) as { attempts: number } | undefined
+    if (!current) return { attempts: 0, terminal: true }
+
+    const attempts = current.attempts + 1
+    const terminal = !input.retryable || attempts >= Math.max(1, input.maxAttempts)
+    const delay = terminal ? null : `+${Math.max(1, Math.trunc(input.retryDelaySeconds))} seconds`
+    db.prepare(`
+      UPDATE user_favorites
+      SET sync_state = @syncState,
+          error = @error,
+          attempts = @attempts,
+          next_retry_at = @nextRetryAt,
+          last_attempt_at = CURRENT_TIMESTAMP,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE user_id = @userId
+        AND desired_state = @desiredState
+        AND track_id = (SELECT id FROM tracks WHERE source = @source AND songmid = @songmid)
+        AND sync_state IN ('pending', 'failed')
+    `).run({
+      ...input,
+      syncState: terminal ? 'failed' : 'pending',
+      attempts,
+      nextRetryAt: delay
+        ? (db.prepare("SELECT datetime('now', ?) AS value").get(delay) as { value: string }).value
+        : null,
+    })
+
+    const record = getFavoriteRecord(input.userId, input.source, input.songmid)
+    return {
+      record,
+      attempts,
+      terminal,
+      nextRetryAt: record?.nextRetryAt,
+    }
+  })()
+}
 
 export const reconcileLocalFavoritesFromRemote = (userId: string, remoteSongs: MusicInfo[]): FavoriteRecord[] => {
   const remoteKeys = new Set(remoteSongs.map(song => `${song.source}:${song.songmid}`))
@@ -147,6 +270,9 @@ function mapFavorite(row: FavoriteRow): FavoriteRecord {
     desiredState: row.desired_state,
     syncState: row.sync_state,
     error: row.error ?? undefined,
+    attempts: row.attempts,
+    nextRetryAt: normalizeNullableDbDateTime(row.next_retry_at) ?? undefined,
+    lastAttemptAt: normalizeNullableDbDateTime(row.last_attempt_at) ?? undefined,
     updatedAt: normalizeDbDateTime(row.updated_at),
   }
 }

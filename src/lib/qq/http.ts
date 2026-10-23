@@ -1,4 +1,4 @@
-import { zzcSign } from './crypto'
+import { decryptQQMusicAg1Response, encryptQQMusicAg1Request, zzcSign } from './crypto'
 import { logServiceEvent } from '@/lib/request-log'
 
 const DEFAULT_HEADERS = {
@@ -129,4 +129,44 @@ export async function qqSignedPost<T>(body: unknown, init?: RequestInit): Promis
       ...init?.headers,
     },
   })
+}
+
+export async function qqSignedEncryptedPost<T>(body: unknown, init?: RequestInit): Promise<T> {
+  const plaintext = JSON.stringify(body)
+  const sign = zzcSign(plaintext)
+  const response = await fetch(
+    `https://u6.y.qq.com/cgi-bin/musics.fcg?_=${Date.now()}&encoding=ag-1&sign=${sign}`,
+    {
+      ...init,
+      method: 'POST',
+      headers: {
+        ...DEFAULT_HEADERS,
+        accept: 'application/octet-stream',
+        'content-type': 'text/plain',
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0',
+        ...init?.headers,
+      },
+      body: encryptQQMusicAg1Request(plaintext),
+      cache: 'no-store',
+    },
+  )
+  if (!response.ok) {
+    throw new QQMusicError('QQ Music encrypted request failed', response.status, {
+      body: (await response.text().catch(() => '')).slice(0, 500),
+    })
+  }
+
+  const packet = new Uint8Array(await response.arrayBuffer())
+  const firstCharacter = packet.find(value => value !== 0x20 && value !== 0x0a && value !== 0x0d && value !== 0x09)
+  const text = firstCharacter === 0x7b
+    ? new TextDecoder().decode(packet)
+    : decryptQQMusicAg1Response(packet)
+  try {
+    return JSON.parse(text) as T
+  } catch (error) {
+    throw new QQMusicError('Failed to parse QQ Music encrypted response', response.status, {
+      cause: error instanceof Error ? error.message : String(error),
+      body: text.slice(0, 500),
+    })
+  }
 }

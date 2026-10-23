@@ -47,23 +47,29 @@ test('refreshQQMusickey exchanges current musickey for a new one', async () => {
   const requests: Array<{ url: string; body: any; headers: Headers }> = []
   globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
     const request = new Request(url, init)
-    const requestUrl = new URL(String(url))
     requests.push({
       url: String(url),
-      body: JSON.parse(requestUrl.searchParams.get('data') ?? '{}'),
+      body: JSON.parse(String(init?.body)),
       headers: request.headers,
     })
     return Response.json({
       code: 0,
-      'music.login.LoginServer.Login': {
-        code: 1000,
-        data: { musickey: 'next-key' },
+      QQRefreshKey: {
+        code: 0,
+        data: {
+          musickey: 'next-key',
+          access_token: 'access-next',
+          refresh_token: 'refresh-next',
+          openid: 'openid-next',
+          expired_at: 1790000000,
+          musickeyCreateTime: 1780000000,
+        },
       },
     })
   }) as typeof fetch
 
   const result = await refreshQQMusickey({
-    cookie: 'uin=o123456; qm_keyst=old-key; qqmusic_key=old-key; euin=encrypted-uin',
+    cookie: modernCookie('123456'),
   })
 
   assert.equal(result.uin, '123456')
@@ -71,39 +77,58 @@ test('refreshQQMusickey exchanges current musickey for a new one', async () => {
   assert.equal(result.changed, true)
   assert.match(result.cookie, /qm_keyst=next-key/)
   assert.match(result.cookie, /qqmusic_key=next-key/)
+  assert.match(result.cookie, /psrf_qqaccess_token=access-next/)
   assert.equal(requests.length, 1)
-  assert.match(requests[0].url, /^https:\/\/u6\.y\.qq\.com\/cgi-bin\/musics\.fcg\?sign=/)
-  assert.equal(requests[0].headers.get('cookie'), 'uin=o123456; qm_keyst=old-key; qqmusic_key=old-key; euin=encrypted-uin')
-  assert.deepEqual(requests[0].body['music.login.LoginServer.Login'].param, {
-    qq: '123456',
-    musickey: 'old-key',
-  })
+  assert.equal(requests[0].url, 'https://u.y.qq.com/cgi-bin/musicu.fcg')
+  assert.match(requests[0].headers.get('cookie') ?? '', /qm_keyst=old-key/)
+  assert.deepEqual(
+    {
+      access_token: requests[0].body.QQRefreshKey.param.access_token,
+      musicid: requests[0].body.QQRefreshKey.param.musicid,
+      openid: requests[0].body.QQRefreshKey.param.openid,
+      refresh_token: requests[0].body.QQRefreshKey.param.refresh_token,
+    },
+    {
+      access_token: 'access-123456',
+      musicid: 123456,
+      openid: 'openid-123456',
+      refresh_token: 'refresh-123456',
+    },
+  )
+  assert.equal(requests[0].body.QQRefreshKey.param.musickey, 'old-key')
 })
 
-test('refreshQQMusickey preserves musickey when upstream only refreshes QQ tokens', async () => {
+test('refreshQQMusickey rejects a response without a new musickey', async () => {
   globalThis.fetch = (async () => Response.json({
     code: 0,
-    'music.login.LoginServer.Login': {
+    QQRefreshKey: {
       code: 1000,
       data: {
         access_token: 'access-next',
         refresh_token: 'refresh-next',
-        expired_at: 7776000,
         musickey: '',
       },
     },
   })) as typeof fetch
 
-  const result = await refreshQQMusickey({
-    cookie: 'uin=o123456; qm_keyst=old-key; qqmusic_key=old-key; psrf_qqaccess_token=access-old; psrf_qqrefresh_token=refresh-old',
-  })
+  await assert.rejects(
+    () => refreshQQMusickey({ cookie: modernCookie('123456') }),
+    (error: unknown) => error instanceof QQMusicError && error.status === 401,
+  )
+})
 
-  assert.equal(result.keyRefreshed, false)
-  assert.equal(result.tokenRefreshed, true)
-  assert.match(result.cookie, /qm_keyst=old-key/)
-  assert.match(result.cookie, /qqmusic_key=old-key/)
-  assert.match(result.cookie, /psrf_qqaccess_token=access-next/)
-  assert.match(result.cookie, /psrf_qqrefresh_token=refresh-next/)
+test('refreshQQMusickey requires modern refresh credentials', async () => {
+  let called = false
+  globalThis.fetch = (async () => {
+    called = true
+    return Response.json({ code: 0 })
+  }) as typeof fetch
+
+  await assert.rejects(
+    () => refreshQQMusickey({ cookie: 'uin=o123456; qm_keyst=old-key; qqmusic_key=old-key' }),
+    /refresh credentials are incomplete/,
+  )
+  assert.equal(called, false)
 })
 
 test('refreshQQMusickey rejects incomplete cookies before remote request', async () => {
@@ -120,29 +145,48 @@ test('refreshQQMusickey rejects incomplete cookies before remote request', async
   assert.equal(called, false)
 })
 
+function modernCookie(uin: string, key = 'old-key') {
+  return [
+    `uin=o${uin}`,
+    `qm_keyst=${key}`,
+    `qqmusic_key=${key}`,
+    'euin=encrypted-uin',
+    `psrf_qqaccess_token=access-${uin}`,
+    `psrf_qqrefresh_token=refresh-${uin}`,
+    `psrf_qqopenid=openid-${uin}`,
+    'psrf_qqunionid=unionid-test',
+    'tmeLoginType=2',
+  ].join('; ')
+}
+
+function refreshResponse(musickey: string, overrides: Record<string, unknown> = {}) {
+  return Response.json({
+    code: 0,
+    QQRefreshKey: {
+      code: 0,
+      data: {
+        musickey,
+        access_token: `access-${musickey}`,
+        refresh_token: `refresh-${musickey}`,
+        expired_at: Math.floor(Date.now() / 1000) + 90 * 24 * 60 * 60,
+        ...overrides,
+      },
+    },
+  })
+}
+
 test('refreshAccountQQAuthorizationIfNeeded refreshes near-expiring account cookies', async () => {
   const expiresSoon = Math.floor((Date.now() + 60 * 60 * 1000) / 1000)
   db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('123457')
-  saveQQLoginCookie(`uin=o123457; qm_keyst=old-key; qqmusic_key=old-key; psrf_access_token_expiresAt=${expiresSoon}`)
+  saveQQLoginCookie(`${modernCookie('123457')}; psrf_access_token_expiresAt=${expiresSoon}`)
   const account = getAccountByQQ('123457')
   assert.ok(account)
 
   let refreshRequests = 0
   globalThis.fetch = (async (url: string | URL | Request) => {
-    assert.match(String(url), /^https:\/\/u6\.y\.qq\.com\/cgi-bin\/musics\.fcg\?sign=/)
+    assert.equal(String(url), 'https://u.y.qq.com/cgi-bin/musicu.fcg')
     refreshRequests += 1
-    return Response.json({
-      code: 0,
-      'music.login.LoginServer.Login': {
-        code: 1000,
-        data: {
-          musickey: 'next-key',
-          access_token: 'access-next',
-          refresh_token: 'refresh-next',
-          expired_at: 7776000,
-        },
-      },
-    })
+    return refreshResponse('next-key')
   }) as typeof fetch
 
   try {
@@ -154,7 +198,7 @@ test('refreshAccountQQAuthorizationIfNeeded refreshes near-expiring account cook
     assert.equal(result.attempted, true)
     assert.equal(result.refreshed, true)
     assert.equal(result.account.qqmusicKey, 'next-key')
-    assert.match(result.account.qqCookie, /psrf_qqaccess_token=access-next/)
+    assert.match(result.account.qqCookie, /psrf_qqaccess_token=access-next-key/)
     assert.equal(refreshRequests, 1)
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('123457')
@@ -164,7 +208,7 @@ test('refreshAccountQQAuthorizationIfNeeded refreshes near-expiring account cook
 test('refreshAccountQQAuthorizationIfNeeded refreshes stale sessions even when access token expires later', async () => {
   const expiresLater = Math.floor((Date.now() + 30 * 24 * 60 * 60 * 1000) / 1000)
   db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('123468')
-  saveQQLoginCookie(`uin=o123468; qm_keyst=old-key; qqmusic_key=old-key; psrf_access_token_expiresAt=${expiresLater}`)
+  saveQQLoginCookie(`${modernCookie('123468')}; psrf_access_token_expiresAt=${expiresLater}`)
   db.prepare(`
     UPDATE accounts
     SET
@@ -178,13 +222,7 @@ test('refreshAccountQQAuthorizationIfNeeded refreshes stale sessions even when a
   let refreshRequests = 0
   globalThis.fetch = (async () => {
     refreshRequests += 1
-    return Response.json({
-      code: 0,
-      'music.login.LoginServer.Login': {
-        code: 1000,
-        data: { musickey: 'far-expiry-next-key' },
-      },
-    })
+    return refreshResponse('far-expiry-next-key')
   }) as typeof fetch
 
   try {
@@ -205,7 +243,7 @@ test('refreshAccountQQAuthorizationIfNeeded refreshes stale sessions even when a
 
 test('refreshAccountQQAuthorizationIfNeeded refreshes aged account cookies without token expiry', async () => {
   db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('123463')
-  saveQQLoginCookie('uin=o123463; qm_keyst=old-key; qqmusic_key=old-key')
+  saveQQLoginCookie(modernCookie('123463'))
   db.prepare(`
     UPDATE accounts
     SET
@@ -218,15 +256,9 @@ test('refreshAccountQQAuthorizationIfNeeded refreshes aged account cookies witho
 
   let refreshRequests = 0
   globalThis.fetch = (async (url: string | URL | Request) => {
-    assert.match(String(url), /^https:\/\/u6\.y\.qq\.com\/cgi-bin\/musics\.fcg\?sign=/)
+    assert.equal(String(url), 'https://u.y.qq.com/cgi-bin/musicu.fcg')
     refreshRequests += 1
-    return Response.json({
-      code: 0,
-      'music.login.LoginServer.Login': {
-        code: 1000,
-        data: { musickey: 'aged-next-key' },
-      },
-    })
+    return refreshResponse('aged-next-key')
   }) as typeof fetch
 
   try {
@@ -353,7 +385,7 @@ test('requireActiveQQAccount does not call QQ homepage for active fresh accounts
 test('requireActiveQQAccount rechecks misclassified expired accounts with valid token expiry', async () => {
   const expiresLater = Math.floor((Date.now() + 30 * 24 * 60 * 60 * 1000) / 1000)
   db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('123467')
-  saveQQLoginCookie(`uin=o123467; qm_keyst=old-key; qqmusic_key=old-key; psrf_access_token_expiresAt=${expiresLater}`)
+  saveQQLoginCookie(`${modernCookie('123467')}; psrf_access_token_expiresAt=${expiresLater}`)
   db.prepare(`
     UPDATE accounts
     SET
@@ -365,18 +397,10 @@ test('requireActiveQQAccount rechecks misclassified expired accounts with valid 
   const account = getAccountByQQ('123467')
   assert.ok(account)
 
-  let profileRequests = 0
+  let refreshRequests = 0
   globalThis.fetch = (async () => {
-    profileRequests += 1
-    return Response.json({
-      code: 1000,
-      subcode: 1000,
-      data: {
-        creator: {
-          nick: 'Recovered User',
-        },
-      },
-    })
+    refreshRequests += 1
+    return refreshResponse('recovered-key')
   }) as typeof fetch
 
   try {
@@ -384,7 +408,8 @@ test('requireActiveQQAccount rechecks misclassified expired accounts with valid 
 
     assert.equal(result?.qqAuthState, 'active')
     assert.equal(getAccountByQQ('123467')?.qqAuthState, 'active')
-    assert.equal(profileRequests, 1)
+    assert.equal(getAccountByQQ('123467')?.qqmusicKey, 'recovered-key')
+    assert.equal(refreshRequests, 1)
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('123467')
   }
@@ -392,7 +417,8 @@ test('requireActiveQQAccount rechecks misclassified expired accounts with valid 
 
 test('refreshAccountQQAuthorization refreshes the selected account without replacing another stored session', async () => {
   db.prepare('DELETE FROM accounts WHERE qq_uin IN (?, ?)').run('123460', '123461')
-  saveQQLoginCookie('uin=o123460; qm_keyst=old-current; qqmusic_key=old-current')
+  const currentCookie = modernCookie('123460', 'old-current')
+  saveQQLoginCookie(currentCookie)
   const currentAccount = getAccountByQQ('123460')
   assert.ok(currentAccount)
   saveQQLoginCookie('uin=o123461; qm_keyst=stored-other; qqmusic_key=stored-other')
@@ -400,14 +426,8 @@ test('refreshAccountQQAuthorization refreshes the selected account without repla
 
   globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
     const request = new Request(url, init)
-    assert.equal(request.headers.get('cookie'), 'uin=o123460; qm_keyst=old-current; qqmusic_key=old-current')
-    return Response.json({
-      code: 0,
-      'music.login.LoginServer.Login': {
-        code: 1000,
-        data: { musickey: 'next-current' },
-      },
-    })
+    assert.equal(request.headers.get('cookie'), currentCookie)
+    return refreshResponse('next-current')
   }) as typeof fetch
 
   try {
@@ -427,17 +447,11 @@ test('refreshAccountQQAuthorization refreshes the selected account without repla
 test('refreshAccountQQAuthorization rejects mismatched account cookies before saving', async () => {
   const account = {
     qqUin: '999999',
-    qqCookie: 'uin=o123462; qm_keyst=old-key; qqmusic_key=old-key',
+    qqCookie: modernCookie('123462'),
     qqAuthState: 'active',
   } as AccountRecord
 
-  globalThis.fetch = (async () => Response.json({
-    code: 0,
-    'music.login.LoginServer.Login': {
-      code: 1000,
-      data: { musickey: 'next-key' },
-    },
-  })) as typeof fetch
+  globalThis.fetch = (async () => refreshResponse('next-key')) as typeof fetch
 
   await assert.rejects(
     () => refreshAccountQQAuthorization(account),
@@ -475,22 +489,16 @@ test('refreshAccountQQAuthorizationIfNeeded skips accounts outside refresh windo
 
 test('requireActiveQQAccount force refreshes without calling QQ homepage', async () => {
   db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('123459')
-  saveQQLoginCookie('uin=o123459; qm_keyst=old-key; qqmusic_key=old-key')
+  saveQQLoginCookie(modernCookie('123459'))
   const account = getAccountByQQ('123459')
   assert.ok(account)
 
   let refreshRequests = 0
   globalThis.fetch = (async (url: string | URL | Request) => {
     const requestUrl = String(url)
-    if (requestUrl.startsWith('https://u6.y.qq.com/cgi-bin/musics.fcg')) {
+    if (requestUrl === 'https://u.y.qq.com/cgi-bin/musicu.fcg') {
       refreshRequests += 1
-      return Response.json({
-        code: 0,
-        'music.login.LoginServer.Login': {
-          code: 1000,
-          data: { musickey: 'retry-key' },
-        },
-      })
+      return refreshResponse('retry-key')
     }
 
     throw new Error(`unexpected QQ homepage request: ${requestUrl}`)

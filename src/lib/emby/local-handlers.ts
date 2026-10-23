@@ -13,6 +13,7 @@ import {
   getQQLoginState,
   getQQLyrics,
   qqLegacyLyricsUrl,
+  recordFavoriteSyncFailure,
   getQQRecommendations,
   getQQRecommendationsForAccount,
   getQQSongDetail,
@@ -735,7 +736,7 @@ async function handleFavoriteItemMutationRequest(request: Request, embyPath: str
   }
 
   const song = await loadQQSongForFavoriteMutation(loaded.song, decoded.playlistId ?? loaded.playlistId)
-  setLocalFavorite(song, favorite, account?.userId)
+  const record = setLocalFavorite(song, favorite, account?.userId)
   if (favorite) enqueueArchiveAndSyncForSong(account, song, 'favorite', decoded.playlistId ?? loaded.playlistId)
 
   try {
@@ -747,8 +748,13 @@ async function handleFavoriteItemMutationRequest(request: Request, embyPath: str
     })
     setLocalFavoriteSynced(song, favorite, account?.userId)
   } catch (error) {
+    const failure = account?.userId
+      ? recordFavoriteSyncFailure({ userId: account.userId, record, error })
+      : undefined
     console.warn(
-      `QQ favorite ${favorite ? 'add' : 'remove'} sync deferred for ${song.songmid}: ${error instanceof Error ? error.message : String(error)}`,
+      `QQ favorite ${favorite ? 'add' : 'remove'} sync deferred for ${song.songmid}: ${
+        error instanceof Error ? error.message : String(error)
+      }; attempt=${failure?.attempts ?? 'unrecorded'}; nextRetryAt=${failure?.nextRetryAt ?? 'manual'}`,
     )
   }
 

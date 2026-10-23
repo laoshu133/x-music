@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path'
 import { db } from '@/lib/db'
 import { appConfig } from '@/lib/config'
 import { deleteSetting, getEffectiveSettings, getSetting, setSetting, updateEffectiveSettings } from '@/lib/db/settings'
-import { getAccountByQQ, getAccountDetail, listAccountSummaries, markAccountActive, updateAccountEmbyConfig } from '@/lib/db/accounts'
+import { getAccountByQQ, getAccountDetail, getAccountProfile, listAccountSummaries, markAccountActive, updateAccountEmbyConfig } from '@/lib/db/accounts'
 import { clearQQLoginCookie, saveQQLoginCookie } from '@/lib/db/qq-session'
 import { dispatchEmbyRequest } from '@/lib/emby/dispatch'
 import { ensureUpstreamEmbyUserForAccount } from '@/lib/emby/auth'
@@ -26,6 +26,8 @@ import { syncMappedEmbyFavoriteBestEffort } from '@/lib/emby/favorites'
 import { logCompletedRequest, logFailedRequest, logServiceEvent, requestLoggingEnabled, safeRequestPath } from '@/lib/request-log'
 import { QQAuthExpiredError, requireActiveQQAccount } from '@/lib/qq/auth-state'
 import { requestUserTrackSync } from '@/lib/emby/sync'
+import { decryptQQMusicAg1Request } from '@/lib/qq/crypto'
+import { GET as getAdminUsers } from '@/app/api/admin/users/route'
 
 function markAccountUpstreamBound(qqUin: string, embyUserId = `emby-user-${qqUin}`, embyAccessToken?: string): void {
   configureAccountUpstreamEmby(qqUin)
@@ -79,6 +81,46 @@ function qqRadioSessionResponse(): Response {
     req: {
       code: 0,
       data: { session: { uid: 'device-session-uid', sid: 'device-session-sid' } },
+    },
+  })
+}
+
+function parseQQRequestBody(init?: RequestInit): any {
+  const body = typeof init?.body === 'string' ? init.body : '{}'
+  try {
+    return JSON.parse(body)
+  } catch {
+    return JSON.parse(decryptQQMusicAg1Request(body))
+  }
+}
+
+function qqResponseItem(body: any): any {
+  return body.req_0 ?? body.req
+}
+
+function isQQMusicHost(hostname: string): boolean {
+  return hostname === 'u.y.qq.com' || hostname === 'u6.y.qq.com'
+}
+
+function qqFavoriteWriteResponse(body: any, favorited: boolean): Response {
+  const item = qqResponseItem(body)
+  if (item?.method === 'IsSongFanByMid') {
+    const songmids = Array.isArray(item.param?.v_songMid) ? item.param.v_songMid as string[] : []
+    return Response.json({
+      code: 0,
+      req_0: {
+        code: 0,
+        data: {
+          m_fan: Object.fromEntries(songmids.map(songmid => [songmid, favorited])),
+        },
+      },
+    })
+  }
+  return Response.json({
+    code: 0,
+    req_0: {
+      code: 0,
+      data: { retCode: 0 },
     },
   })
 }
@@ -380,7 +422,14 @@ test('explicit QQ refresh rejection expires the bound account auth state', async
   const originalFetch = globalThis.fetch
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999905')
-    saveQQLoginCookie('uin=o999905; qm_keyst=test-key')
+    saveQQLoginCookie([
+      'uin=o999905',
+      'euin=encrypted999905',
+      'qm_keyst=test-key',
+      'psrf_qqaccess_token=access-token',
+      'psrf_qqrefresh_token=refresh-token',
+      'psrf_qqopenid=openid-999905',
+    ].join('; '))
     const account = getAccountByQQ('999905')
     assert.ok(account)
 
@@ -1407,6 +1456,35 @@ test('account upstream emby config preserves masked dsn and supports clearing fi
   }
 })
 
+test('account profile exposes full Emby and WebDAV details to the admin endpoint', () => {
+  try {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999030')
+    saveQQLoginCookie('uin=o999030; qm_keyst=test-key')
+    const account = getAccountByQQ('999030')
+    assert.ok(account)
+    updateAccountEmbyConfig(account.userId, {
+      password: 'player-password',
+      dsn: 'https://admin:secret@emby.example',
+      sourceWebdavDsn: 'https://mix:webdav-pass@dav.example/dav/music',
+    })
+
+    const profile = getAccountProfile(account.userId)
+    assert.equal(profile?.account.embyDsn, 'https://admin:secret@emby.example')
+    assert.equal(profile?.account.sourceWebdavDsn, 'https://mix:webdav-pass@dav.example/dav/music')
+    assert.equal(profile?.account.hasEmbySourceWebdavDsn, true)
+  } finally {
+    db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999030')
+    clearQQLoginCookie()
+  }
+})
+
+test('account profile details remain inaccessible without an admin session', async () => {
+  const response = await getAdminUsers(new Request('http://local/api/admin/users?userId=test&section=profile'))
+
+  assert.equal(response.status, 403)
+  assert.deepEqual(await response.json(), { error: 'Admin permission required', code: 'FORBIDDEN' })
+})
+
 test('local emby authenticate ignores upstream binding failures', async () => {
   const originalFetch = globalThis.fetch
   const originalConsoleError = console.error
@@ -2379,11 +2457,11 @@ test('musiver virtual favorite item delete is handled locally without leaking to
     const qqFavoriteWrites: Array<{ method: string; param: unknown }> = []
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       const requestUrl = new URL(String(url))
-      if (requestUrl.hostname === 'u.y.qq.com') {
-        const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {}
+      if (isQQMusicHost(requestUrl.hostname)) {
+        const body = parseQQRequestBody(init)
         qqFavoriteWrites.push({
-          method: body.req?.method,
-          param: body.req?.param,
+          method: qqResponseItem(body)?.method,
+          param: qqResponseItem(body)?.param,
         })
         return Response.json({
           code: 0,
@@ -2418,8 +2496,9 @@ test('musiver virtual favorite item delete is handled locally without leaking to
     assert.equal(payload.IsFavorite, false)
     assert.equal(payload.PlaybackPositionTicks, 0)
     assert.deepEqual(upstreamRequests, [])
-    assert.equal(qqFavoriteWrites.length, 1)
+    assert.equal(qqFavoriteWrites.length, 2)
     assert.equal(qqFavoriteWrites[0].method, 'DelSonglist')
+    assert.equal(qqFavoriteWrites[1].method, 'IsSongFanByMid')
     assert.equal(getFavoriteStatus('tx', songmid).favorite, false)
     assert.equal(getFavoriteStatus('tx', songmid).syncState, 'synced')
   } finally {
@@ -2579,9 +2658,10 @@ test('local emby favorite list hides QQ songs locally marked unfavorite', async 
 
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       const requestUrl = new URL(String(url))
-      if (requestUrl.hostname === 'u.y.qq.com') {
-        const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {}
-        if (body.req?.method === 'DelSonglist') {
+      if (isQQMusicHost(requestUrl.hostname)) {
+        const body = parseQQRequestBody(init)
+        const item = qqResponseItem(body)
+        if (item?.method === 'DelSonglist') {
           return Response.json({ code: 1, req: { code: 1 } }, { status: 200 })
         }
         return Response.json({
@@ -2867,22 +2947,10 @@ test('musiver virtual favorite item post returns emby user data payload', async 
       ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = CURRENT_TIMESTAMP
     `).run(`virtual.song.${songmid}`, JSON.stringify({ song }))
 
-    globalThis.fetch = (async (url: string | URL | Request) => {
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       const requestUrl = new URL(String(url))
-      if (requestUrl.hostname === 'u.y.qq.com') {
-        return Response.json({
-          code: 0,
-          req: {
-            code: 0,
-            data: {
-              retCode: 0,
-              result: {
-                dirId: 201,
-                songlist: [{ backendSongId: 665544, songId: 665544, songType: 0 }],
-              },
-            },
-          },
-        })
+      if (isQQMusicHost(requestUrl.hostname)) {
+        return qqFavoriteWriteResponse(parseQQRequestBody(init), true)
       }
       return Response.json({ error: 'virtual favorite mutation leaked upstream' }, { status: 500 })
     }) as typeof fetch
@@ -2935,8 +3003,8 @@ test('first favorite write for an upstream Emby QQ song creates a mapping and sy
     const upstreamFavoriteWrites: Array<{ pathname: string; method: string }> = []
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       const requestUrl = new URL(String(url))
-      if (requestUrl.hostname === 'u.y.qq.com') {
-        const body = typeof init?.body === 'string' ? JSON.parse(init.body) as Record<string, unknown> : {}
+      if (isQQMusicHost(requestUrl.hostname)) {
+        const body = parseQQRequestBody(init) as Record<string, any>
         if (body.songinfo) {
           qqDetailRequests += 1
           return Response.json({
@@ -2959,7 +3027,7 @@ test('first favorite write for an upstream Emby QQ song creates a mapping and sy
           })
         }
         qqFavoriteRequests += 1
-        return Response.json({ code: 0, req: { code: 0, data: { retCode: 0 } } })
+        return qqFavoriteWriteResponse(body, true)
       }
       if (requestUrl.pathname.endsWith(`/Items/${itemId}`)) {
         return Response.json({
@@ -2987,7 +3055,7 @@ test('first favorite write for an upstream Emby QQ song creates a mapping and sy
 
     assert.equal(response.status, 200)
     assert.equal(qqDetailRequests, 1)
-    assert.equal(qqFavoriteRequests, 1)
+    assert.equal(qqFavoriteRequests, 2)
     assert.deepEqual(upstreamFavoriteWrites, [{
       pathname: `/Users/emby-user-999047/FavoriteItems/${itemId}`,
       method: 'POST',
@@ -3076,7 +3144,7 @@ test('local emby favorites merge QQ songs without deriving favorite albums', asy
     let qqFavoriteRequests = 0
     globalThis.fetch = (async (url: string | URL | Request) => {
       const requestUrl = new URL(String(url))
-      if (requestUrl.hostname === 'u.y.qq.com') {
+      if (isQQMusicHost(requestUrl.hostname)) {
         qqFavoriteRequests += 1
         return Response.json({
           code: 0,
@@ -3190,11 +3258,12 @@ test('local emby favorite songs pages through QQ results beyond 200', async () =
     const favoriteRequests: URL[] = []
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       const requestUrl = new URL(String(url))
-      if (requestUrl.hostname === 'u.y.qq.com') {
+      if (isQQMusicHost(requestUrl.hostname)) {
         favoriteRequests.push(requestUrl)
-        const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {}
-        const begin = Number(body.req?.param?.song_begin ?? 0)
-        const count = Number(body.req?.param?.song_num ?? 0)
+        const body = parseQQRequestBody(init)
+        const item = qqResponseItem(body)
+        const begin = Number(item?.param?.song_begin ?? 0)
+        const count = Number(item?.param?.song_num ?? 0)
         const total = 450
         const pageLength = Math.max(0, Math.min(count, total - begin))
         return Response.json({
@@ -3293,7 +3362,7 @@ test('local emby favorite list uses mapped upstream item ids for synced QQ songs
 
     globalThis.fetch = (async (url: string | URL | Request) => {
       const requestUrl = new URL(String(url))
-      if (requestUrl.hostname === 'u.y.qq.com') {
+      if (isQQMusicHost(requestUrl.hostname)) {
         return Response.json({
           code: 0,
           req: {
@@ -3360,7 +3429,7 @@ test('local emby favorite songs include QQ songs without media mid', async () =>
 
     globalThis.fetch = (async (url: string | URL | Request) => {
       const requestUrl = new URL(String(url))
-      if (requestUrl.hostname === 'u.y.qq.com') {
+      if (isQQMusicHost(requestUrl.hostname)) {
         return Response.json({
           code: 0,
           req: {
@@ -3421,7 +3490,7 @@ test('local emby favorite songs uses estimated total before QQ calibration', asy
 
     globalThis.fetch = (async (url: string | URL | Request) => {
       const requestUrl = new URL(String(url))
-      if (requestUrl.hostname === 'u.y.qq.com') {
+      if (isQQMusicHost(requestUrl.hostname)) {
         return Response.json({ code: 500, req: { code: 500 } })
       }
 
@@ -3439,7 +3508,7 @@ test('local emby favorite songs uses estimated total before QQ calibration', asy
 
     globalThis.fetch = (async (url: string | URL | Request) => {
       const requestUrl = new URL(String(url))
-      if (requestUrl.hostname === 'u.y.qq.com') {
+      if (isQQMusicHost(requestUrl.hostname)) {
         return Response.json({
           code: 0,
           req: {
@@ -3498,10 +3567,11 @@ test('local emby favorite songs keeps estimated total for partial deduped window
 
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       const requestUrl = new URL(String(url))
-      if (requestUrl.hostname === 'u.y.qq.com') {
-        const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {}
-        const begin = Number(body.req?.param?.song_begin ?? 0)
-        const count = Number(body.req?.param?.song_num ?? 0)
+      if (isQQMusicHost(requestUrl.hostname)) {
+        const body = parseQQRequestBody(init)
+        const item = qqResponseItem(body)
+        const begin = Number(item?.param?.song_begin ?? 0)
+        const count = Number(item?.param?.song_num ?? 0)
         const total = 383
         return Response.json({
           code: 0,
@@ -3567,10 +3637,10 @@ test('local emby favorite songs return all QQ pages when client omits pagination
     const favoriteBegins: number[] = []
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       const requestUrl = new URL(String(url))
-      if (requestUrl.hostname === 'u.y.qq.com') {
-        const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {}
-        const begin = Number(body.req?.param?.song_begin ?? 0)
-        const count = Number(body.req?.param?.song_num ?? 0)
+      if (isQQMusicHost(requestUrl.hostname)) {
+        const item = qqResponseItem(parseQQRequestBody(init))
+        const begin = Number(item?.param?.song_begin ?? 0)
+        const count = Number(item?.param?.song_num ?? 0)
         const total = 225
         favoriteBegins.push(begin)
         return Response.json({
@@ -3638,10 +3708,10 @@ test('local emby favorite songs sort mixed sources by favorite time descending',
 
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       const requestUrl = new URL(String(url))
-      if (requestUrl.hostname === 'u.y.qq.com') {
-        const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {}
-        const begin = Number(body.req?.param?.song_begin ?? 0)
-        const count = Number(body.req?.param?.song_num ?? 0)
+      if (isQQMusicHost(requestUrl.hostname)) {
+        const item = qqResponseItem(parseQQRequestBody(init))
+        const begin = Number(item?.param?.song_begin ?? 0)
+        const count = Number(item?.param?.song_num ?? 0)
         const total = 2
         return Response.json({
           code: 0,
@@ -3717,10 +3787,10 @@ test('musiver favorite list keeps selected virtual song ids stable across detail
 
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       const requestUrl = new URL(String(url))
-      if (requestUrl.hostname === 'u.y.qq.com') {
-        const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {}
-        const begin = Number(body.req?.param?.song_begin ?? 0)
-        const count = Number(body.req?.param?.song_num ?? 0)
+      if (isQQMusicHost(requestUrl.hostname)) {
+        const item = qqResponseItem(parseQQRequestBody(init))
+        const begin = Number(item?.param?.song_begin ?? 0)
+        const count = Number(item?.param?.song_num ?? 0)
         const songs = [
           {
             id: 1,
@@ -3924,9 +3994,9 @@ test('local emby favorite songs count merged deduped items', async () => {
 
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       const requestUrl = new URL(String(url))
-      if (requestUrl.hostname === 'u.y.qq.com') {
-        const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {}
-        assert.equal(Number(body.req?.param?.song_begin ?? 0), 0)
+      if (isQQMusicHost(requestUrl.hostname)) {
+        const item = qqResponseItem(parseQQRequestBody(init))
+        assert.equal(Number(item?.param?.song_begin ?? 0), 0)
         return Response.json({
           code: 0,
           req: {
@@ -4009,7 +4079,7 @@ test('local emby genres include QQ favorite album bucket when upstream has no ge
 
     globalThis.fetch = (async (url: string | URL | Request) => {
       const requestUrl = new URL(String(url))
-      if (requestUrl.hostname === 'u.y.qq.com') {
+      if (isQQMusicHost(requestUrl.hostname)) {
         return Response.json({
           code: 0,
           req: {
@@ -4136,7 +4206,15 @@ test('local emby recommendation playlists cap each page and reuse the per-user p
   const originalFetch = globalThis.fetch
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999018')
-    saveQQLoginCookie('uin=o999018; qm_keyst=test-key')
+    saveQQLoginCookie([
+      'uin=o999018',
+      'euin=encrypted999018',
+      'qm_keyst=test-key',
+      'psrf_qqaccess_token=access-999018',
+      'psrf_qqrefresh_token=refresh-999018',
+      'psrf_qqopenid=openid-999018',
+      'psrf_access_token_expiresAt=1798761600',
+    ].join('; '))
     markAccountUpstreamBound('999018')
     const account = getAccountByQQ('999018')
     assert.ok(account)
@@ -4155,6 +4233,22 @@ test('local emby recommendation playlists cap each page and reuse the per-user p
       const requestUrl = new URL(String(url))
       if (requestUrl.hostname === 'u.y.qq.com') {
         const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {}
+        if (body.QQRefreshKey) {
+          return Response.json({
+            code: 0,
+            QQRefreshKey: {
+              code: 0,
+              data: {
+                musickey: 'refreshed-test-key',
+                access_token: 'refreshed-access-token',
+                refresh_token: 'refreshed-refresh-token',
+                refresh_key: 'refreshed-refresh-key',
+                openid: 'openid-999018',
+                expired_at: 1798761600,
+              },
+            },
+          })
+        }
         if (body.req?.module === 'music.getSession.session') return qqRadioSessionResponse()
         if (body.req?.module === 'music.radioProxy.MbTrackRadioSvr') {
           const pageSize = Number(body.req.param.num ?? 0)
@@ -4286,7 +4380,7 @@ test('local emby recommendation playlists cap each page and reuse the per-user p
     assert.equal(unavailableRecommendationAuthorization.status, 428)
     assert.equal((await unavailableRecommendationAuthorization.json()).code, 'QQ_RECOMMENDATION_AUTH_REQUIRED')
     assert.equal(getAccountByQQ('999018')?.qqAuthState, 'active')
-    assert.equal(recommendationLimits.length, 27)
+    assert.equal(recommendationLimits.length, 28)
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999018')
     clearQQLoginCookie()
@@ -8198,9 +8292,10 @@ test('local emby root library reads cached QQ favorites and playlists without up
     let playlistRequests = 0
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       const requestUrl = new URL(String(url))
-      if (requestUrl.hostname === 'u.y.qq.com' && requestUrl.pathname.includes('/cgi-bin/musics.fcg')) {
-        const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {}
-        if (body.req?.method === 'CgiGetDiss') {
+      if (isQQMusicHost(requestUrl.hostname) && requestUrl.pathname.includes('/cgi-bin/musics.fcg')) {
+        const body = parseQQRequestBody(init)
+        const item = qqResponseItem(body)
+        if (item?.method === 'CgiGetDiss') {
           favoriteRequests += 1
           return Response.json({
             code: 0,
@@ -8221,8 +8316,8 @@ test('local emby root library reads cached QQ favorites and playlists without up
             },
           })
         }
-        if (body.req?.method === 'GetPlaylistByUin') {
-          assert.equal(body.req.module, 'music.musicasset.PlaylistBaseRead')
+        if (item?.method === 'GetPlaylistByUin') {
+          assert.equal(item.module, 'music.musicasset.PlaylistBaseRead')
           playlistRequests += 1
           return Response.json({
             code: 0,
@@ -8331,9 +8426,9 @@ test('local emby root audio defaults to created time descending without upstream
 
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       const requestUrl = new URL(String(url))
-      if (requestUrl.hostname === 'u.y.qq.com' && requestUrl.pathname.includes('/cgi-bin/musics.fcg')) {
-        const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {}
-        assert.equal(body.req?.method, 'CgiGetDiss')
+      if (isQQMusicHost(requestUrl.hostname) && requestUrl.pathname.includes('/cgi-bin/musics.fcg')) {
+        const body = parseQQRequestBody(init)
+        assert.equal(qqResponseItem(body)?.method, 'CgiGetDiss')
         return Response.json({
           code: 0,
           req: {
@@ -8408,9 +8503,9 @@ test('local emby random root library order reshuffles cached QQ items per reques
     let favoriteRequests = 0
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       const requestUrl = new URL(String(url))
-      if (requestUrl.hostname === 'u.y.qq.com' && requestUrl.pathname.includes('/cgi-bin/musics.fcg')) {
-        const body = typeof init?.body === 'string' ? JSON.parse(init.body) : {}
-        assert.equal(body.req?.method, 'CgiGetDiss')
+      if (isQQMusicHost(requestUrl.hostname) && requestUrl.pathname.includes('/cgi-bin/musics.fcg')) {
+        const body = parseQQRequestBody(init)
+        assert.equal(qqResponseItem(body)?.method, 'CgiGetDiss')
         favoriteRequests += 1
         return Response.json({
           code: 0,

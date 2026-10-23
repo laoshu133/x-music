@@ -209,23 +209,36 @@ test('recommendations route caps each guess page at 30 songs', async () => {
 test('recommendations route keeps QQ radio credential errors scoped to guess recommendations', async () => {
   const qqUin = '123463'
   try {
-    saveQQLoginCookie(`uin=o${qqUin}; qm_keyst=test-key`)
+    saveQQLoginCookie([
+      `uin=o${qqUin}`,
+      'euin=encrypted123463',
+      'qm_keyst=test-key',
+      'psrf_qqaccess_token=access-123463',
+      'psrf_qqrefresh_token=refresh-123463',
+      'psrf_qqopenid=openid-123463',
+    ].join('; '))
     const route = await import('@/app/api/recommendations/route')
     let radioRequests = 0
     let refreshRequests = 0
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       const requestUrl = new URL(String(url))
-      if (requestUrl.hostname === 'u6.y.qq.com') {
+      const body = JSON.parse(String(init?.body))
+      if (body.QQRefreshKey) {
         refreshRequests += 1
         return Response.json({
           code: 0,
-          'music.login.LoginServer.Login': {
-            code: 1000,
-            data: {},
+          QQRefreshKey: {
+            code: 0,
+            data: {
+              musickey: 'refreshed-test-key',
+              access_token: 'refreshed-access-123463',
+              refresh_token: 'refreshed-refresh-123463',
+              refresh_key: 'refreshed-refresh-key',
+              openid: 'openid-123463',
+            },
           },
         })
       }
-      const body = JSON.parse(String(init?.body))
       if (body.req?.module === 'music.getSession.session') return qqRadioSessionResponse()
       radioRequests += 1
       return Response.json({
@@ -253,7 +266,15 @@ test('recommendations route keeps QQ radio credential errors scoped to guess rec
 test('recommendations route retries QQ radio after refreshing its MusicKey', async () => {
   const qqUin = '123464'
   try {
-    saveQQLoginCookie(`uin=o${qqUin}; qm_keyst=old-key; qqmusic_key=old-key`)
+    saveQQLoginCookie([
+      `uin=o${qqUin}`,
+      'euin=encrypted123464',
+      'qm_keyst=old-key',
+      'qqmusic_key=old-key',
+      'psrf_qqaccess_token=access-123464',
+      'psrf_qqrefresh_token=refresh-123464',
+      'psrf_qqopenid=openid-123464',
+    ].join('; '))
     const route = await import('@/app/api/recommendations/route')
     let radioRequests = 0
     let refreshRequests = 0
@@ -261,18 +282,24 @@ test('recommendations route retries QQ radio after refreshing its MusicKey', asy
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       const request = new Request(url, init)
       const requestUrl = new URL(String(url))
-      if (requestUrl.hostname === 'u6.y.qq.com') {
+      const body = JSON.parse(String(init?.body))
+      if (body.QQRefreshKey) {
         refreshRequests += 1
         return Response.json({
           code: 0,
-          'music.login.LoginServer.Login': {
-            code: 1000,
-            data: { musickey: 'next-key' },
+          QQRefreshKey: {
+            code: 0,
+            data: {
+              musickey: 'next-key',
+              access_token: 'next-access-123464',
+              refresh_token: 'next-refresh-123464',
+              refresh_key: 'next-refresh-key',
+              openid: 'openid-123464',
+            },
           },
         })
       }
 
-      const body = JSON.parse(String(init?.body))
       if (body.req?.module === 'music.getSession.session') return qqRadioSessionResponse()
 
       radioRequests += 1
@@ -311,14 +338,21 @@ test('recommendations route retries QQ radio after refreshing its MusicKey', asy
 test('recommendations route expires global QQ auth only when MusicKey refresh returns 401', async () => {
   const qqUin = '123465'
   try {
-    saveQQLoginCookie(`uin=o${qqUin}; qm_keyst=old-key; qqmusic_key=old-key`)
+    saveQQLoginCookie([
+      `uin=o${qqUin}`,
+      'euin=encrypted123465',
+      'qm_keyst=old-key',
+      'qqmusic_key=old-key',
+      'psrf_qqaccess_token=access-123465',
+      'psrf_qqrefresh_token=refresh-123465',
+      'psrf_qqopenid=openid-123465',
+    ].join('; '))
     const route = await import('@/app/api/recommendations/route')
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
-      const requestUrl = new URL(String(url))
-      if (requestUrl.hostname === 'u6.y.qq.com') {
+      const body = JSON.parse(String(init?.body))
+      if (body.QQRefreshKey) {
         return new Response(null, { status: 401 })
       }
-      const body = JSON.parse(String(init?.body))
       if (body.req?.module === 'music.getSession.session') return qqRadioSessionResponse()
       return Response.json({ code: 0, req: { code: 1000, data: { tracks: [] } } })
     }) as typeof fetch
