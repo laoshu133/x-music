@@ -199,12 +199,15 @@ test('legacy Emby sync requests are reconciled once and deduplicated', () => {
 test('failed Emby sync combinations are dry-run and replayed without duplicates', () => {
   const readySongmid = `FAILED_REPLAY_READY_${Date.now()}`
   const missingSongmid = `FAILED_REPLAY_MISSING_${Date.now()}`
+  const remoteSongmid = `FAILED_REPLAY_REMOTE_${Date.now()}`
   const userId = TEST_EMBY_QQ_UIN
   configureTestAccountEmby({ webdav: true })
   const readySong = { source: 'tx' as const, songmid: readySongmid, name: 'Replay Ready', singer: 'Tester' }
   const missingSong = { source: 'tx' as const, songmid: missingSongmid, name: 'Replay Missing', singer: 'Tester' }
+  const remoteSong = { source: 'tx' as const, songmid: remoteSongmid, name: 'Replay Remote', singer: 'Tester' }
   const readyTrack = ensureTrack(readySong)
   const missingTrack = ensureTrack(missingSong)
+  const remoteTrack = ensureTrack(remoteSong)
   const filePath = path.join(appConfig.musicDir, 'Replay', `${readySongmid}.mp3`)
   mkdirSync(path.dirname(filePath), { recursive: true })
   writeFileSync(filePath, 'audio')
@@ -223,12 +226,26 @@ test('failed Emby sync combinations are dry-run and replayed without duplicates'
   try {
     db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track' AND json_extract(payload_json, '$.songmid') IN (?, ?)")
       .run(readySongmid, missingSongmid)
+    db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track' AND json_extract(payload_json, '$.songmid') = ?")
+      .run(remoteSongmid)
+    db.prepare("DELETE FROM sync_events WHERE type = 'emby_webdav' AND json_extract(payload_json, '$.songmid') = ?")
+      .run(remoteSongmid)
     createFailed(readySong)
     createFailed(readySong)
     createFailed(missingSong)
+    createFailed(remoteSong)
+    db.prepare(`
+      INSERT INTO sync_events (user_id, type, status, payload_json, updated_at)
+      VALUES (?, 'emby_webdav', 'uploaded', ?, CURRENT_TIMESTAMP)
+    `).run(userId, JSON.stringify({
+      source: 'tx',
+      songmid: remoteSongmid,
+      embyPath: 'Replay/Tester - Replay Remote.mp3',
+      uploadedPaths: ['Replay/Tester - Replay Remote.mp3'],
+    }))
 
     const dryRun = replayFailedEmbyTrackSyncs({ userId, dryRun: true, limit: 50 })
-    assert.ok(dryRun.eligible >= 1)
+    assert.ok(dryRun.eligible >= 2)
     assert.ok(dryRun.skippedNoCache >= 1)
     assert.equal(dryRun.enqueued, 0)
     assert.equal((db.prepare(`
@@ -240,8 +257,8 @@ test('failed Emby sync combinations are dry-run and replayed without duplicates'
     `).get(userId, readySongmid) as { count: number }).count, 2)
 
     const applied = replayFailedEmbyTrackSyncs({ userId, dryRun: false, limit: 50 })
-    assert.ok(applied.eligible >= 1)
-    assert.ok(applied.enqueued >= 1)
+    assert.ok(applied.eligible >= 2)
+    assert.ok(applied.enqueued >= 2)
     const replayed = db.prepare(`
       SELECT id, status
       FROM jobs
@@ -266,7 +283,11 @@ test('failed Emby sync combinations are dry-run and replayed without duplicates'
   } finally {
     db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track' AND json_extract(payload_json, '$.songmid') IN (?, ?)")
       .run(readySongmid, missingSongmid)
-    db.prepare('DELETE FROM tracks WHERE id IN (?, ?)').run(readyTrack.id, missingTrack.id)
+    db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track' AND json_extract(payload_json, '$.songmid') = ?")
+      .run(remoteSongmid)
+    db.prepare("DELETE FROM sync_events WHERE type = 'emby_webdav' AND json_extract(payload_json, '$.songmid') = ?")
+      .run(remoteSongmid)
+    db.prepare('DELETE FROM tracks WHERE id IN (?, ?, ?)').run(readyTrack.id, missingTrack.id, remoteTrack.id)
     rmSync(path.dirname(filePath), { recursive: true, force: true })
   }
 })

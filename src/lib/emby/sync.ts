@@ -242,7 +242,7 @@ export function replayFailedEmbyTrackSyncs(options: {
       result.skippedActive += 1
       continue
     }
-    if (!hasReadyLocalMediaForWebdav(track.id)) {
+    if (!hasReadyLocalMediaForWebdav(track.id) && !hasPriorWebdavSync(payload.source, payload.songmid)) {
       result.skippedNoCache += 1
       continue
     }
@@ -303,6 +303,17 @@ function hasReadyLocalMediaForWebdav(trackId: number): boolean {
       && isPlayableAudioFileName(candidate)
       && fs.existsSync(candidate)
   })
+}
+
+function hasPriorWebdavSync(source: 'tx', songmid: string): boolean {
+  return Boolean(db.prepare(`
+    SELECT 1
+    FROM sync_events
+    WHERE type = 'emby_webdav'
+      AND json_extract(payload_json, '$.source') = ?
+      AND json_extract(payload_json, '$.songmid') = ?
+    LIMIT 1
+  `).get(source, songmid))
 }
 
 function deleteSyncRequest(userId: string, trackId: number): void {
