@@ -16,6 +16,7 @@ export type QQLoginQrCheckResult =
       refresh: boolean
       status: 'pending' | 'scanned' | 'expired'
       message: string
+      transient?: boolean
     }
   | {
       isOk: true
@@ -130,6 +131,76 @@ async function fetchWithTimeout(input: string, init: RequestInit = {}, timeout =
   }
 }
 
+async function fetchWithRetry(
+  input: string,
+  init: RequestInit = {},
+  options: { attempts?: number; timeoutMs?: number; stage?: string } = {},
+) {
+  const attempts = Math.max(1, options.attempts ?? 3)
+  const timeoutMs = options.timeoutMs ?? 5000
+  let lastError: unknown
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const response = await fetchWithTimeout(input, init, timeoutMs)
+      if (!isRetryableLoginStatus(response.status) || attempt >= attempts) return response
+      await response.body?.cancel().catch(() => undefined)
+      lastError = new QQMusicError('QQ login endpoint returned a temporary error', response.status)
+    } catch (error) {
+      lastError = error
+      if (!isTransientLoginNetworkError(error) || attempt >= attempts) throw error
+    }
+
+    const delayMs = attempt === 1 ? 200 : 600
+    logServiceEvent('qq_login_network_retry', {
+      stage: options.stage,
+      attempt,
+      attempts,
+      delayMs,
+      code: loginNetworkErrorCode(lastError),
+    }, 'info')
+    await sleep(delayMs)
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new QQMusicError('QQ login network request failed', 502)
+}
+
+function isRetryableLoginStatus(status: number): boolean {
+  return status === 429 || status === 500 || status === 502 || status === 503 || status === 504
+}
+
+function isTransientLoginNetworkError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  if (error.name === 'AbortError' || error.name === 'TimeoutError') return true
+  if (!(error instanceof TypeError)) return false
+  const code = loginNetworkErrorCode(error)
+  return !code || [
+    'EAI_AGAIN',
+    'ECONNABORTED',
+    'ECONNREFUSED',
+    'ECONNRESET',
+    'ENETUNREACH',
+    'ETIMEDOUT',
+    'UND_ERR_CONNECT_TIMEOUT',
+    'UND_ERR_HEADERS_TIMEOUT',
+  ].includes(code)
+}
+
+function loginNetworkErrorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object') return undefined
+  const cause = 'cause' in error && error.cause && typeof error.cause === 'object'
+    ? error.cause as { code?: unknown }
+    : undefined
+  const code = cause?.code ?? ('code' in error ? error.code : undefined)
+  return typeof code === 'string' ? code : undefined
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
 function setCookies(cookieMap: Map<string, string>, setCookieHeader: string | null) {
   for (const cookie of parseSetCookie(setCookieHeader)) {
     const [name] = cookie.split('=')
@@ -180,14 +251,14 @@ export async function exchangeQQMusicLoginCode(input: {
     },
   }
 
-  const musicLoginResponse = await fetchWithTimeout('https://u.y.qq.com/cgi-bin/musicu.fcg', {
+  const musicLoginResponse = await fetchWithRetry('https://u.y.qq.com/cgi-bin/musicu.fcg', {
     method: 'POST',
     body: JSON.stringify(musicLoginPayload),
     headers: {
       'content-type': 'application/x-www-form-urlencoded',
       ...(input.cookie ? { cookie: input.cookie } : {}),
     },
-  })
+  }, { stage: 'code_exchange' })
   const cookieMap = new Map<string, string>()
   setCookies(cookieMap, musicLoginResponse.headers.get('set-cookie'))
   if (input.cookie) {
@@ -298,7 +369,7 @@ export async function getQQLoginQr(): Promise<QQLoginQr> {
   const url =
     'https://ssl.ptlogin2.qq.com/ptqrshow?appid=716027609&e=2&l=M&s=3&d=72&v=4&t=0.9698127522807933&daid=383&pt_3rd_aid=100497308&u1=https%3A%2F%2Fgraph.qq.com%2Foauth2.0%2Flogin_jump'
 
-  const response = await fetchWithTimeout(url)
+  const response = await fetchWithRetry(url, {}, { stage: 'qr_image' })
   if (!response.ok) throw new QQMusicError('Failed to fetch QQ login QR', response.status)
 
   const image = Buffer.from(await response.arrayBuffer()).toString('base64')
@@ -321,11 +392,12 @@ export async function checkQQLoginQr(input: {
     throw new QQMusicError('Missing ptqrtoken or qrsig', 400)
   }
 
+  let stage = 'qr_poll'
   try {
     const loginUrl = `https://ssl.ptlogin2.qq.com/ptqrlogin?u1=https%3A%2F%2Fgraph.qq.com%2Foauth2.0%2Flogin_jump&ptqrtoken=${encodeURIComponent(String(ptqrtoken))}&ptredirect=0&h=1&t=1&g=1&from_ui=1&ptlang=2052&action=0-0-1711022193435&js_ver=23111510&js_type=1&login_sig=du-YS1h8*0GqVqcrru0pXkpwVg2DYw-DtbFulJ62IgPf6vfiJe*4ONVrYc5hMUNE&pt_uistyle=40&aid=716027609&daid=383&pt_3rd_aid=100497308&&o1vId=3674fc47871e9c407d8838690b355408&pt_js_version=v1.48.1`
-    const loginResponse = await fetchWithTimeout(loginUrl, {
+    const loginResponse = await fetchWithRetry(loginUrl, {
       headers: { cookie: `qrsig=${qrsig}` },
-    })
+    }, { stage: 'qr_poll' })
     const loginText = await loginResponse.text()
     const cookieMap = new Map<string, string>()
     setCookies(cookieMap, loginResponse.headers.get('set-cookie'))
@@ -349,10 +421,11 @@ export async function checkQQLoginQr(input: {
     const checkSigUrl = extractAuthorizeUrl(loginText)
     if (!checkSigUrl) throw new QQMusicError('Failed to extract checkSigUrl from QQ login response', 502)
 
-    const checkSigResponse = await fetchWithTimeout(checkSigUrl, {
+    stage = 'check_sig'
+    const checkSigResponse = await fetchWithRetry(checkSigUrl, {
       redirect: 'manual',
       headers: { cookie: allCookies() },
-    })
+    }, { stage: 'check_sig' })
     const checkSigCookie = checkSigResponse.headers.get('set-cookie')
     const pSkey = checkSigCookie?.match(/p_skey=([^;]+)/)?.[1]
     if (!pSkey) throw new QQMusicError('Failed to extract p_skey from QQ login response', 502, {
@@ -378,12 +451,13 @@ export async function checkQQLoginQr(input: {
     authorizeData.append('auth_time', new Date().toString())
     authorizeData.append('ui', getGuid())
 
-    const authorizeResponse = await fetchWithTimeout('https://graph.qq.com/oauth2.0/authorize', {
+    stage = 'oauth_authorize'
+    const authorizeResponse = await fetchWithRetry('https://graph.qq.com/oauth2.0/authorize', {
       redirect: 'manual',
       method: 'POST',
       body: authorizeData,
       headers: { cookie: allCookies() },
-    })
+    }, { stage: 'oauth_authorize' })
     setCookies(cookieMap, authorizeResponse.headers.get('set-cookie'))
     const location = authorizeResponse.headers.get('location')
     if (authorizeResponse.status < 300 || authorizeResponse.status >= 400 || !location) {
@@ -396,6 +470,7 @@ export async function checkQQLoginQr(input: {
     const code = location.match(/[?&]code=([^&]+)/)?.[1]
     if (!code) throw new QQMusicError('QQ authorization redirect did not include code', 502)
 
+    stage = 'code_exchange'
     const session = await exchangeQQMusicLoginCode({
       code,
       cookie: allCookies(),
@@ -409,10 +484,21 @@ export async function checkQQLoginQr(input: {
     }
   } catch (error) {
     logServiceEvent('qq_login_failed', {
+      stage,
       error: error instanceof Error ? error.message : String(error),
+      code: loginNetworkErrorCode(error),
       status: error instanceof QQMusicError ? error.status : undefined,
       payload: summarizeQQLoginErrorPayload(error),
     }, 'error')
+    if (isTransientLoginNetworkError(error)) {
+      return {
+        isOk: false,
+        refresh: false,
+        status: 'pending',
+        transient: true,
+        message: '网络波动，正在自动重试',
+      }
+    }
     if (error instanceof Error && error.name === 'AbortError') {
       throw new QQMusicError('QQ login check timed out', 504)
     }

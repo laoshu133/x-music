@@ -81,7 +81,7 @@ interface LoginQrState {
   attemptId: string
 }
 
-type LoginQrPhase = 'idle' | 'active' | 'checking' | 'scanned' | 'expired' | 'error'
+type LoginQrPhase = 'idle' | 'active' | 'checking' | 'scanned' | 'retrying' | 'expired' | 'error'
 
 interface UserAvatarResult {
   source: 'tx'
@@ -575,7 +575,7 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
     setMessage('')
     try {
       const result = await fetchJson<
-      | { isOk: false; refresh: boolean; status?: 'pending' | 'scanned' | 'expired'; message: string }
+      | { isOk: false; refresh: boolean; status?: 'pending' | 'scanned' | 'expired'; message: string; transient?: boolean }
       | { isOk: true; message: string; account: AccountState }
     >('/api/account/qr/check', {
       method: 'POST',
@@ -584,7 +584,13 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
     })
 
       if (!result.isOk) {
-        setLoginQrPhase(result.refresh || result.status === 'expired' ? 'expired' : result.status === 'scanned' ? 'scanned' : 'active')
+        setLoginQrPhase(result.transient
+          ? 'retrying'
+          : result.refresh || result.status === 'expired'
+            ? 'expired'
+            : result.status === 'scanned'
+              ? 'scanned'
+              : 'active')
         return
       }
 
@@ -596,6 +602,11 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
       await loadAccountEmbyConfig()
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
+      if (error instanceof ApiError && error.status >= 500) {
+        setMessage('')
+        setLoginQrPhase('retrying')
+        return
+      }
       setMessage(message)
       setLoginQrPhase('error')
       setAccount(current => ({ ...current, loading: false, error: message }))
@@ -769,7 +780,7 @@ export default function MusicClient({ initialAccount }: { initialAccount: Accoun
   }, [loginQr.data, loginQrPhase])
 
   useEffect(() => {
-    const shouldPollQr = loginQrPhase === 'active' || loginQrPhase === 'scanned'
+    const shouldPollQr = loginQrPhase === 'active' || loginQrPhase === 'scanned' || loginQrPhase === 'retrying'
     if (!loginQr.data || !shouldPollQr || account.data?.qq?.authorized) return
 
     const timer = window.setInterval(() => {
@@ -1087,6 +1098,8 @@ function QQAuthorizationView({
     ? '检查中'
     : loginQrPhase === 'scanned'
       ? '待确认'
+    : loginQrPhase === 'retrying'
+      ? '网络波动，重试中'
     : loginQrPhase === 'expired'
       ? '已失效'
       : loginQrPhase === 'error'

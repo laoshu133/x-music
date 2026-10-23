@@ -23,7 +23,7 @@ import { qualityFallbacks } from '@/lib/music-url/resolve'
 import { highestAvailableQuality } from '@/lib/quality'
 import type { SyncEmbyTrackJobPayload } from './sync'
 import type { MusicQuality } from '@/lib/types'
-import { syncMediaFilesToEmbyWebdav, WebdavWriteUnavailableError } from './webdav'
+import { existingWebdavSyncedMedia, syncMediaFilesToEmbyWebdav, WebdavWriteUnavailableError } from './webdav'
 import { qqLegacyLyricsUrl } from '@/lib/qq'
 import { embyConfigForAccount, hasAccountUpstreamEmby } from './config'
 
@@ -136,15 +136,7 @@ async function processClaimedEmbySyncJob(
       return
     }
     const mediaPath = row?.finalPath ?? row?.rawPath
-    if (!mediaPath) {
-      if (job.attempts >= options.maxAttempts) {
-        failJob(job.id, 'No cached file is ready for Emby sync yet')
-      } else {
-        throw new Error('No cached file is ready for Emby sync yet')
-      }
-      return
-    }
-    const syncedMedia = row?.finalPath
+    let syncedMedia = row?.finalPath
       ? await syncMediaFilesToEmbyWebdav({
           finalPath: row.finalPath,
           lyricsPath: row.lyricsPath,
@@ -152,6 +144,17 @@ async function processClaimedEmbySyncJob(
           account,
         })
       : undefined
+    if (!mediaPath && !syncedMedia) {
+      syncedMedia = await existingSyncedMediaForTrack(job.payload, account)
+    }
+    if (!mediaPath && !syncedMedia) {
+      if (job.attempts >= options.maxAttempts) {
+        failJob(job.id, 'No cached file is ready for Emby sync yet')
+      } else {
+        throw new Error('No cached file is ready for Emby sync yet')
+      }
+      return
+    }
     if (syncedMedia && !hasUpstreamEmby) {
       await deleteCachedResourcesForTrack({
         source: job.payload.source,
@@ -295,6 +298,30 @@ function recordWebdavSyncEvent(input: {
       uploadedPaths: input.uploadedPaths,
     }),
   })
+}
+
+async function existingSyncedMediaForTrack(
+  payload: SyncEmbyTrackJobPayload,
+  account: AccountRecord | undefined,
+) {
+  const row = db.prepare(`
+    SELECT payload_json AS payloadJson
+    FROM sync_events
+    WHERE type = 'emby_webdav'
+      AND json_extract(payload_json, '$.source') = ?
+      AND json_extract(payload_json, '$.songmid') = ?
+    ORDER BY id DESC
+    LIMIT 1
+  `).get(payload.source, payload.songmid) as { payloadJson: string } | undefined
+  if (!row) return undefined
+
+  try {
+    const embyPath = (JSON.parse(row.payloadJson) as { embyPath?: unknown }).embyPath
+    if (typeof embyPath !== 'string' || !embyPath) return undefined
+    return await existingWebdavSyncedMedia({ embyPath, account })
+  } catch {
+    return undefined
+  }
 }
 
 function upsertPlaylistMapping(playlistId: string | undefined, remoteId: string, name: string, account?: AccountRecord): void {

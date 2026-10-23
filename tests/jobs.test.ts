@@ -1845,6 +1845,65 @@ test('emby sync job uploads to WebDAV without upstream Emby and skips Emby refre
   }
 })
 
+test('emby sync job reuses existing WebDAV media after another account consumes the local cache', async () => {
+  const originalFetch = globalThis.fetch
+  const songmid = `SYNC_WEBDAV_SHARED_${Date.now()}`
+  const embyPath = 'Shared Artist/Shared Album/Shared Artist - Shared Song.flac'
+  const requests: Array<{ method: string; pathname: string }> = []
+
+  db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track'").run()
+  db.prepare("DELETE FROM sync_events WHERE type = 'emby_webdav' AND json_extract(payload_json, '$.songmid') = ?").run(songmid)
+  configureTestAccountWebdavOnly()
+
+  try {
+    const musicInfo = { source: 'tx' as const, songmid, name: 'Shared Song', singer: 'Shared Artist' }
+    ensureTrack(musicInfo)
+    db.prepare(`
+      INSERT INTO sync_events (user_id, type, status, payload_json, updated_at)
+      VALUES (?, 'emby_webdav', 'uploaded', ?, CURRENT_TIMESTAMP)
+    `).run(TEST_EMBY_QQ_UIN, JSON.stringify({
+      userId: TEST_EMBY_QQ_UIN,
+      source: 'tx',
+      songmid,
+      embyPath,
+      uploadedPaths: [embyPath],
+    }))
+    const created = createJob({
+      type: 'sync_emby_track',
+      payload: { source: 'tx', userId: TEST_EMBY_QQ_UIN, songmid, musicInfo },
+    })
+
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = new URL(String(url))
+      const method = init?.method ?? 'GET'
+      if (requestUrl.hostname !== 'webdav.example') return Response.json({ error: 'unexpected host' }, { status: 500 })
+      requests.push({ method, pathname: decodeURIComponent(requestUrl.pathname) })
+      return new Response(null, { status: method === 'HEAD' ? 200 : 500 })
+    }) as typeof fetch
+
+    assert.equal(await processOneEmbySyncJob({ maxAttempts: 1, cacheWaitMs: 0 }), true)
+    assert.equal(getJob(created.id)?.status, 'completed')
+    assert.deepEqual(requests, [{
+      method: 'HEAD',
+      pathname: `/dav/music/${embyPath}`,
+    }])
+    const event = db.prepare(`
+      SELECT status
+      FROM sync_events
+      WHERE type = 'emby_webdav'
+        AND json_extract(payload_json, '$.songmid') = ?
+      ORDER BY id DESC
+      LIMIT 1
+    `).get(songmid) as { status: string } | undefined
+    assert.equal(event?.status, 'skipped_existing')
+  } finally {
+    db.prepare("DELETE FROM sync_events WHERE type = 'emby_webdav' AND json_extract(payload_json, '$.songmid') = ?").run(songmid)
+    db.prepare("DELETE FROM jobs WHERE type = 'sync_emby_track' AND json_extract(payload_json, '$.songmid') = ?").run(songmid)
+    db.prepare("DELETE FROM tracks WHERE source = 'tx' AND songmid = ?").run(songmid)
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('emby sync job skips WebDAV upload when remote audio already exists', async () => {
   const originalFetch = globalThis.fetch
   const songmid = `SYNC_WEBDAV_EXISTS_${Date.now()}`

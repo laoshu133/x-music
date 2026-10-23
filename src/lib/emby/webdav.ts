@@ -15,6 +15,28 @@ export interface WebdavPlaybackCandidate {
   relativePath: string
 }
 
+export async function existingWebdavSyncedMedia(input: {
+  embyPath: string
+  account?: AccountRecord
+}): Promise<WebdavSyncedMedia | undefined> {
+  const settings = embyConfigForAccount(input.account)
+  const dsn = settings.sourceWebdavDsn
+  if (!dsn) return undefined
+
+  const embyPath = input.embyPath.replaceAll('\\', '/').replace(/^\/+/, '')
+  const normalizedPath = path.posix.normalize(embyPath)
+  if (!normalizedPath || normalizedPath === '.' || normalizedPath.startsWith('../') || path.posix.isAbsolute(normalizedPath)) {
+    return undefined
+  }
+
+  const config = parseWebdavDsn(dsn)
+  if (!(await remoteFileExists(config, normalizedPath, settings.proxyTimeoutMs))) return undefined
+  return {
+    embyPath: normalizedPath,
+    uploadedPaths: [],
+  }
+}
+
 export class WebdavWriteUnavailableError extends Error {
   constructor(message: string) {
     super(message)
