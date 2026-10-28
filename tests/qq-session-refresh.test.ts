@@ -138,6 +138,27 @@ test('refreshQQMusickey accepts QQ no-refresh-needed responses without replacing
   assert.match(result.cookie, /psrf_qqaccess_token=access-next/)
 })
 
+test('refreshQQMusickey accepts musicid=0 as an omitted account id', async () => {
+  globalThis.fetch = (async () => Response.json({
+    code: 0,
+    QQRefreshKey: {
+      code: 1000,
+      data: {
+        access_token: 'access-next',
+        refresh_token: 'refresh-next',
+        musicid: 0,
+        needRefreshKeyIn: 0,
+      },
+    },
+  })) as typeof fetch
+
+  const result = await refreshQQMusickey({ cookie: modernCookie('123456') })
+
+  assert.equal(result.noRefreshNeeded, true)
+  assert.equal(result.keyRefreshed, false)
+  assert.equal(result.tokenRefreshed, true)
+})
+
 test('refreshQQMusickey rejects an ambiguous success response without session data', async () => {
   globalThis.fetch = (async () => Response.json({
     code: 0,

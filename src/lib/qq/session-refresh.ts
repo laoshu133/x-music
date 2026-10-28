@@ -132,7 +132,9 @@ export async function refreshQQMusickey(input: { cookie?: string } = {}): Promis
   const nextRefreshToken = nonEmpty(refreshData?.refresh_token)
   const upstreamCode = data.QQRefreshKey?.code ?? data.code
   const returnedMusicId = refreshData?.musicid === undefined ? undefined : String(refreshData.musicid)
-  const accountMatches = !returnedMusicId || returnedMusicId === login.uin
+  // QQ returns musicid=0 when the refresh response omits the account id.
+  // Treat that sentinel like an omitted value; it is not an account mismatch.
+  const accountMatches = !returnedMusicId || returnedMusicId === '0' || returnedMusicId === login.uin
   const noRefreshNeeded = data.code === 0
     && upstreamCode === 1000
     && Boolean(refreshData)
