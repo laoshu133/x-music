@@ -24,7 +24,7 @@ import { ensureTrack, insertPlayEvent, upsertTrackFileStatus } from '@/lib/cache
 import type { MusicInfo } from '@/lib/types'
 import { syncMappedEmbyFavoriteBestEffort } from '@/lib/emby/favorites'
 import { logCompletedRequest, logFailedRequest, logServiceEvent, requestLoggingEnabled, safeRequestPath } from '@/lib/request-log'
-import { QQAuthExpiredError, requireActiveQQAccount } from '@/lib/qq/auth-state'
+import { requireActiveQQAccount } from '@/lib/qq/auth-state'
 import { requestUserTrackSync } from '@/lib/emby/sync'
 import { decryptQQMusicAg1Request } from '@/lib/qq/crypto'
 import { GET as getAdminUsers } from '@/app/api/admin/users/route'
@@ -418,7 +418,7 @@ test('test compatibility QQ login creates a user-scoped Emby gateway account', (
   }
 })
 
-test('explicit QQ refresh rejection expires the bound account auth state', async () => {
+test('explicit QQ refresh rejection does not expire an otherwise active account', async () => {
   const originalFetch = globalThis.fetch
   try {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999905')
@@ -435,13 +435,10 @@ test('explicit QQ refresh rejection expires the bound account auth state', async
 
     globalThis.fetch = (async () => Response.json({ code: -1000, message: '请登录' })) as typeof fetch
 
-    await assert.rejects(
-      () => requireActiveQQAccount(account, { force: true }),
-      QQAuthExpiredError,
-    )
+    const result = await requireActiveQQAccount(account, { force: true })
+    assert.equal(result?.qqAuthState, 'active')
     const updated = getAccountByQQ('999905')
-    assert.equal(updated?.qqAuthState, 'expired')
-    assert.equal(updated?.qqAuthError, 'QQ Music key refresh failed')
+    assert.equal(updated?.qqAuthState, 'active')
   } finally {
     db.prepare('DELETE FROM accounts WHERE qq_uin = ?').run('999905')
     clearQQLoginCookie()

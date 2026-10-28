@@ -19,6 +19,7 @@ export async function POST() {
       changed: refreshed.result.changed,
       keyRefreshed: refreshed.result.keyRefreshed,
       tokenRefreshed: refreshed.result.tokenRefreshed,
+      noRefreshNeeded: refreshed.result.noRefreshNeeded,
       refreshedAt: refreshed.result.refreshedAt,
       hasQQMusicKey: Boolean(state.qqmusicKey),
       accessTokenExpiresAt: state.accessTokenExpiresAt,

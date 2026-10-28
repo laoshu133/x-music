@@ -24,6 +24,8 @@ type RefreshMusickeyResponse = {
       musickeyCreateTime?: number
       keyExpiresIn?: number
       needRefreshKeyIn?: number
+      errMsg?: string
+      errtip?: string
     }
     traceid?: string
   }
@@ -40,6 +42,9 @@ export interface QQMusickeyRefreshResult {
   upstreamCode?: number
   traceid?: string
   accessTokenExpiresAt?: string
+  noRefreshNeeded?: boolean
+  keyExpiresIn?: number
+  needRefreshKeyIn?: number
 }
 
 export async function refreshQQMusickey(input: { cookie?: string } = {}): Promise<QQMusickeyRefreshResult> {
@@ -67,7 +72,11 @@ export async function refreshQQMusickey(input: { cookie?: string } = {}): Promis
   }
 
   const loginType = parseLoginType(cookies.get('tmeLoginType'))
-  const expiredAt = parsePositiveInteger(cookies.get('psrf_access_token_expiresAt')) ?? 0
+  const nowSeconds = Math.floor(Date.now() / 1000)
+  const accessTokenExpiresAt = parsePositiveInteger(cookies.get('psrf_access_token_expiresAt')) ?? 0
+  const expiredIn = accessTokenExpiresAt > nowSeconds
+    ? accessTokenExpiresAt - nowSeconds
+    : 0
   const refreshKey = firstCookieValue(cookies, ['psrf_qqrefreshkey', 'psrf_qqrefresh_key']) ?? ''
   const guid = crypto.randomBytes(16).toString('hex').toUpperCase()
   const wid = BigInt(`0x${crypto.randomBytes(8).toString('hex')}`).toString()
@@ -80,7 +89,7 @@ export async function refreshQQMusickey(input: { cookie?: string } = {}): Promis
         appid: 100497308,
         deviceName: `DESKTOP-${crypto.randomBytes(6).toString('hex').toUpperCase()}`,
         deviceType: 'Windows',
-        expired_in: expiredAt,
+        expired_in: expiredIn,
         forceRefreshToken: 0,
         musicid: Number(login.uin),
         musickey,
@@ -98,7 +107,7 @@ export async function refreshQQMusickey(input: { cookie?: string } = {}): Promis
       cv: '2192',
       guid,
       patch: '118',
-      psrf_access_token_expiresAt: expiredAt,
+      psrf_access_token_expiresAt: accessTokenExpiresAt,
       psrf_qqaccess_token: accessToken,
       psrf_qqopenid: openid,
       psrf_qqunionid: unionid ?? '',
@@ -113,7 +122,7 @@ export async function refreshQQMusickey(input: { cookie?: string } = {}): Promis
     headers: {
       accept: '*/*',
       cookie: login.cookie,
-      'content-type': 'application/x-www-form-urlencoded',
+      'content-type': 'application/json',
       'user-agent': 'Mozilla/5.0 (compatible; MSIE 9.0; Windows NT 6.1; WOW64; Trident/5.0)',
     },
   })
@@ -122,7 +131,22 @@ export async function refreshQQMusickey(input: { cookie?: string } = {}): Promis
   const nextAccessToken = nonEmpty(refreshData?.access_token)
   const nextRefreshToken = nonEmpty(refreshData?.refresh_token)
   const upstreamCode = data.QQRefreshKey?.code ?? data.code
-  if (data.code !== 0 || data.QQRefreshKey?.code !== 0 || !nextMusickey) {
+  const returnedMusicId = refreshData?.musicid === undefined ? undefined : String(refreshData.musicid)
+  const accountMatches = !returnedMusicId || returnedMusicId === login.uin
+  const noRefreshNeeded = data.code === 0
+    && upstreamCode === 1000
+    && Boolean(refreshData)
+    && accountMatches
+    && !refreshData?.errMsg
+    && !refreshData?.errtip
+    && Boolean(
+      refreshData?.needRefreshKeyIn === 0
+      || refreshData?.keyExpiresIn === 0
+      || nextAccessToken
+      || nextRefreshToken
+      || refreshData?.refresh_key,
+    )
+  if (data.code !== 0 || (data.QQRefreshKey?.code !== 0 && !noRefreshNeeded) || (!nextMusickey && !noRefreshNeeded)) {
     throw new QQMusicError('QQ Music key refresh failed', 401, {
       code: upstreamCode,
       actionable: 'QQ 音乐没有返回新的 musickey，请重新完成 QQ 授权登录。',
@@ -132,14 +156,13 @@ export async function refreshQQMusickey(input: { cookie?: string } = {}): Promis
     })
   }
 
-  const nowSeconds = Math.floor(Date.now() / 1000)
-  const nextExpiresAt = refreshData?.expired_at && refreshData.expired_at > 0
-    ? refreshData.expired_at
-    : undefined
+  const nextExpiresAt = normalizeAccessTokenExpiry(refreshData?.expired_at, nowSeconds)
   const cookie = replaceQQCookieValues(login.cookie, {
     qm_keyst: nextMusickey,
     qqmusic_key: nextMusickey,
-    psrf_musickey_createtime: String(refreshData?.musickeyCreateTime ?? nowSeconds),
+    psrf_musickey_createtime: nextMusickey
+      ? String(refreshData?.musickeyCreateTime ?? nowSeconds)
+      : undefined,
     psrf_qqaccess_token: nextAccessToken,
     psrf_qqrefresh_token: nextRefreshToken,
     psrf_access_token_expiresAt: nextExpiresAt ? String(nextExpiresAt) : undefined,
@@ -166,7 +189,15 @@ export async function refreshQQMusickey(input: { cookie?: string } = {}): Promis
     upstreamCode,
     traceid: data.QQRefreshKey?.traceid,
     accessTokenExpiresAt: nextExpiresAt ? new Date(nextExpiresAt * 1000).toISOString() : undefined,
+    noRefreshNeeded,
+    keyExpiresIn: refreshData?.keyExpiresIn,
+    needRefreshKeyIn: refreshData?.needRefreshKeyIn,
   }
+}
+
+function normalizeAccessTokenExpiry(value: number | undefined, nowSeconds: number): number | undefined {
+  if (!value || !Number.isFinite(value) || value <= 0) return undefined
+  return value > nowSeconds ? Math.trunc(value) : nowSeconds + Math.trunc(value)
 }
 
 function parseLoginType(value: string | undefined) {

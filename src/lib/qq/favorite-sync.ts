@@ -12,7 +12,7 @@ import type { MusicInfo } from '@/lib/types'
 import { getQQFavoriteSongs, setQQFavoriteSong } from './favorites'
 import { QQMusicError } from './http'
 import { refreshAccountQQAuthorizationIfNeeded } from './auth-refresh'
-import { isQQAuthExpiredError, markQQAccountAuthorizationExpired, requireActiveQQAccount } from './auth-state'
+import { isQQAuthExpiredError, requireActiveQQAccount } from './auth-state'
 
 const defaultMaxAttempts = 5
 const retryBackoffSeconds = [60, 300, 900, 3600]
@@ -144,9 +144,6 @@ export async function processPendingFavoriteSyncs(input: {
 
 export async function refreshAccountForFavorite(account: AccountRecord): Promise<AccountRecord> {
   const refreshed = await refreshAccountQQAuthorizationIfNeeded(account)
-  if (refreshed.error && isQQAuthExpiredError(refreshed.error)) {
-    markQQAccountAuthorizationExpired(account, refreshed.error)
-  }
   return refreshed.account
 }
 

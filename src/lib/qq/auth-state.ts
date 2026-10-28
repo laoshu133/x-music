@@ -47,17 +47,23 @@ export async function requireActiveQQAccount<T extends AccountRecord | undefined
     const refreshed = await refreshAccountQQAuthorizationIfNeeded(account, {
       force: Boolean(options.force || recheckingExpiredAccount),
     })
-    if (refreshed.error) return handleRefreshFailure(account, refreshed.error) as T
+    if (refreshed.error) {
+      return handleRefreshFailure(account, refreshed.error, { allowExpire: recheckingExpiredAccount }) as T
+    }
     if (recheckingExpiredAccount) lastExpiredRecheckByUser.delete(account.userId)
     return (getAccountByUserId(refreshed.account.userId) ?? refreshed.account) as T
   } catch (error) {
-    return handleRefreshFailure(account, error) as T
+    return handleRefreshFailure(account, error, { allowExpire: recheckingExpiredAccount }) as T
   }
 }
 
-function handleRefreshFailure(account: AccountRecord, error: unknown): AccountRecord {
+function handleRefreshFailure(
+  account: AccountRecord,
+  error: unknown,
+  options: { allowExpire: boolean },
+): AccountRecord {
   const message = error instanceof Error ? error.message : String(error)
-  if (isQQAuthExpiredError(error)) {
+  if (options.allowExpire && isQQAuthExpiredError(error)) {
     throw markQQAccountAuthorizationExpired(account, error)
   }
 
@@ -102,7 +108,7 @@ function shouldRecheckExpiredAccount(account: AccountRecord, options: { force?: 
 export function isQQAuthExpiredError(error: unknown): boolean {
   if (error instanceof QQAuthExpiredError) return true
   if (error instanceof QQMusicError) {
-    if (error.status === 401) return true
+    if (error.status === 401 && !error.payload) return true
     if (isQQAuthExpiredMessage(error.message) || isQQAuthExpiredPayload(error.payload)) return true
   }
   if (!(error instanceof Error)) return false

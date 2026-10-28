@@ -60,6 +60,18 @@ export async function refreshAccountQQAuthorizationIfNeeded(
   lastRefreshAttemptByUser.set(account.userId, Date.now())
   try {
     const refreshed = await refreshAccountQQAuthorization(account)
+    logServiceEvent('qq_auth_refresh_completed', {
+      userId: account.userId,
+      reason: decision.reason,
+      changed: refreshed.result.changed,
+      keyRefreshed: refreshed.result.keyRefreshed,
+      tokenRefreshed: refreshed.result.tokenRefreshed,
+      noRefreshNeeded: refreshed.result.noRefreshNeeded,
+      upstreamCode: refreshed.result.upstreamCode,
+      keyExpiresIn: refreshed.result.keyExpiresIn,
+      needRefreshKeyIn: refreshed.result.needRefreshKeyIn,
+      accessTokenExpiresAt: refreshed.result.accessTokenExpiresAt,
+    })
     return {
       account: refreshed.account,
       attempted: true,
